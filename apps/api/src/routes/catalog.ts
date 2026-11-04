@@ -9,6 +9,7 @@ import { requireAdmin, requireAuth } from '../lib/auth'
 import { conflict, isForeignKeyViolation, isUniqueViolation, notFound, parseBody } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { createAgent, getAgent, listAgents, updateAgent } from '../services/agents'
+import { readSettings } from '../services/settings'
 
 const RUNTIME_LABELS: Record<RuntimeId, { label: string; defaultModel: string | null }> = {
   claude: { label: 'Claude', defaultModel: 'claude-opus-5-5' },
@@ -17,11 +18,11 @@ const RUNTIME_LABELS: Record<RuntimeId, { label: string; defaultModel: string | 
 }
 
 export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
-  const { db, env } = deps
+  const { db } = deps
 
   app.get('/api/runtimes', async (request) => {
     requireAuth(request)
-    const ids: RuntimeId[] = env.FACTORIX_ALLOW_SCRIPTED_RUNTIME ? ['claude', 'codex', 'scripted'] : ['claude', 'codex']
+    const ids: RuntimeId[] = (await readSettings(deps)).allowScriptedRuntime ? ['claude', 'codex', 'scripted'] : ['claude', 'codex']
     const catalogs = await db<RuntimeModelRow>('runtime_models').whereIn('runtime', ids)
     return {
       runtimes: ids.map((id) => {

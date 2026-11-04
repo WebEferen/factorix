@@ -47,5 +47,6 @@ export interface AppDeps {
     suspendAfterMs?: number
     recoveryMs?: number
     noteDebounceMs?: number
+    settingsMs?: number
   }
 }

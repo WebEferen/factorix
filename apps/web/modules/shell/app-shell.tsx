@@ -140,6 +140,7 @@ function Palette({ open, onOpenChange, onNewIssue }: { open: boolean; onOpenChan
                 <PaletteItem icon={<Sparkles />} label="Skills" onSelect={() => go('/skills')} />
                 <PaletteItem icon={<Shapes />} label="Archetypes" onSelect={() => go('/archetypes')} />
                 <PaletteItem icon={<Settings />} label="Settings" hint="G S" onSelect={() => go('/settings')} />
+                <PaletteItem icon={<Settings />} label="General settings" onSelect={() => go('/settings/general')} />
                 <PaletteItem icon={<Settings />} label="Network" onSelect={() => go('/settings/network')} />
                 <PaletteItem icon={<Settings />} label="Audit log" onSelect={() => go('/settings/audit')} />
                 <PaletteItem icon={<Settings />} label="Spend" onSelect={() => go('/settings/spend')} />

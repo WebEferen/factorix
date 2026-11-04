@@ -1,6 +1,6 @@
 # Factorix
 
-Agentic software factory. It mirrors Linear issues, runs agents in Docker sandboxes, and opens GitLab merge requests.
+Agentic software factory. It follows issues from a tracker, runs agents in Docker sandboxes, and opens merge requests. Trackers and code hosts connect through open connector contracts, and Linear and GitLab ship today.
 
 ## Layout
 
@@ -35,6 +35,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 
 - The repositories in `project_repos` are the limit of what agents may change, each checked out at `/workspace/repos/<name>`. An issue has one row in `issue_merge_requests` per repository it changed, and everything that touches a merge request reads `mergeRequestsOf`, which keeps the merge order the agent chose for that ticket. `iid` is only unique inside one repository, so never look one up without the repository.
 - The git token never enters a container that runs agent or repo code. Change `STEP_PROFILES` in `packages/sandbox/src/profiles.ts` only with a matching test in `docker.docker.test.ts`.
+- An agent can have its own git and tracker account, linked in `agent_connections` under the roles `scm` and `tracker`. Resolve them with `scmConnectionFor` and `trackerConnectionFor`. Work done as the agent follows its account, and merges, webhooks, polling, and status changes stay on the project's. Those roles never reach a container: the same boundary applies to their tokens.
 - The API and worker never import an SDK. Only `packages/runner` does.
 - Tracker and agent text is untrusted. Render it through the `Markdown` component, never as HTML. The API converts each source's dialect to portable Markdown first, and only images and videos from the media proxy load inline.
 - `audit_log` is append-only, enforced by a database trigger. Write through `writeAudit`.
@@ -51,6 +52,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - New model runtime: add an adapter in `packages/runner/src/adapters`, with a capability entry in `packages/runtime`. The UI adapts from capabilities.
 - New workflow block: add it to `WORKFLOW_BLOCKS` in `packages/schemas/src/workflows.ts`, a handler to `BLOCK_HANDLERS` in `apps/api/src/services/workflow-blocks.ts`, and an icon and summary in `apps/web/modules/workflows/blocks.tsx`. The palette and inspector render from the catalog.
 - New default egress host: a connector declares `egressHosts` on its source, and hosts every restricted project needs go in `PACKAGE_REGISTRY_HOSTS` in `packages/schemas`. Settings, Network extends or replaces the defaults for the organization, and a project adds its own under Extra allowed hosts. All of it goes through `egressGroups`, so the UI lists what the worker enforces. Declare only what an agent can use without the connection's credentials, since every host is also somewhere it could send data.
+- New platform setting: add it to `PLATFORM_SETTINGS` in `packages/schemas/src/settings.ts`, its variable to `apps/api/src/env.ts`, `envSettings`, and `x-app-env` in `docker-compose.yml`, then read it through `readSettings`, never from `env`. The General page renders from the catalog. The environment is the default and a saved value overrides it. Nothing that can reach a credential goes in, which is why the sandbox image stays environment-only.
 - New notification channel: implement `NotificationConnector` in `packages/connectors`, register it in `realConnectors.notifier`, and add its kind to `NOTIFICATION_KINDS` and `CONNECTION_KINDS`, plus its entry on the connections page. The Send notification block offers every connection of those kinds.
 
 ## Conventions

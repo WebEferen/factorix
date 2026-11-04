@@ -59,6 +59,8 @@ export interface TrackerSource {
 export interface ScmSource {
   markup: SourceMarkup
   egressHosts: EgressHosts
+  /** Two connections on one server see the same repository ids. */
+  server: (config: Record<string, unknown>) => string | null
 }
 
 const FENCE = /^\s*(```|~~~)/

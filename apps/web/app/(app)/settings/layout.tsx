@@ -7,6 +7,7 @@ import { cn } from '@/modules/lib/format'
 import { PageHeader } from '@/modules/shell/page-header'
 
 const SECTIONS = [
+  { href: '/settings/general', label: 'General' },
   { href: '/settings/connections', label: 'Connections' },
   { href: '/settings/network', label: 'Network' },
   { href: '/settings/members', label: 'Members' },

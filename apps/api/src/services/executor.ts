@@ -22,11 +22,12 @@ import { writeAudit } from '../lib/audit'
 import { orgChannel, proxyTokenKey, runCommandChannel, runProxyChannel } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
 import { emit } from '../lib/outbox'
-import { decryptConnection, resolveModelKey, scmFor } from './connections'
+import { decryptConnection, resolveModelKey, scmConnectionFor, scmFor } from './connections'
 import { EventBuffer } from './event-buffer'
 import { finalizePhase, StepFailed, type WorkRepo } from './finalize'
 import { releaseIssueLock } from './pipeline'
 import { mergeRequestsOf, projectRepos } from './repos'
+import { readSettings } from './settings'
 import { buildRunSpec, sessionToResume } from './spec'
 import { ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
 
@@ -181,7 +182,7 @@ class RunExecution {
     if (this.run.projectId) this.project = (await db<ProjectRow>('projects').where({ id: this.run.projectId }).first()) ?? null
     const connectionId = this.project?.scmConnectionId ?? (this.run.trigger.scmConnectionId as string | undefined)
     if (connectionId) {
-      const connection = await db<ConnectionRow>('connections').where({ id: connectionId }).first()
+      const connection = await scmConnectionFor(db, connectionId, this.run.agentId, (message) => this.log('warn', message))
       if (connection) {
         this.scm = scmFor(this.deps, connection)
         this.gitToken = this.scm.gitAuth().token
@@ -192,7 +193,10 @@ class RunExecution {
     const key = workspaceKey(this.run)
     this.workspace = await this.deps.sandbox.ensureWorkspace(key)
     const row = await ensureWorkspaceRow(db, this.run, this.workspace.volume, this.workspace.mirrorVolume)
-    if (this.run.workspaceId !== row.id) await db('runs').where({ id: this.run.id }).update({ workspaceId: row.id })
+    if (this.run.workspaceId !== row.id) {
+      await db('runs').where({ id: this.run.id }).update({ workspaceId: row.id })
+      this.run.workspaceId = row.id
+    }
 
     const branch = this.issue ? resolveBranch(this.issue) : `factorix/adhoc-${this.run.id.slice(0, 8)}`
     if (this.issue && !this.issue.branchName) {
@@ -413,7 +417,7 @@ class RunExecution {
 
   private async prepareAndStart(): Promise<AgentHandle | null> {
     const { db, sandbox } = this.deps
-    if (this.run.runtime === 'scripted' && !this.deps.env.FACTORIX_ALLOW_SCRIPTED_RUNTIME)
+    if (this.run.runtime === 'scripted' && !(await readSettings(this.deps)).allowScriptedRuntime)
       throw new Error('The scripted runtime is disabled on this deployment')
     const workspace = this.workspace as Workspace
     const checkout = await this.mirrorAndCheckout()
@@ -697,6 +701,8 @@ class RunExecution {
       outcome = outcome === 'completed' ? 'failed' : outcome
     }
 
+    await this.clearCache()
+
     const cancelled = outcome === 'cancelled'
     const state: TerminalState = cancelled ? 'cancelled' : result === 'failed' ? 'failed' : 'succeeded'
     const code = this.lastError?.code
@@ -714,9 +720,23 @@ class RunExecution {
     else if (state === 'cancelled' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
   }
 
+  /** Runs before the issue's lock is released, so it cannot pull a cache out from under the next run's install. */
+  private async clearCache(): Promise<void> {
+    const [repo] = this.repos
+    if (!this.workspace || !repo) return
+    try {
+      if (!(await readSettings(this.deps)).clearRunCache) return
+      const result = await this.deps.sandbox.runStep(this.workspace, { op: 'clear-cache', env: repo.env })
+      if (result.exitCode !== 0) this.log('warn', `Could not clear the package caches: ${result.stderr.trim().slice(-500)}`)
+    } catch (error) {
+      this.log('warn', `Could not clear the package caches: ${(error as Error).message}`)
+    }
+  }
+
   private async failUnexpected(error: unknown): Promise<void> {
     const message = error instanceof Error ? error.message : String(error)
     this.log('error', message)
+    await this.clearCache()
     const code: ErrorCode =
       error instanceof StepFailed && /auth|403|401|could not read Username/i.test(error.message)
         ? 'auth'

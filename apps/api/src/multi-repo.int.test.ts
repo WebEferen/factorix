@@ -1,7 +1,11 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import type { MergeRequest } from '@factorix/connectors'
+import { BUILTIN_PIPELINE, type PipelineDefinition } from '@factorix/core'
 import { json } from '@factorix/db'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { projectRepos } from './services/repos'
-import { handleScmEvent, mergeIssue } from './services/scm-inbound'
+import { handleScmEvent, mergeIssue, pollOpenMergeRequests, revertIssue } from './services/scm-inbound'
 import { postTrackerComment } from './services/tracker-sync'
 import { TEAM_ID } from './testing/fakes'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
@@ -213,14 +217,17 @@ describe('projects with several repositories', () => {
     expect((await issueRow(issueId)).factoryState).toBe('done')
   })
 
-  it('treats one closed and one merged as done, and all closed as cancelled', async () => {
+  it('asks a person about one closed and one merged, and treats all closed as cancelled', async () => {
     const mixed = await issueAt('One closed', 'await_merge')
     await linkMr(mixed, '42', 92)
     await linkMr(mixed, '43', 93)
     await finished('mr.closed', '42', 92)
     expect((await issueRow(mixed)).factoryState).toBe('awaiting_merge')
     await finished('mr.merged', '43', 93)
-    expect((await issueRow(mixed)).factoryState).toBe('done')
+    const row = await issueRow(mixed)
+    expect(row.factoryState).toBe('awaiting_merge')
+    expect(row.cursor.step).toBe('merge_partial')
+    expect(await db()('approvals').where({ issueId: mixed, kind: 'partial_merge', status: 'pending' }).first()).toBeTruthy()
 
     const abandoned = await issueAt('All closed', 'await_merge')
     await linkMr(abandoned, '42', 94)
@@ -265,34 +272,239 @@ describe('projects with several repositories', () => {
       expect((await db()('issue_merge_requests').where({ issueId, mrIid: first }).first()).mrState).toBe('opened')
     })
 
-    it('stops at a refused merge, remembers what landed, and names what is left', async () => {
-      const issueId = await issueAt('Refused', 'auto_merge')
+    it('merges nothing when the server would refuse any of them', async () => {
+      const issueId = await issueAt('Would conflict', 'auto_merge')
+      await openMr(issueId, '42')
+      const second = await openMr(issueId, '43')
+      harness.world.mrs.set(second, { ...(harness.world.mrs.get(second) as MergeRequest), mergeBlocker: 'it has merge conflicts' })
+      harness.world.merges = []
+      await mergeIssue(harness.deps, issueId)
+      expect(harness.world.merges).toEqual([])
+      expect((await issueRow(issueId)).cursor.step).toBe('merge_blocked')
+      expect((await admin.ok('GET', `/api/issues/${issueId}`)).issue.mergeRequests[1].error).toBe('it has merge conflicts')
+    })
+
+    async function partlyMerged(title: string) {
+      const issueId = await issueAt(title, 'auto_merge')
       const first = await openMr(issueId, '42')
       const second = await openMr(issueId, '43')
       harness.world.refuseMerge.add(second)
       harness.world.merges = []
       await mergeIssue(harness.deps, issueId)
+      harness.world.refuseMerge.delete(second)
+      const approval = await db()('approvals').where({ issueId, status: 'pending' }).first()
+      return { issueId, first, second, approval }
+    }
+
+    const choose = (approvalId: string, choice: string) => admin.ok('POST', `/api/approvals/${approvalId}/decide`, { decision: 'approved', choice })
+
+    it('stops at a refused merge and asks what to do with what landed', async () => {
+      const { issueId, first, second, approval } = await partlyMerged('Refused')
       expect(harness.world.merges).toEqual([first])
-      expect((await issueRow(issueId)).cursor.step).toBe('merge_blocked')
+      const row = await issueRow(issueId)
+      expect(row.cursor.step).toBe('merge_partial')
+      expect(row.factoryState).toBe('awaiting_merge')
       expect((await db()('issue_merge_requests').where({ issueId, mrIid: first }).first()).mrState).toBe('merged')
 
-      const approval = await db()('approvals').where({ issueId, kind: 'merge', status: 'pending' }).first()
-      expect(approval.payload.mergeRequests.map((mr: { iid: number }) => mr.iid)).toEqual([first, second])
+      expect(approval.kind).toBe('partial_merge')
+      expect(approval.payload.mergeRequests.map((mr: { iid: number; state: string; error?: string }) => [mr.iid, mr.state, mr.error])).toEqual([
+        [first, 'merged', undefined],
+        [second, 'opened', 'conflicts'],
+      ])
 
-      await postTrackerComment(harness.deps, { issueId, template: 'merge_blocked' })
+      await postTrackerComment(harness.deps, { issueId, template: 'merge_partial' })
       const comment = harness.world.comments.at(-1)?.body ?? ''
-      expect(comment).toContain(`https://gitlab.example/g/s/-/merge_requests/${second}`)
-      expect(comment).not.toContain(`merge_requests/${first}`)
+      expect(comment).toContain(`Merged: https://gitlab.example/g/r/-/merge_requests/${first}`)
+      expect(comment).toContain(`Not merged: https://gitlab.example/g/s/-/merge_requests/${second} (conflicts)`)
+    })
 
-      harness.world.refuseMerge.delete(second)
+    it('needs a real choice at the recovery gate, and takes no choice at a plain one', async () => {
+      const { issueId, approval } = await partlyMerged('Choices')
+      const decide = (body: unknown, id = approval.id) => admin.request('POST', `/api/approvals/${id}/decide`, body)
+      expect((await decide({ decision: 'approved' })).status).toBe(400)
+      expect((await decide({ decision: 'rejected', choice: 'revert' })).status).toBe(400)
+      expect((await db()('approvals').where({ id: approval.id }).first()).status).toBe('pending')
+      expect((await issueRow(issueId)).cursor.step).toBe('merge_partial')
+
+      const plain = await issueAt('Plain gate', 'await_merge')
+      await db()('approvals').insert({ orgId: (await issueRow(plain)).orgId, issueId: plain, kind: 'merge', payload: json({}) })
+      const gate = await db()('approvals').where({ issueId: plain, status: 'pending' }).first()
+      expect((await decide({ decision: 'approved', choice: 'keep' }, gate.id)).status).toBe(400)
+    })
+
+    it('retries only what is left', async () => {
+      const { issueId, second, approval } = await partlyMerged('Retry')
+      await choose(approval.id, 'retry')
+      expect((await issueRow(issueId)).cursor.step).toBe('auto_merge')
       harness.world.merges = []
-      await db()('issues')
-        .where({ id: issueId })
-        .update({ cursor: json({ step: 'auto_merge', enteredAt: new Date().toISOString(), loops: {}, attempts: {}, waitingFor: null }) })
       await mergeIssue(harness.deps, issueId)
       expect(harness.world.merges).toEqual([second])
       expect((await issueRow(issueId)).factoryState).toBe('done')
+      expect((await admin.ok('GET', `/api/issues/${issueId}`)).issue.mergeRequests[1].error).toBeUndefined()
     })
+
+    it('stays at the gate when a retry is refused again', async () => {
+      const { issueId, second, approval } = await partlyMerged('Refused twice')
+      await choose(approval.id, 'retry')
+      harness.world.ciByIid.set(second, { status: 'failed', failedJobs: [] })
+      await mergeIssue(harness.deps, issueId)
+      expect((await issueRow(issueId)).cursor.step).toBe('merge_partial')
+      expect((await db()('approvals').where({ issueId, kind: 'partial_merge', status: 'pending' }).first()).payload.mergeRequests[1].error).toBe(
+        'its pipeline is failed',
+      )
+    })
+
+    it('sees what a person did since the last look', async () => {
+      const { issueId, second, approval } = await partlyMerged('Merged by hand')
+      await choose(approval.id, 'retry')
+      harness.world.mrs.set(second, { ...(harness.world.mrs.get(second) as MergeRequest), state: 'merged' })
+      harness.world.merges = []
+      await mergeIssue(harness.deps, issueId)
+      expect(harness.world.merges).toEqual([])
+      expect((await issueRow(issueId)).factoryState).toBe('done')
+    })
+
+    it('can keep what merged', async () => {
+      const { issueId, approval } = await partlyMerged('Keep')
+      await choose(approval.id, 'keep')
+      expect((await issueRow(issueId)).factoryState).toBe('done')
+    })
+
+    it('closes what is open, reverts what merged, and cancels the issue', async () => {
+      const { issueId, first, second, approval } = await partlyMerged('Revert')
+      await choose(approval.id, 'revert')
+      expect((await issueRow(issueId)).cursor.step).toBe('revert')
+      harness.world.merges = []
+      await revertIssue(harness.deps, issueId)
+
+      expect(harness.world.mrs.get(second)?.state).toBe('closed')
+      const [undoing] = harness.world.merges
+      expect(harness.world.revertOf.get(undoing as number)).toBe(first)
+      expect(harness.world.mrs.get(undoing as number)?.targetBranch).toBe('main')
+      const row = await issueRow(issueId)
+      expect(row.factoryState).toBe('cancelled')
+      const detail = (await admin.ok('GET', `/api/issues/${issueId}`)).issue
+      expect(detail.mergeRequests[0].revert).toEqual({ state: 'merged', url: expect.stringContaining(`merge_requests/${undoing}`) })
+      expect(detail.mergeRequests[1].state).toBe('closed')
+      await postTrackerComment(harness.deps, { issueId, template: 'merge_reverted' })
+      expect(harness.world.comments.at(-1)?.body).toContain(`merge_requests/${undoing}`)
+    })
+
+    const revertStates = async (issueId: string) => (await db()('issue_merge_requests').where({ issueId })).map((row) => row.revertState)
+
+    /** Both merged, standing at the revert step, which is the only way to see the order with two repositories. */
+    async function bothMergedAtRevert(title: string) {
+      const issueId = await issueAt(title, 'revert')
+      const first = await openMr(issueId, '42')
+      const second = await openMr(issueId, '43')
+      await db()('issue_merge_requests').where({ issueId }).update({ mrState: 'merged' })
+      return { issueId, first, second }
+    }
+
+    it('reverts the newest merge first and stops at the first one that cannot land', async () => {
+      const { issueId, first, second } = await bothMergedAtRevert('Order')
+      harness.world.refuseRevert.add(second)
+      harness.world.merges = []
+      await revertIssue(harness.deps, issueId)
+      expect(harness.world.merges).toEqual([])
+      expect([...harness.world.revertOf.values()]).not.toContain(first)
+      let row = await issueRow(issueId)
+      expect(row.cursor.step).toBe('revert_blocked')
+      expect(row.factoryState).toBe('awaiting_merge')
+      const gate = await db()('approvals').where({ issueId, kind: 'revert_blocked', status: 'pending' }).first()
+      expect(gate.payload.mergeRequests[1].revert).toEqual({ state: 'failed', error: 'revert conflicts' })
+
+      await revertIssue(harness.deps, issueId, { retryFailed: false })
+      expect((await db()('issue_merge_requests').where({ issueId, mrIid: first }).first()).revertState).toBeNull()
+
+      harness.world.refuseRevert.delete(second)
+      await choose(gate.id, 'retry')
+      expect((await issueRow(issueId)).cursor.step).toBe('revert')
+      harness.world.merges = []
+      await revertIssue(harness.deps, issueId)
+      expect(harness.world.merges.map((iid) => harness.world.revertOf.get(iid))).toEqual([second, first])
+      row = await issueRow(issueId)
+      expect(row.factoryState).toBe('cancelled')
+    })
+
+    it('waits for a revert that cannot merge yet, then finishes when it lands', async () => {
+      const { issueId } = await bothMergedAtRevert('Waiting')
+      const blocked = harness.world.nextIid
+      harness.world.refuseMerge.add(blocked)
+      await revertIssue(harness.deps, issueId)
+      expect((await issueRow(issueId)).cursor.step).toBe('revert_blocked')
+      const row = await db()('issue_merge_requests').where({ issueId, revertMrIid: blocked }).first()
+      expect(row).toMatchObject({ revertState: 'open', revertError: 'conflicts' })
+
+      // The poll walks the whole project, and earlier tests left issues linked to merge requests the fake never opened.
+      await db()('issues').where({ projectId }).whereNot({ id: issueId }).update({ factoryState: 'done' })
+      const project = await db()('projects').where({ id: projectId }).first()
+      await pollOpenMergeRequests(harness.deps, project)
+      expect((await issueRow(issueId)).cursor.step).toBe('revert_blocked')
+
+      harness.world.refuseMerge.delete(blocked)
+      await pollOpenMergeRequests(harness.deps, project)
+      expect((await issueRow(issueId)).factoryState).toBe('cancelled')
+      expect(await revertStates(issueId)).toEqual(['merged', 'merged'])
+    })
+
+    it('picks up a revert merged by hand from its webhook', async () => {
+      const { issueId } = await bothMergedAtRevert('By hand')
+      const blocked = harness.world.nextIid
+      harness.world.refuseMerge.add(blocked)
+      await revertIssue(harness.deps, issueId)
+      harness.world.refuseMerge.delete(blocked)
+      harness.world.mrs.set(blocked, { ...(harness.world.mrs.get(blocked) as MergeRequest), state: 'merged' })
+      expect(await finished('mr.merged', '43', blocked)).toBe('processed')
+      expect((await issueRow(issueId)).factoryState).toBe('cancelled')
+    })
+
+    it('leaves the failed revert for a person when someone closes it', async () => {
+      const { issueId } = await bothMergedAtRevert('Closed revert')
+      const blocked = harness.world.nextIid
+      harness.world.refuseMerge.add(blocked)
+      await revertIssue(harness.deps, issueId)
+      harness.world.refuseMerge.delete(blocked)
+      harness.world.mrs.set(blocked, { ...(harness.world.mrs.get(blocked) as MergeRequest), state: 'closed' })
+      await finished('mr.closed', '43', blocked)
+      expect((await issueRow(issueId)).cursor.step).toBe('revert_blocked')
+      expect(
+        await db()('issue_merge_requests')
+          .where({ issueId, repoId: await repoId('43') })
+          .first(),
+      ).toMatchObject({
+        revertState: 'failed',
+        revertMrIid: null,
+      })
+    })
+
+    it('ignores revert work once the issue has moved on', async () => {
+      const { issueId } = await bothMergedAtRevert('Moved on')
+      await db()('issues')
+        .where({ id: issueId })
+        .update({ cursor: json({ step: 'await_merge', enteredAt: new Date().toISOString(), loops: {}, attempts: {}, waitingFor: null }) })
+      await revertIssue(harness.deps, issueId)
+      expect(await revertStates(issueId)).toEqual([null, null])
+    })
+  })
+
+  it('brings a saved pipeline up to the current built-in definition', async () => {
+    const steps = structuredClone(BUILTIN_PIPELINE.steps) as Record<string, { on?: Record<string, string> }>
+    for (const name of ['merge_partial', 'revert', 'revert_blocked']) delete steps[name]
+    for (const step of Object.values(steps)) {
+      if (step.on) {
+        delete step.on['mr.partial']
+        delete step.on.partial
+      }
+    }
+    const row = await db()('pipelines').where({ isBuiltin: true }).first()
+    await db()('pipelines')
+      .where({ id: row.id })
+      .update({ definition: json({ ...BUILTIN_PIPELINE, steps }) })
+    const sql = readFileSync(fileURLToPath(new URL('../../../packages/db/migrations/0015_merge_recovery.sql', import.meta.url)), 'utf8')
+    await db().raw(sql.slice(sql.indexOf('UPDATE pipelines')))
+    const migrated = (await db()('pipelines').where({ id: row.id }).first()).definition as PipelineDefinition
+    expect(migrated).toEqual(BUILTIN_PIPELINE)
   })
 
   it('shows merge requests in repository order on lists and details', async () => {

@@ -12,6 +12,7 @@ import { getConnection, scmFor, trackerFor } from '../services/connections'
 import { recordEcho } from '../services/echo'
 import { advanceIssue } from '../services/pipeline'
 import { projectRepos, saveProjectRepos } from '../services/repos'
+import { readSettings } from '../services/settings'
 import { IMPORT_STALE_MS, requestProjectImport, upsertIssueMirror } from '../services/tracker-sync'
 
 export async function getProject(deps: Pick<AppDeps, 'db'>, orgId: string, id: string): Promise<ProjectRow> {
@@ -161,7 +162,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.post('/api/projects/:id/webhooks', async (request) => {
     const { account } = requireAdmin(request)
     const project = await getProject(deps, account.orgId, (request.params as { id: string }).id)
-    const publicUrl = deps.env.FACTORIX_PUBLIC_URL.replace(/\/$/, '')
+    const publicUrl = (await readSettings(deps)).publicUrl.replace(/\/$/, '')
     const register = async (connection: ConnectionRow, run: (url: string, secret: string) => Promise<unknown>) => {
       const url = `${publicUrl}/webhooks/${connection.kind}/${connection.id}`
       const secret = String(connection.config.webhookSecret ?? '')

@@ -148,7 +148,18 @@ async function openMissingMergeRequests(context: FinalizeContext, outcomes: Push
           mrState: mr.state,
         })
         .onConflict(['issue_id', 'repo_id'])
-        .merge({ mrId: mr.id, mrIid: mr.iid, mrUrl: mr.url, mrState: mr.state, updatedAt: trx.fn.now() })
+        .merge({
+          mrId: mr.id,
+          mrIid: mr.iid,
+          mrUrl: mr.url,
+          mrState: mr.state,
+          mergeError: null,
+          revertMrIid: null,
+          revertMrUrl: null,
+          revertState: null,
+          revertError: null,
+          updatedAt: trx.fn.now(),
+        })
       await trx('issues').where({ id: issue.id }).update({ updatedAt: trx.fn.now() })
       await emit(trx, run.orgId, { type: 'workflow.event', issueId: issue.id, event: { kind: 'merge_request', event: 'opened', url: mr.url } })
       await emit(trx, run.orgId, {

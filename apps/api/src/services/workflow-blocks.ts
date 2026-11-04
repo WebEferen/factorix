@@ -11,6 +11,7 @@ import { getConnection, notifierFor, trackerFor } from './connections'
 import { recordEcho } from './echo'
 import { advanceIssue } from './pipeline'
 import { mergeRequestsOf } from './repos'
+import { readSettings } from './settings'
 import { changeIssueLabel, moveIssueToStatus, postTrackerComment, upsertIssueMirror } from './tracker-sync'
 
 export const MAX_CREATED_TICKET_DEPTH = 3
@@ -77,7 +78,7 @@ export async function templateValues(
     },
     project: { name: project.name },
     workflow: { name: workflowName },
-    run: { url: `${deps.env.FACTORIX_PUBLIC_URL}/workflows/${run.workflowId}/runs/${run.id}` },
+    run: { url: `${(await readSettings(deps)).publicUrl}/workflows/${run.workflowId}/runs/${run.id}` },
     trigger: run.trigger.event,
     steps: Object.fromEntries(steps.map((step: { nodeId: string; output: unknown }) => [step.nodeId, step.output])),
   }

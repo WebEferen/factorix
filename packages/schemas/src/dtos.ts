@@ -77,6 +77,8 @@ export interface ConnectionDto {
   webhookUrl: string | null
   webhookSecret: string | null
   egressHosts: string[]
+  /** Set when an agent can act through this connection as its own account. */
+  accountRole: 'scm' | 'tracker' | null
   updatedAt: string
 }
 
@@ -96,6 +98,9 @@ export interface MergeRequestDto {
   iid: number
   url: string
   state: string
+  /** Why the factory could not merge it on the last attempt. */
+  error?: string
+  revert?: { state: 'open' | 'merged' | 'failed'; url?: string; error?: string }
 }
 
 export interface ProjectDto {
@@ -243,7 +248,7 @@ export interface RunDto {
 
 export interface ApprovalDto {
   id: string
-  kind: 'plan' | 'tool' | 'question' | 'merge'
+  kind: 'plan' | 'tool' | 'question' | 'merge' | 'partial_merge' | 'revert_blocked'
   status: 'pending' | 'approved' | 'rejected' | 'expired'
   payload: Record<string, unknown>
   runId: string | null
@@ -325,7 +330,11 @@ export type RunStreamMessage =
   | { kind: 'event'; event: RunEvent }
   | { kind: 'state'; run: Pick<RunDto, 'id' | 'state' | 'outcome' | 'result' | 'costUsd' | 'usage' | 'error'> }
 
-export type OrgStreamMessage = { kind: 'issue' | 'run' | 'approval' | 'project' | 'agent' | 'network'; id: string; projectId?: string | null }
+export type OrgStreamMessage = {
+  kind: 'issue' | 'run' | 'approval' | 'project' | 'agent' | 'network' | 'settings'
+  id: string
+  projectId?: string | null
+}
 
 export interface ApiErrorBody {
   error: { code: string; message: string; details?: unknown }

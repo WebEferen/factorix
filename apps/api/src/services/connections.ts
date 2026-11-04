@@ -1,4 +1,4 @@
-import type { NotificationConnector, ScmConnector, TrackerConnector } from '@factorix/connectors'
+import { type NotificationConnector, type ScmConnector, scmServerOf, type TrackerConnector } from '@factorix/connectors'
 import { type ConnectionRow, type Db, json } from '@factorix/db'
 import type { ConnectionInput } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
@@ -32,6 +32,34 @@ export function notifierFor(deps: Pick<AppDeps, 'secrets' | 'connectors'>, conne
 
 export function scmFor(deps: Pick<AppDeps, 'secrets' | 'connectors'>, connection: ConnectionRow): ScmConnector {
   return deps.connectors.scm(connection, requireSecret(deps, connection))
+}
+
+async function ownAccount(db: Db, agentId: string, role: 'scm' | 'tracker'): Promise<ConnectionRow | undefined> {
+  return (await db('connections')
+    .join('agent_connections', 'connections.id', 'agent_connections.connection_id')
+    .where({ 'agent_connections.agent_id': agentId, 'agent_connections.role': role })
+    .select('connections.*')
+    .first()) as ConnectionRow | undefined
+}
+
+/** Git work runs as the agent's own account when it has one. Repository ids only mean something on one server, so an account elsewhere cannot stand in. */
+export async function scmConnectionFor(
+  db: Db,
+  connectionId: string,
+  agentId: string | null | undefined,
+  warn?: (message: string) => void,
+): Promise<ConnectionRow | undefined> {
+  const shared = await db<ConnectionRow>('connections').where({ id: connectionId }).first()
+  const own = agentId ? await ownAccount(db, agentId, 'scm') : undefined
+  if (!shared || !own) return shared
+  if (own.kind === shared.kind && scmServerOf(own.kind, own.config) === scmServerOf(shared.kind, shared.config)) return own
+  warn?.(`${own.name} is on a different server than this project, so this run uses ${shared.name}.`)
+  return shared
+}
+
+export async function trackerConnectionFor(db: Db, orgId: string, connectionId: string, agentId: string | null | undefined): Promise<ConnectionRow> {
+  const own = agentId ? await ownAccount(db, agentId, 'tracker') : undefined
+  return own ?? getConnection(db, orgId, connectionId)
 }
 
 export function encodeSecret(deps: Pick<AppDeps, 'secrets'>, secret: ConnectionInput['secret']): Partial<ConnectionRow> {

@@ -1,6 +1,6 @@
 import type { RuntimeId, RuntimeModelCatalog } from '@factorix/runtime'
 
-export type StepOp = 'mirror-fetch' | 'checkout' | 'bundle' | 'push' | 'diff' | 'docs'
+export type StepOp = 'mirror-fetch' | 'checkout' | 'bundle' | 'push' | 'diff' | 'docs' | 'clear-cache'
 
 export interface Workspace {
   key: string

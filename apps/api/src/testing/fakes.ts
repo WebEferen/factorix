@@ -47,6 +47,9 @@ export class FakeWorld {
   issues = new Map<string, TrackerIssue>()
   labels: TrackerLabel[] = []
   comments: TrackerComment[] = []
+  /** The token behind each comment and each git operation, to prove which account did the work. */
+  commentTokens: (string | undefined)[] = []
+  gitTokens: string[] = []
   stateWrites: { issueId: string; stateId: string }[] = []
   nextNumber = 1
 
@@ -57,6 +60,10 @@ export class FakeWorld {
   approvals: number[] = []
   merges: number[] = []
   webhooksRegistered: string[] = []
+  refuseClose = new Set<number>()
+  refuseRevert = new Set<number>()
+  /** Which merge request each revert undoes. */
+  revertOf = new Map<number, number>()
   ci: CiResult = { status: 'none', failedJobs: [] }
   ciByIid = new Map<number, CiResult>()
   refuseMerge = new Set<number>()
@@ -64,7 +71,7 @@ export class FakeWorld {
   issuePagesRead = 0
   lastListQuery: { closedSince?: string; updatedAfter?: string } | null = null
   failIssueListing: string | null = null
-  private nextIid = 1
+  nextIid = 1
 
   addIssue(partial: Partial<TrackerIssue> & { title: string }): TrackerIssue {
     const number = this.nextNumber++
@@ -123,7 +130,7 @@ export class FakeWorld {
     return { discussionId, noteId }
   }
 
-  tracker(): TrackerConnector {
+  tracker(token?: string): TrackerConnector {
     return {
       kind: 'linear',
       viewer: async () => ({ id: 'u1', name: 'Bot', email: null }),
@@ -183,6 +190,7 @@ export class FakeWorld {
       comment: async (issueId, body) => {
         const comment = { id: `c-${randomUUID().slice(0, 8)}`, issueId, body, authorId: 'u1', authorName: 'Bot', createdAt: new Date().toISOString() }
         this.comments.push(comment)
+        this.commentTokens.push(token)
         return { id: comment.id }
       },
       updateComment: async () => {},
@@ -205,7 +213,10 @@ export class FakeWorld {
       viewer: async () => ({ id: '1', username: 'bot', name: 'Bot' }),
       listRepos: async () => REPOS,
       getRepo: async (id) => repoOf(id),
-      gitAuth: () => ({ token, username: 'oauth2' }),
+      gitAuth: () => {
+        this.gitTokens.push(token)
+        return { token, username: 'oauth2' }
+      },
       findOpenMergeRequest: async (repoId, sourceBranch) =>
         [...this.mrs.values()].find((mr) => mr.sourceBranch === sourceBranch && mr.state === 'opened' && this.mrRepos.get(mr.iid) === repoId) ?? null,
       openMergeRequest: async (input: OpenMergeRequestInput) => {
@@ -222,6 +233,7 @@ export class FakeWorld {
           targetBranch: input.targetBranch,
           sha: 'head-sha',
           hasConflicts: false,
+          mergeBlocker: null,
           diffRefs: { baseSha: 'b', headSha: 'h', startSha: 's' },
         }
         this.mrs.set(iid, mr)
@@ -287,6 +299,17 @@ export class FakeWorld {
         this.merges.push(iid)
         return { merged: true }
       },
+      closeMergeRequest: async (_repoId, iid) => {
+        if (this.refuseClose.has(iid)) throw new Error('close refused')
+        this.mrs.set(iid, { ...mustGet(iid), state: 'closed' })
+      },
+      revertMergeRequest: async (repoId, iid, input) => {
+        if (this.refuseRevert.has(iid)) return { reverted: false, reason: 'revert conflicts' }
+        const target = mustGet(iid).targetBranch
+        const mergeRequest = await this.scm(token).openMergeRequest({ ...input, repoId, sourceBranch: input.branch, targetBranch: target })
+        this.revertOf.set(mergeRequest.iid, iid)
+        return { reverted: true, mergeRequest }
+      },
       registerWebhook: async (_repoId, input) => {
         this.webhooksRegistered.push(input.url)
         return { id: 'h1' }
@@ -320,6 +343,6 @@ export class FakeWorld {
   }
 
   factory(): ConnectorFactory {
-    return { tracker: () => this.tracker(), scm: (_connection, secret) => this.scm(secret), notifier: () => this.notifier() }
+    return { tracker: (_connection, secret) => this.tracker(secret), scm: (_connection, secret) => this.scm(secret), notifier: () => this.notifier() }
   }
 }

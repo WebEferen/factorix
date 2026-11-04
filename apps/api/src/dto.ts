@@ -1,4 +1,4 @@
-import { egressHostsOf } from '@factorix/connectors'
+import { accountRoleOf, egressHostsOf } from '@factorix/connectors'
 import type { RunState } from '@factorix/core'
 import { TERMINAL_RUN_STATES } from '@factorix/core'
 import type {
@@ -85,6 +85,7 @@ export function connectionDto(row: ConnectionRow, publicUrl: string, admin: bool
     webhookUrl: hasWebhook ? `${publicUrl.replace(/\/$/, '')}/webhooks/${row.kind}/${row.id}` : null,
     webhookSecret: hasWebhook && admin ? (webhookSecret ?? null) : null,
     egressHosts: egressHostsOf(row.kind, config),
+    accountRole: accountRoleOf(row.kind),
     updatedAt: new Date(row.updatedAt).toISOString(),
   }
 }
@@ -133,7 +134,10 @@ export function projectDto(row: ProjectRow, repos: ProjectRepoRow[], extra: Part
 
 /** In merge order. Select it wherever a row reaches issueDto, or the merge requests come back empty. */
 export const MERGE_REQUESTS_SQL = `COALESCE((
-  SELECT json_agg(json_build_object('repoPath', mr.repo_path, 'iid', mr.mr_iid, 'url', mr.mr_url, 'state', mr.mr_state) ORDER BY mr.merge_position NULLS LAST, mr_repo.position NULLS LAST, mr.created_at)
+  SELECT json_agg(json_strip_nulls(json_build_object(
+    'repoPath', mr.repo_path, 'iid', mr.mr_iid, 'url', mr.mr_url, 'state', mr.mr_state, 'error', mr.merge_error,
+    'revert', CASE WHEN mr.revert_state IS NULL THEN NULL ELSE json_build_object('state', mr.revert_state, 'url', mr.revert_mr_url, 'error', mr.revert_error) END
+  )) ORDER BY mr.merge_position NULLS LAST, mr_repo.position NULLS LAST, mr.created_at)
   FROM issue_merge_requests mr LEFT JOIN project_repos mr_repo ON mr_repo.id = mr.repo_id
   WHERE mr.issue_id = issues.id
 ), '[]'::json) AS merge_requests`

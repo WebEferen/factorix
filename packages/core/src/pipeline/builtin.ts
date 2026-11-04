@@ -41,7 +41,7 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       onLoopsExceeded: 'await_merge',
       maxAttempts: 2,
       tracker: { onEnter: 'in_review' },
-      on: { 'mr.merged': 'done', 'mr.closed': 'cancel' },
+      on: { 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
       onDone: { 'verdict:approve': 'await_merge', 'verdict:request_changes': 'address', failed: 'await_merge' },
     },
     address: {
@@ -50,7 +50,7 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       phase: 'address_review',
       maxAttempts: 2,
       tracker: { onEnter: 'in_progress' },
-      on: { 'mr.merged': 'done', 'mr.closed': 'cancel' },
+      on: { 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
       onDone: { completed: 'review', no_changes: 'await_merge', failed: 'fail' },
     },
     await_merge: {
@@ -59,18 +59,42 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       if: { autonomy: ['plan_first', 'human_merge'] },
       else: 'auto_merge',
       tracker: { onEnter: 'in_review' },
-      on: { approved: 'auto_merge', 'mr.note.human': 'address', 'mr.merged': 'done', 'mr.closed': 'cancel' },
+      on: { approved: 'auto_merge', 'mr.note.human': 'address', 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
     },
     auto_merge: {
       kind: 'action',
       action: 'scm.merge',
-      on: { merged: 'done', failed: 'merge_blocked', 'mr.merged': 'done', 'mr.closed': 'cancel' },
+      on: {
+        merged: 'done',
+        failed: 'merge_blocked',
+        partial: 'merge_partial',
+        'mr.merged': 'done',
+        'mr.closed': 'cancel',
+        'mr.partial': 'merge_partial',
+      },
     },
     merge_blocked: {
       kind: 'gate',
       approval: 'merge',
       tracker: { onEnter: 'in_review' },
-      on: { approved: 'auto_merge', 'mr.note.human': 'address', 'mr.merged': 'done', 'mr.closed': 'cancel' },
+      on: { approved: 'auto_merge', 'mr.note.human': 'address', 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
+    },
+    // Merges in different repositories cannot land together, so when only some did, a person decides what happens to them.
+    merge_partial: {
+      kind: 'gate',
+      approval: 'partial_merge',
+      tracker: { onEnter: 'in_review' },
+      on: { retry: 'auto_merge', revert: 'revert', keep: 'done', 'mr.merged': 'done' },
+    },
+    revert: {
+      kind: 'action',
+      action: 'scm.revert',
+      on: { blocked: 'revert_blocked', 'mr.reverted': 'cancel' },
+    },
+    revert_blocked: {
+      kind: 'gate',
+      approval: 'revert_blocked',
+      on: { retry: 'revert', keep: 'cancel', 'mr.reverted': 'cancel' },
     },
     task: {
       kind: 'run',

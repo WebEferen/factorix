@@ -2,9 +2,15 @@ import { type ApprovalRow, json, type RunRow } from '@factorix/db'
 import type { DecideApprovalInput } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
-import { conflict, notFound } from '../lib/errors'
+import { badRequest, conflict, notFound } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { advanceIssue } from './pipeline'
+
+/** These gates are not a yes or a no, so the decision has to name a way forward. */
+const CHOICES: Partial<Record<ApprovalRow['kind'], NonNullable<DecideApprovalInput['choice']>[]>> = {
+  partial_merge: ['retry', 'revert', 'keep'],
+  revert_blocked: ['retry', 'keep'],
+}
 
 export async function decideApproval(
   deps: Pick<AppDeps, 'db'>,
@@ -19,13 +25,17 @@ export async function decideApproval(
     const approval = await trx<ApprovalRow>('approvals').where({ id: approvalId, orgId }).forUpdate().first()
     if (!approval) throw notFound('Approval')
     if (approval.status !== 'pending') throw conflict(`This approval was already ${approval.status}`)
+    const choices = CHOICES[approval.kind]
+    if (choices ? input.decision !== 'approved' || !input.choice || !choices.includes(input.choice) : input.choice !== undefined) {
+      throw badRequest(choices ? `Choose one of: ${choices.join(', ')}` : 'This approval takes a yes or a no')
+    }
     await trx('approvals')
       .where({ id: approvalId })
       .update({
         status: input.decision,
         decidedBy: actorId,
         decidedAt: trx.fn.now(),
-        decision: json({ message: input.message, updatedInput: input.updatedInput, via }),
+        decision: json({ message: input.message, updatedInput: input.updatedInput, choice: input.choice, via }),
       })
     await writeAudit(trx, {
       orgId,
@@ -34,7 +44,7 @@ export async function decideApproval(
       action: `approval.${input.decision}`,
       targetType: 'approval',
       targetId: approvalId,
-      metadata: { kind: approval.kind, via, issueId: approval.issueId, runId: approval.runId },
+      metadata: { kind: approval.kind, via, choice: input.choice, issueId: approval.issueId, runId: approval.runId },
     })
     await emit(trx, orgId, { type: 'notify', kind: 'approval', id: approvalId })
 
@@ -62,7 +72,7 @@ export async function decideApproval(
     }
     return approval.issueId
   })
-  if (gateIssueId) await advanceIssue(db, gateIssueId, { type: 'approval.decided', decision: input.decision })
+  if (gateIssueId) await advanceIssue(db, gateIssueId, { type: 'approval.decided', decision: input.decision, choice: input.choice })
 }
 
 export async function expireApprovals(deps: Pick<AppDeps, 'db'>): Promise<number> {

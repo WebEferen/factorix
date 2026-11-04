@@ -223,6 +223,8 @@ export type AdHocRunInput = z.infer<typeof adHocRunInput>
 
 export const decideApprovalInput = z.object({
   decision: z.enum(['approved', 'rejected']),
+  /** Gates with more than two ways forward name the one taken. */
+  choice: z.enum(['retry', 'revert', 'keep']).optional(),
   message: z.string().max(20_000).optional(),
   updatedInput: z.unknown().optional(),
 })

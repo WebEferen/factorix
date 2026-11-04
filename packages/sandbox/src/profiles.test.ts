@@ -37,6 +37,15 @@ describe('credential boundary', () => {
   })
 })
 
+describe('clear-cache', () => {
+  it('runs with no token, no mirror, and no network', () => {
+    expect(STEP_PROFILES['clear-cache']).toEqual({ workspace: 'rw', mirror: 'none', network: 'none', token: false })
+    const config = stepContainerConfig(workspace, { op: 'clear-cache' }, defaults)
+    expect(config.HostConfig?.NetworkMode).toBe('none')
+    expect(config.HostConfig?.Mounts?.map((mount) => mount.Source)).toEqual(['fx-ws-k'])
+  })
+})
+
 describe('catalogContainerConfig', () => {
   it('has no network, no volumes, and no credentials', () => {
     const config = catalogContainerConfig(defaults)

@@ -1,16 +1,17 @@
 import type { TrackerComment, TrackerConnector, TrackerIssue, TrackerLabel, TrackerWebhookEvent } from '@factorix/connectors'
 import { formatTrackerComment, isFactoryTrackerComment, type TrackerStateKey, type WorkflowEvent } from '@factorix/core'
-import { type ApprovalRow, type ConnectionRow, type IssueRow, json, type ProjectRow, type RunRow } from '@factorix/db'
+import { type ApprovalRow, type ConnectionRow, type Db, type IssueRow, json, type ProjectRow, type RunRow } from '@factorix/db'
 import type { Knex } from 'knex'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
 import { emit } from '../lib/outbox'
-import { getConnection, trackerFor } from './connections'
+import { getConnection, trackerConnectionFor, trackerFor } from './connections'
 import { isEcho, recordEcho } from './echo'
 import { advanceIssue } from './pipeline'
 import { isOpenMergeRequest, mergeRequestsOf } from './repos'
+import { readSettings } from './settings'
 
-type Deps = Pick<AppDeps, 'db' | 'secrets' | 'connectors'>
+type Deps = Pick<AppDeps, 'db' | 'env' | 'secrets' | 'connectors'>
 
 const TERMINAL_FACTORY_STATES = ['untracked', 'done', 'failed', 'cancelled']
 
@@ -241,7 +242,6 @@ export async function handleTrackerEvent(deps: Deps, connectionId: string, event
 }
 
 /** Years of finished work would cost a large share of the tracker's rate limit and add nothing to a development queue. */
-export const CLOSED_ISSUE_WINDOW_MS = 90 * 24 * 60 * 60_000
 
 export async function syncProjectIssues(
   deps: Deps,
@@ -262,7 +262,8 @@ export async function syncProjectIssues(
       teamId: project.trackerTeamId,
       projectId: project.trackerProjectId,
       updatedAfter: newest?.toISOString(),
-      closedSince: options.full && !options.allClosed ? new Date(Date.now() - CLOSED_ISSUE_WINDOW_MS).toISOString() : undefined,
+      closedSince:
+        options.full && !options.allClosed ? new Date(Date.now() - (await readSettings(deps)).closedIssueDays * 86_400_000).toISOString() : undefined,
       cursor,
       limit: 50,
     })
@@ -358,6 +359,9 @@ const COMMENT_TEMPLATES: Record<string, (context: { body?: string; step?: string
     run_failed: ({ step, error }) => `The ${step} step failed and needs a person.${error ? `\n\n> ${error}` : ''}`,
     loops_exceeded: ({ step }) => `Stopped after too many ${step} rounds. A person should take it from here.`,
     merge_blocked: ({ body }) => `Could not merge ${body || 'the merge request'}, so it is waiting for a person.`,
+    merge_partial: ({ body }) => `Only part of this change merged. ${body} A person can retry the rest, revert what merged, or keep it, in Factorix.`,
+    merge_reverted: ({ body }) => `Reverted what had merged: ${body}.`,
+    revert_blocked: ({ body }) => `The revert could not finish, so it is waiting for a person: ${body}.`,
     no_agent: ({ body }) => `No active ${body} agent is available for this project, so the work stopped here.`,
     plan_ready: ({ run }) => {
       const plan = run?.structuredOutput as
@@ -369,6 +373,27 @@ const COMMENT_TEMPLATES: Record<string, (context: { body?: string; step?: string
     },
   }
 
+async function mergeRequestLinks(db: Db, issueId: string, template: string): Promise<string | undefined> {
+  if (!['merge_blocked', 'merge_partial', 'merge_reverted', 'revert_blocked'].includes(template)) return undefined
+  const rows = await mergeRequestsOf(db, issueId)
+  const withReason = (url: string, reason: string | null) => (reason ? `${url} (${reason})` : url)
+  const merged = rows.filter((mr) => mr.mrState === 'merged')
+  if (template === 'merge_blocked')
+    return rows
+      .filter(isOpenMergeRequest)
+      .map((mr) => mr.mrUrl)
+      .join(', ')
+  if (template === 'merge_reverted') return rows.flatMap((mr) => mr.revertMrUrl ?? []).join(', ')
+  if (template === 'revert_blocked') {
+    return merged
+      .filter((mr) => mr.revertState !== 'merged')
+      .map((mr) => withReason(mr.revertMrUrl ?? mr.mrUrl, mr.revertError))
+      .join(', ')
+  }
+  const rest = rows.filter((mr) => mr.mrState !== 'merged')
+  return `Merged: ${merged.map((mr) => mr.mrUrl).join(', ')}. Not merged: ${rest.map((mr) => withReason(mr.mrUrl, mr.mergeError)).join(', ')}.`
+}
+
 export async function postTrackerComment(
   deps: Deps,
   payload: { issueId: string; template: string; agentHandle?: string; runId?: string; body?: string; step?: string },
@@ -378,18 +403,12 @@ export async function postTrackerComment(
   if (!issue) return
   const project = await db<ProjectRow>('projects').where({ id: issue.projectId }).first()
   if (!project) return
-  const connection = await getConnection(db, issue.orgId, project.trackerConnectionId)
   const run = payload.runId
     ? await db<RunRow>('runs').where({ id: payload.runId }).first()
     : await db<RunRow>('runs').where({ issueId: issue.id }).orderBy('created_at', 'desc').first()
+  const connection = await trackerConnectionFor(db, issue.orgId, project.trackerConnectionId, run?.agentId)
   const template = COMMENT_TEMPLATES[payload.template]
-  const links =
-    payload.template === 'merge_blocked'
-      ? (await mergeRequestsOf(db, issue.id))
-          .filter(isOpenMergeRequest)
-          .map((mr) => mr.mrUrl)
-          .join(', ')
-      : undefined
+  const links = await mergeRequestLinks(db, issue.id, payload.template)
   const text = template ? template({ body: payload.body ?? links, step: payload.step, issue, run, error: run?.error?.message }) : (payload.body ?? '')
   const handle = payload.agentHandle ?? String((run?.agentSnapshot as { handle?: string } | undefined)?.handle ?? 'factory')
   const body = formatTrackerComment(handle, text, run?.id)

@@ -32,6 +32,9 @@ export async function relayDomainEvents(deps: Pick<AppDeps, 'db' | 'queues' | 'r
         case 'scm.merge':
           await queues.scmAction.add('merge', payload, { jobId })
           break
+        case 'scm.revert':
+          await queues.scmAction.add('revert', payload, { jobId })
+          break
         case 'project.sync':
           await queues.projectSync.add('import', { projectId: payload.projectId }, { jobId })
           break

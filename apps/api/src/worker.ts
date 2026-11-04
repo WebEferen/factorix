@@ -13,7 +13,8 @@ import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from 
 import { advanceIssue } from './services/pipeline'
 import { relayDomainEvents } from './services/relay'
 import { refreshRuntimeModels } from './services/runtime-models'
-import { checkCi, handleScmEvent, mergeIssue, settleCi } from './services/scm-inbound'
+import { checkCi, handleScmEvent, mergeIssue, revertIssue, settleCi } from './services/scm-inbound'
+import { readSettings } from './services/settings'
 import { handleTrackerEvent, importProject, postTrackerComment, setTrackerState } from './services/tracker-sync'
 import { advanceWorkflowRun, executeWorkflowStep, handleWorkflowEvent, sweepWorkflows } from './services/workflows'
 
@@ -21,8 +22,10 @@ const RELAY_INTERVAL_MS = 500
 const RECOVERY_INTERVAL_MS = 30_000
 const WORKFLOW_SWEEP_INTERVAL_MS = 15_000
 const REAP_INTERVAL_MS = 15 * 60_000
+const SETTINGS_INTERVAL_MS = 15_000
 
 export interface WorkerHandle {
+  runConcurrency(): number
   close(): Promise<void>
   /** Test hook that imitates a crash: stops everything without releasing leases or detaching cleanly. */
   crash(): Promise<void>
@@ -87,6 +90,7 @@ export function startWorkers(
         if (job.name === 'ci-check') await checkCi(deps, job.data.issueId)
         else if (job.name === 'ci-timeout') await settleCi(deps, job.data.issueId)
         else if (job.name === 'merge') await mergeIssue(deps, job.data.issueId)
+        else if (job.name === 'revert') await revertIssue(deps, job.data.issueId)
       },
       { ...base, concurrency: 2 },
     ),
@@ -134,9 +138,27 @@ export function startWorkers(
   void recoverRuns(deps).catch((error: Error) => log(`recovery failed: ${error.message}`))
   void resumeStaleImports(deps).catch((error: Error) => log(`import recovery failed: ${error.message}`))
   void refreshRuntimeModels(deps).catch((error: Error) => log(`could not list runtime models: ${error.message}`))
-  const syncTimer = setInterval(
-    () => void deps.queues.maintenance.add('sync', {}, { jobId: `sync-${Math.floor(Date.now() / 60_000)}` }),
-    deps.env.FACTORIX_SYNC_INTERVAL_SECONDS * 1000,
+  const queueSync = () => void deps.queues.maintenance.add('sync', {}, { jobId: `sync-${Math.floor(Date.now() / 30_000)}` })
+  let syncSeconds = deps.env.FACTORIX_SYNC_INTERVAL_SECONDS
+  let syncTimer = setInterval(queueSync, syncSeconds * 1000)
+  const runWorker = workers[0] as Worker
+  const applySettings = async () => {
+    const settings = await readSettings(deps)
+    if (runWorker.concurrency !== settings.runConcurrency) {
+      runWorker.concurrency = settings.runConcurrency
+      log(`running up to ${settings.runConcurrency} agents at once`)
+    }
+    if (syncSeconds !== settings.syncIntervalSeconds) {
+      clearInterval(syncTimer)
+      syncSeconds = settings.syncIntervalSeconds
+      syncTimer = setInterval(queueSync, syncSeconds * 1000)
+      log(`syncing every ${syncSeconds} seconds`)
+    }
+  }
+  void applySettings().catch((error: Error) => log(`could not read settings: ${error.message}`))
+  const settingsTimer = setInterval(
+    () => void applySettings().catch((error: Error) => log(`could not read settings: ${error.message}`)),
+    deps.timings?.settingsMs ?? SETTINGS_INTERVAL_MS,
   )
   const reapTimer = setInterval(
     () => void deps.queues.maintenance.add('reap', {}, { jobId: `reap-${Math.floor(Date.now() / 60_000)}` }),
@@ -154,8 +176,10 @@ export function startWorkers(
     clearInterval(recoveryTimer)
     clearInterval(syncTimer)
     clearInterval(reapTimer)
+    clearInterval(settingsTimer)
   }
   return {
+    runConcurrency: () => runWorker.concurrency,
     async close() {
       stopTimers()
       await releaseActiveRuns()

@@ -6,18 +6,25 @@ import { accountDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { createSession, hashPassword, passwordProvider, requireAdmin, requireAuth, SESSION_COOKIE, setSessionCookie } from '../lib/auth'
 import { conflict, HttpError, isUniqueViolation, parseBody } from '../lib/errors'
+import { readSettings } from '../services/settings'
 import { bootstrapOrg, isSetUp } from '../services/setup'
 
 export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
-  const { db, env } = deps
+  const { db } = deps
 
   const login = async (
     account: AccountRow,
     request: { ip: string; headers: Record<string, unknown> },
     reply: Parameters<typeof setSessionCookie>[0],
   ) => {
-    const { token, expiresAt } = await createSession(db, account, { ip: request.ip, userAgent: request.headers['user-agent'] as string | undefined })
-    setSessionCookie(reply, token, expiresAt, env.COOKIE_SECURE)
+    const settings = await readSettings(deps)
+    const { token, expiresAt } = await createSession(
+      db,
+      account,
+      { ip: request.ip, userAgent: request.headers['user-agent'] as string | undefined },
+      settings.sessionDays,
+    )
+    setSessionCookie(reply, token, expiresAt, settings.cookieSecure)
   }
 
   app.get('/api/auth/status', async () => ({ setUp: await isSetUp(db) }))

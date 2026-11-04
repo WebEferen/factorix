@@ -1,3 +1,4 @@
+import { accountRoleOf } from '@factorix/connectors'
 import { policyErrorsForRuntime } from '@factorix/core'
 import { type AccountRow, type AgentRow, type Db, json, type SkillRow } from '@factorix/db'
 import { RUNTIME_CAPABILITIES, type RuntimeId } from '@factorix/runtime'
@@ -7,6 +8,7 @@ import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
 import { badRequest, conflict, isUniqueViolation, notFound } from '../lib/errors'
 import { emit } from '../lib/outbox'
+import { readSettings } from './settings'
 
 type AgentJoined = AgentRow &
   Pick<AccountRow, 'handle' | 'displayName' | 'status'> & { archetypeName: string; archetypeRole: 'engineer' | 'reviewer' | 'other' }
@@ -70,9 +72,9 @@ export function agentDto(row: AgentJoined, skillIds: string[], connectionIds: st
   }
 }
 
-async function validateRuntime(deps: Pick<AppDeps, 'env'>, input: AgentInput): Promise<void> {
-  if (input.runtime === 'scripted' && !deps.env.FACTORIX_ALLOW_SCRIPTED_RUNTIME)
-    throw badRequest('The scripted runtime is disabled. Set FACTORIX_ALLOW_SCRIPTED_RUNTIME=true to use it.')
+async function validateRuntime(deps: Pick<AppDeps, 'db' | 'env'>, input: AgentInput): Promise<void> {
+  if (input.runtime === 'scripted' && !(await readSettings(deps)).allowScriptedRuntime)
+    throw badRequest('The scripted runtime is off. Turn it on under Settings, General.')
   const capabilities = RUNTIME_CAPABILITIES[input.runtime as RuntimeId]
   const problems = policyErrorsForRuntime({ ...input.policy }, input.runtime as RuntimeId, capabilities.toolApproval)
   if (problems[0]) throw badRequest(problems[0])
@@ -101,7 +103,13 @@ async function linkRelations(trx: Knex.Transaction, orgId: string, agentId: stri
   if (input.connectionIds.length > 0) {
     const connections = await trx('connections').where({ orgId }).whereIn('id', input.connectionIds).select('id', 'kind')
     if (connections.length !== new Set(input.connectionIds).size) throw badRequest('One of the connections does not exist')
-    const roleFor = (kind: string) => (kind === 'anthropic' || kind === 'openai' ? 'model' : kind.startsWith('mcp') ? 'mcp' : 'tool')
+    const roleFor = (kind: string) =>
+      accountRoleOf(kind) ?? (kind === 'anthropic' || kind === 'openai' ? 'model' : kind.startsWith('mcp') ? 'mcp' : 'tool')
+    for (const role of ['scm', 'tracker'] as const) {
+      if (connections.filter((connection: { kind: string }) => accountRoleOf(connection.kind) === role).length > 1) {
+        throw badRequest(role === 'scm' ? 'An agent can have one git account.' : 'An agent can have one tracker account.')
+      }
+    }
     await trx('agent_connections').insert(
       connections.map((connection: { id: string; kind: string }) => ({ agentId, connectionId: connection.id, role: roleFor(connection.kind) })),
     )

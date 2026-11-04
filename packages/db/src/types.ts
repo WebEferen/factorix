@@ -283,7 +283,7 @@ export interface ApprovalRow {
   runId: string | null
   issueId: string | null
   runnerApprovalId: string | null
-  kind: 'plan' | 'tool' | 'question' | 'merge'
+  kind: 'plan' | 'tool' | 'question' | 'merge' | 'partial_merge' | 'revert_blocked'
   status: 'pending' | 'approved' | 'rejected' | 'expired'
   payload: Record<string, unknown>
   requestedAt: Date
@@ -396,6 +396,11 @@ export interface IssueMergeRequestRow {
   mergePosition: number | null
   createdAt: Date
   updatedAt: Date
+  mergeError: string | null
+  revertMrIid: number | null
+  revertMrUrl: string | null
+  revertState: 'open' | 'merged' | 'failed' | null
+  revertError: string | null
 }
 
 export interface MrDiscussionRow {

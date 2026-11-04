@@ -19,6 +19,7 @@ const MODES = [
 ]
 
 const DEFAULT_CHOICE = 'default'
+const PROJECT_ACCOUNT = 'project'
 const EFFORTS = [DEFAULT_CHOICE, 'low', 'medium', 'high', 'xhigh', 'max']
 
 function linesOf(text: string): string[] {
@@ -95,6 +96,19 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
   const canAsk = capabilities?.toolApproval === 'per_call'
   const attachable =
     connections?.connections.filter((connection) => ['mcp_stdio', 'mcp_http', 'generic', 'anthropic', 'openai'].includes(connection.kind)) ?? []
+
+  const accountsOf = (role: 'scm' | 'tracker') => connections?.connections.filter((connection) => connection.accountRole === role) ?? []
+  const accountChoice = (role: 'scm' | 'tracker') =>
+    form.connectionIds.find((id) => accountsOf(role).some((connection) => connection.id === id)) ?? PROJECT_ACCOUNT
+  const chooseAccount = (role: 'scm' | 'tracker', id: string) =>
+    set('connectionIds', [
+      ...form.connectionIds.filter((value) => !accountsOf(role).some((connection) => connection.id === value)),
+      ...(id === PROJECT_ACCOUNT ? [] : [id]),
+    ])
+  const accountOptions = (role: 'scm' | 'tracker') => [
+    { value: PROJECT_ACCOUNT, label: 'The project’s account' },
+    ...accountsOf(role).map((connection) => ({ value: connection.id, label: connection.name })),
+  ]
 
   const toggleIn = (key: 'skillIds' | 'connectionIds', id: string, on: boolean) =>
     set(key, on ? [...form[key], id] : form[key].filter((value) => value !== id))
@@ -292,6 +306,30 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
               hint={connection.agentVisible ? 'Its secrets are visible to the agent.' : connection.kind}
             />
           ))}
+        </section>
+      ) : null}
+
+      {connections ? (
+        <section className="flex flex-col gap-3 border-t border-divider pt-5">
+          <div>
+            <h2 className="text-sm font-semibold">Accounts</h2>
+            <p className="mt-0.5 text-xs text-ink-2">
+              Agents share the project’s accounts unless you pick one here. To give this agent its own, add a connection for it under{' '}
+              <Link href="/settings/connections" className="text-link hover:underline">
+                Settings, Connections
+              </Link>
+              .
+            </p>
+          </div>
+          <Field
+            label="Git account"
+            hint="Its commits, merge requests, and reviews. Merges still use the project’s account. The token never enters the agent’s container."
+          >
+            <Select value={accountChoice('scm')} onChange={(id) => chooseAccount('scm', id)} options={accountOptions('scm')} />
+          </Field>
+          <Field label="Tracker account" hint="Its comments on tickets. Moving a ticket between statuses still uses the project’s account.">
+            <Select value={accountChoice('tracker')} onChange={(id) => chooseAccount('tracker', id)} options={accountOptions('tracker')} />
+          </Field>
         </section>
       ) : null}
 

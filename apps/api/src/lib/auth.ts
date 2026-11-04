@@ -5,7 +5,6 @@ import { randomToken, sha256 } from './crypto'
 import { HttpError } from './errors'
 
 export const SESSION_COOKIE = 'fx_session'
-const SESSION_DAYS = 30
 const SLIDE_AFTER_MS = 3_600_000
 
 export interface AuthContext {
@@ -38,9 +37,10 @@ export async function createSession(
   db: Db,
   account: Pick<AccountRow, 'id' | 'orgId'>,
   meta: { ip?: string; userAgent?: string },
+  sessionDays: number,
 ): Promise<{ token: string; expiresAt: Date }> {
   const token = randomToken()
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86_400_000)
+  const expiresAt = new Date(Date.now() + sessionDays * 86_400_000)
   await db('auth_sessions').insert({
     orgId: account.orgId,
     accountId: account.id,
@@ -52,7 +52,7 @@ export async function createSession(
   return { token, expiresAt }
 }
 
-export async function loadSession(db: Db, token: string): Promise<AuthContext | null> {
+export async function loadSession(db: Db, token: string, sessionDays: () => Promise<number>): Promise<AuthContext | null> {
   const row = await db('auth_sessions')
     .where({ tokenHash: sha256(token) })
     .andWhere('expires_at', '>', db.fn.now())
@@ -63,7 +63,7 @@ export async function loadSession(db: Db, token: string): Promise<AuthContext | 
   if (Date.now() - new Date(row.lastSeenAt).getTime() > SLIDE_AFTER_MS) {
     await db('auth_sessions')
       .where({ id: row.id })
-      .update({ lastSeenAt: db.fn.now(), expiresAt: new Date(Date.now() + SESSION_DAYS * 86_400_000) })
+      .update({ lastSeenAt: db.fn.now(), expiresAt: new Date(Date.now() + (await sessionDays()) * 86_400_000) })
   }
   return { account, sessionId: row.id }
 }

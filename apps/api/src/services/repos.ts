@@ -1,5 +1,5 @@
 import { type Db, type IssueMergeRequestRow, json, type ProjectRepoRow, type ProjectRow } from '@factorix/db'
-import type { ProjectRepoInput } from '@factorix/schemas'
+import type { MergeRequestDto, ProjectRepoInput } from '@factorix/schemas'
 import type { Knex } from 'knex'
 import { conflict } from '../lib/errors'
 
@@ -15,6 +15,22 @@ export const FINISHED_MR_STATES = ['merged', 'closed']
 
 export function isOpenMergeRequest(mr: Pick<IssueMergeRequestRow, 'mrState'>): boolean {
   return !FINISHED_MR_STATES.includes(mr.mrState)
+}
+
+/** The same shape the issue queries build, for approvals that show a chain as it stood. */
+export function mergeRequestSnapshot(mr: IssueMergeRequestRow): MergeRequestDto {
+  return {
+    repoPath: mr.repoPath,
+    iid: mr.mrIid,
+    url: mr.mrUrl,
+    state: mr.mrState,
+    ...(mr.mergeError ? { error: mr.mergeError } : {}),
+    ...(mr.revertState
+      ? {
+          revert: { state: mr.revertState, ...(mr.revertMrUrl ? { url: mr.revertMrUrl } : {}), ...(mr.revertError ? { error: mr.revertError } : {}) },
+        }
+      : {}),
+  }
 }
 
 /**

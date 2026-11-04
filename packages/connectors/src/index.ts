@@ -22,6 +22,16 @@ export function egressHostsOf(kind: string, config: Record<string, unknown>): st
   return source?.egressHosts(config) ?? []
 }
 
+export function scmServerOf(kind: string, config: Record<string, unknown>): string | null {
+  return SCM_SOURCES[kind as keyof typeof SCM_SOURCES]?.server(config) ?? null
+}
+
+/** Connections an agent can use as its own account, instead of the one its project shares. */
+export function accountRoleOf(kind: string): 'scm' | 'tracker' | null {
+  if (Object.hasOwn(SCM_SOURCES, kind)) return 'scm'
+  return Object.hasOwn(TRACKER_SOURCES, kind) ? 'tracker' : null
+}
+
 export * from './notifier'
 export * from './slack/client'
 export * from './slack/markup'

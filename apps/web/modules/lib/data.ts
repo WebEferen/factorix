@@ -13,6 +13,7 @@ import type {
   MeDto,
   NetworkSettings,
   NotificationChannelDto,
+  PlatformSettingDto,
   ProjectDto,
   RunDto,
   RuntimeDto,
@@ -75,6 +76,10 @@ export function useArchetypes() {
 
 export function useSkills() {
   return useApi<{ skills: SkillDto[] }>('/api/skills')
+}
+
+export function useGeneralSettings() {
+  return useApi<{ settings: PlatformSettingDto[] }>('/api/settings/general')
 }
 
 export function useNetworkSettings() {

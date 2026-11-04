@@ -9,12 +9,13 @@ export type DomainEvent =
   | { type: 'tracker.comment'; issueId: string; template: string; agentHandle?: string; runId?: string; body?: string; step?: string }
   | { type: 'scm.ci_check'; issueId: string }
   | { type: 'scm.merge'; issueId: string; autonomy?: Autonomy; decidedBy?: string | null }
+  | { type: 'scm.revert'; issueId: string }
   | { type: 'run.ping'; runId: string }
   | { type: 'project.sync'; projectId: string }
   | { type: 'workflow.event'; issueId: string; event: WorkflowEvent }
   | { type: 'workflow.advance'; runId: string }
   | { type: 'workflow.step'; runId: string; nodeId: string }
-  | { type: 'notify'; kind: 'issue' | 'run' | 'approval' | 'project' | 'agent' | 'network'; id: string; projectId?: string | null }
+  | { type: 'notify'; kind: 'issue' | 'run' | 'approval' | 'project' | 'agent' | 'network' | 'settings'; id: string; projectId?: string | null }
 
 export type DomainEventType = DomainEvent['type']
 

@@ -3,6 +3,7 @@ import {
   advance,
   agentResultOf,
   canTransitionIssue,
+  type GateKind,
   type PipelineAction,
   type PipelineDefinition,
   type PipelineEvent,
@@ -12,7 +13,7 @@ import type { Knex } from 'knex'
 import { writeAudit } from '../lib/audit'
 import { emit } from '../lib/outbox'
 import { agentRole, buildAgentSnapshot } from './agents'
-import { mergeRequestsOf } from './repos'
+import { mergeRequestSnapshot, mergeRequestsOf } from './repos'
 
 type Trx = Knex.Transaction
 
@@ -77,7 +78,7 @@ async function applyAction(trx: Trx, issue: IssueRow, project: ProjectRow, actio
     case 'closePendingApprovals':
       await trx('approvals')
         .where({ issueId: issue.id, status: 'pending' })
-        .whereIn('kind', ['plan', 'merge'])
+        .whereIn('kind', ['plan', 'merge', 'partial_merge', 'revert_blocked'])
         .update({ status: 'expired', decidedAt: trx.fn.now() })
       return
     case 'cancelActiveRun':
@@ -91,6 +92,9 @@ async function applyAction(trx: Trx, issue: IssueRow, project: ProjectRow, actio
       return
     case 'scmMerge':
       await emit(trx, issue.orgId, { type: 'scm.merge', issueId: issue.id })
+      return
+    case 'scmRevert':
+      await emit(trx, issue.orgId, { type: 'scm.revert', issueId: issue.id })
       return
   }
 }
@@ -176,7 +180,7 @@ export async function releaseIssueLock(trx: Trx, issueId: string, runId: string)
   await emit(trx, next.orgId, { type: 'run.enqueue', runId: next.id })
 }
 
-async function createGateApproval(trx: Trx, issue: IssueRow, kind: 'plan' | 'merge', timeoutMinutes: number | undefined): Promise<void> {
+async function createGateApproval(trx: Trx, issue: IssueRow, kind: GateKind, timeoutMinutes: number | undefined): Promise<void> {
   const payload: Record<string, unknown> = {}
   let runId: string | null = null
   if (kind === 'plan') {
@@ -184,12 +188,7 @@ async function createGateApproval(trx: Trx, issue: IssueRow, kind: 'plan' | 'mer
     payload.plan = planRun?.structuredOutput ?? null
     runId = planRun?.id ?? null
   } else {
-    payload.mergeRequests = (await mergeRequestsOf(trx, issue.id)).map((mr) => ({
-      repoPath: mr.repoPath,
-      iid: mr.mrIid,
-      url: mr.mrUrl,
-      state: mr.mrState,
-    }))
+    payload.mergeRequests = (await mergeRequestsOf(trx, issue.id)).map(mergeRequestSnapshot)
   }
   const expiresAt = timeoutMinutes ? new Date(Date.now() + timeoutMinutes * 60_000) : null
   const [approval] = await trx('approvals')

@@ -21,6 +21,7 @@ export const STEP_PROFILES: Record<StepOp, StepProfile> = {
   push: { workspace: 'ro', mirror: 'rw', network: 'step', token: true },
   diff: { workspace: 'ro', mirror: 'none', network: 'none', token: false },
   docs: { workspace: 'ro', mirror: 'none', network: 'none', token: false },
+  'clear-cache': { workspace: 'rw', mirror: 'none', network: 'none', token: false },
 }
 
 export const DEFAULT_LIMITS: ResourceLimits = { memoryBytes: 4 * 1024 ** 3, cpus: 2, pids: 1024 }

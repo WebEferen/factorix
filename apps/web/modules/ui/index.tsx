@@ -549,7 +549,7 @@ export function Toggle({
   checked: boolean
   onChange: (checked: boolean) => void
   label: string
-  hint?: string
+  hint?: ReactNode
   disabled?: boolean
 }) {
   return (

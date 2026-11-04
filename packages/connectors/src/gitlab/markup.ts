@@ -60,6 +60,13 @@ export const gitlabMarkup: SourceMarkup = {
 
 export const gitlabSource: ScmSource = {
   markup: gitlabMarkup,
+  server: (config) => {
+    try {
+      return new URL(String(config.host || 'https://gitlab.com')).origin
+    } catch {
+      return null
+    }
+  },
   egressHosts: (config) => {
     try {
       return [new URL(String(config.host || 'https://gitlab.com')).hostname]

@@ -172,6 +172,92 @@ describe('GitlabConnector against a stub REST server', () => {
     expect(failed.failedJobs[0]).toMatchObject({ name: 'test', stage: 'test', webUrl: 'j' })
   })
 
+  it('says in words why the server would refuse a merge, and stays quiet while it is still deciding', async () => {
+    const blocker = async (fields: Record<string, unknown>) => {
+      route({ 'GET /api/v4/projects/42/merge_requests/7': { ...rawMr, ...fields } })
+      return (await gitlab.getMergeRequest('42', 7)).mergeBlocker
+    }
+    expect(await blocker({ detailed_merge_status: 'mergeable' })).toBeNull()
+    expect(await blocker({ detailed_merge_status: 'checking' })).toBeNull()
+    expect(await blocker({ detailed_merge_status: 'blocked_status' })).toBeNull()
+    expect(await blocker({ detailed_merge_status: 'conflict' })).toBe('it has merge conflicts')
+    expect(await blocker({ detailed_merge_status: 'not_approved' })).toBe('it still needs approval')
+    expect(await blocker({ detailed_merge_status: 'some_new_status' })).toBe('some new status')
+    expect(await blocker({ has_conflicts: true })).toBe('it has merge conflicts')
+    expect(await blocker({ draft: true })).toBe('it is a draft')
+    expect(await blocker({})).toBeNull()
+    expect(await blocker({ state: 'merged', detailed_merge_status: 'not_open' })).toBeNull()
+  })
+
+  it('closes a merge request', async () => {
+    route({ 'PUT /api/v4/projects/42/merge_requests/7': rawMr })
+    await gitlab.closeMergeRequest('42', 7)
+    expect(last()?.rawBody).toContain('close')
+  })
+
+  describe('reverting a merge request', () => {
+    const input = { branch: 'factorix/revert-7-x', title: 'ABC-1: revert !7', description: 'why' }
+    const merged = { ...rawMr, state: 'merged' }
+    const revertRoutes = (show: unknown) => ({
+      'GET /api/v4/projects/42/merge_requests/7': show,
+      'POST /api/v4/projects/42/repository/branches': { name: input.branch },
+      'POST /api/v4/projects/42/merge_requests': { ...rawMr, iid: 8, source_branch: input.branch },
+    })
+    const paths = () => stub.requests.slice(-4).map((request) => `${request.method} ${request.path}`)
+
+    it('reverts the merge commit on a new branch off the target and opens a merge request for it', async () => {
+      route({
+        ...revertRoutes({ ...merged, merge_commit_sha: 'merge-sha', squash_commit_sha: 'squash-sha' }),
+        'POST /api/v4/projects/42/repository/commits/merge-sha/revert': { id: 'r' },
+      })
+      const result = await gitlab.revertMergeRequest('42', 7, input)
+      expect(result).toMatchObject({ reverted: true, mergeRequest: { iid: 8 } })
+      expect(paths()).toEqual([
+        'GET /api/v4/projects/42/merge_requests/7',
+        'POST /api/v4/projects/42/repository/branches',
+        'POST /api/v4/projects/42/repository/commits/merge-sha/revert',
+        'POST /api/v4/projects/42/merge_requests',
+      ])
+    })
+
+    it('reverts the squash commit when a fast-forward left no merge commit', async () => {
+      route({
+        ...revertRoutes({ ...merged, merge_commit_sha: null, squash_commit_sha: 'squash-sha' }),
+        'POST /api/v4/projects/42/repository/commits/squash-sha/revert': { id: 'r' },
+      })
+      expect((await gitlab.revertMergeRequest('42', 7, input)).reverted).toBe(true)
+    })
+
+    it('reverts the only commit of a plain fast-forward, and refuses when there are several', async () => {
+      const show = { ...merged, merge_commit_sha: null, squash_commit_sha: null, sha: 'head-sha' }
+      route({
+        ...revertRoutes(show),
+        'GET /api/v4/projects/42/merge_requests/7/commits': [{ id: 'head-sha' }],
+        'POST /api/v4/projects/42/repository/commits/head-sha/revert': { id: 'r' },
+      })
+      expect((await gitlab.revertMergeRequest('42', 7, input)).reverted).toBe(true)
+
+      route({ ...revertRoutes(show), 'GET /api/v4/projects/42/merge_requests/7/commits': [{ id: 'a' }, { id: 'b' }] })
+      const before = stub.requests.length
+      expect(await gitlab.revertMergeRequest('42', 7, input)).toEqual({ reverted: false, reason: expect.stringContaining('single commit') })
+      expect(stub.requests.slice(before).some((request) => request.path.endsWith('/branches'))).toBe(false)
+    })
+
+    it('reports a conflict and removes the branch it made', async () => {
+      stub.handle((request) => {
+        if (request.method === 'GET') return { body: { ...merged, merge_commit_sha: 'merge-sha' } }
+        if (request.path.endsWith('/repository/branches')) return { body: { name: input.branch } }
+        if (request.path.endsWith('/revert')) return { status: 400, body: { message: 'Sorry, we cannot revert this commit automatically.' } }
+        if (request.method === 'DELETE') return { status: 204, body: '' }
+        return undefined
+      })
+      const result = await gitlab.revertMergeRequest('42', 7, input)
+      expect(result.reverted).toBe(false)
+      expect(stub.requests.at(-1)).toMatchObject({ method: 'DELETE' })
+      expect(stub.requests.at(-1)?.path).toContain('/repository/branches/')
+    })
+  })
+
   it('merges with the expected sha and reports refusals instead of throwing', async () => {
     route({ 'PUT /api/v4/projects/42/merge_requests/7/merge': { ...rawMr, state: 'merged' } })
     expect(await gitlab.merge('42', 7, { sha: 'abc', squash: true })).toEqual({ merged: true, reason: undefined })

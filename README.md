@@ -4,7 +4,7 @@
 
 <p align="center">The agentic software factory.</p>
 
-Factorix gives AI agents accounts, skills, and connections, then lets them take a ticket from assignment to a reviewed merge request. Linear stays the tracker and GitLab stays the source. Every agent action is attributed and audited, and a person decides how much each project can do alone.
+Factorix gives AI agents accounts, skills, and connections, then lets them take a ticket from assignment to a reviewed merge request. Trackers and code hosts plug in through an open contract, and your tracker and your repositories stay the source of truth. Every agent action is attributed and audited, and a person decides how much each project can do alone.
 
 ```mermaid
 flowchart LR
@@ -20,16 +20,30 @@ flowchart LR
 
 ## What it does
 
-- **Mirrors Linear.** Each project follows a Linear team or project. Open issues import in the background, along with issues closed in the last 90 days. Text renders with that source's own formatting, references, and media.
+- **Open to any source.** Trackers and code hosts connect through an open contract for connectors, and Linear and GitLab ship with it. A project follows a team or project in the tracker. Open issues import in the background, along with recently closed ones, and text renders with that source's own formatting, references, and media.
 - **Runs agents in sandboxes.** Claude and Codex run through their SDKs in throwaway Docker containers, with skills, archetypes, and per-project network rules.
-- **Works across repositories.** A project sets which GitLab repositories agents may change. Each ticket changes only the ones it needs, with one merge request per repository, and the agent decides the merge order for that ticket.
+- **Works across repositories.** A project sets which GitLab repositories agents may change. Each ticket changes only the ones it needs, with one merge request per repository, and the agent decides the merge order for that ticket. Merging checks every merge request first and stops at the first one that cannot land. A person then retries the rest, reverts what merged, or keeps it.
+- **Gives agents their own accounts, or one shared account.** Each agent can use its own GitLab and Linear connection, or the project's. You choose per agent.
+- **Cleans up after itself.** Package caches go when a run ends and a workspace goes when its issue finishes, so disk use follows open work.
 - **Closes the loop.** An engineer agent implements, a reviewer agent reviews, and review comments go back to the engineer. Plans and merges can wait for a person.
 - **Automates with workflows.** Build flows from blocks on a canvas: branch, wait for events, hand work to agents, create tickets, and post to Slack. Run them on tickets by hand or let ticket events start them.
 - **Keeps a record.** Runs stream live with full tool calls, spend is tracked per agent and project, and the audit log is append-only at the database level.
 
 ## Quick start
 
-Docker is the only requirement.
+One command installs what is missing and starts everything:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash
+```
+
+From a checkout, run `./install.sh` instead. It installs Docker if needed, creates `.env` with a generated secret key, builds the images, and starts the stack. Running it again is safe and keeps your `.env`.
+
+- On Linux it uses Docker's official script and asks for `sudo`.
+- On macOS it uses Homebrew. Docker Desktop asks you to accept its terms the first time it opens. Without Homebrew, the script points you to the download.
+- Outside a checkout it downloads Factorix to `~/factorix`, or to `FACTORIX_DIR` if you set it.
+
+To do it by hand, with Docker already running:
 
 ```sh
 cp .env.example .env
@@ -38,7 +52,7 @@ docker compose --profile build-only build
 docker compose up -d --wait
 ```
 
-Open http://localhost:4101 and create the first admin account. To try the whole flow without a model key, set `FACTORIX_ALLOW_SCRIPTED_RUNTIME=true` and switch an agent's runtime to Scripted.
+Open http://localhost:4101 and create the first admin account. To try the whole flow without a model key, turn on Allow the scripted runtime under Settings, General, and switch an agent's runtime to Scripted.
 
 ### Connect your accounts
 
@@ -48,6 +62,14 @@ Open http://localhost:4101 and create the first admin account. To try the whole 
 4. Under Projects, create a project. The wizard joins a Linear team or project to one or more GitLab repositories.
 
 Linear and GitLab can only deliver webhooks to a public URL. Set `FACTORIX_PUBLIC_URL` to one, such as a tunnel, or rely on polling, which catches up every five minutes.
+
+### Choose whose accounts agents use
+
+By default every agent shares the project's Linear and GitLab accounts, told apart by comment prefixes, commit trailers, and the audit log. That is one account to pay for.
+
+To give an agent its own, add another connection under Settings, Connections, then pick it under Accounts on the agent. Its commits, merge requests, reviews, and comments then use that account. It needs access to the project's repositories, and a GitLab account on another server is ignored with a warning in the run log. Merges, webhooks, polling, and status changes stay on the project's account.
+
+GitLab may refuse a bot's approval of a merge request the same account opened, and the verdict still counts. A separate account for the reviewer avoids that.
 
 ### Give an agent work
 
@@ -64,19 +86,35 @@ Linear and GitLab can only deliver webhooks to a public URL. Set `FACTORIX_PUBLI
 
 ## Configuration
 
-Set these in `.env`. Compose fills in the rest of the wiring.
+The environment sets the defaults, and admins can override most of them under Settings, General without a restart. Use the default on that page clears an override.
 
-| Variable                              | Default                     | Purpose                                                                                                                |
-| ------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `FACTORIX_SECRET_KEY`                 | required                    | Encrypts stored connection secrets. Losing it makes them unreadable.                                                   |
-| `FACTORIX_PUBLIC_URL`                 | `http://localhost:4101`     | The address browsers and webhooks use. Baked into the web image for link previews, so rebuild `web` after changing it. |
-| `COOKIE_SECURE`                       | `false`                     | Set to `true` behind TLS.                                                                                              |
-| `FACTORIX_WEB_BIND`                   | `127.0.0.1`                 | The address port 4101 binds to.                                                                                        |
-| `FACTORIX_ALLOW_SCRIPTED_RUNTIME`     | `false`                     | Allows a stand-in for the model. Keep it off in production.                                                            |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | none                        | Fallback model keys. A connection under Settings takes priority.                                                       |
-| `FACTORIX_RUN_CONCURRENCY`            | `3`                         | Runs one worker executes at a time.                                                                                    |
-| `FACTORIX_SYNC_INTERVAL_SECONDS`      | `300`                       | How often polling catches up with Linear and GitLab.                                                                   |
-| `FACTORIX_SANDBOX_IMAGE`              | `factorix/sandbox-base:dev` | The image agents and git steps run in.                                                                                 |
+These can be set in both places:
+
+| Variable                            | Default                 | Purpose                                                                                                                     |
+| ----------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `FACTORIX_RUN_CONCURRENCY`          | `3`                     | Agents running at once, per worker.                                                                                         |
+| `FACTORIX_ALLOW_SCRIPTED_RUNTIME`   | `false`                 | Allows a stand-in for the model. Keep it off in production.                                                                 |
+| `FACTORIX_SYNC_INTERVAL_SECONDS`    | `300`                   | How often polling catches up with the tracker and the code host.                                                            |
+| `FACTORIX_CLOSED_ISSUE_DAYS`        | `90`                    | How far back an import reaches for closed issues.                                                                           |
+| `FACTORIX_NOTE_DEBOUNCE_MINUTES`    | `3`                     | Review comments in this window become one round of changes.                                                                 |
+| `FACTORIX_CI_WAIT_MINUTES`          | `30`                    | The longest the reviewer waits for CI.                                                                                      |
+| `FACTORIX_CLEAR_RUN_CACHE`          | `true`                  | Deletes package caches from a workspace when a run ends.                                                                    |
+| `FACTORIX_FINISHED_WORKSPACE_HOURS` | `0`                     | How long a done or cancelled issue keeps its workspace. Cleanup runs every 15 minutes.                                      |
+| `FACTORIX_FAILED_WORKSPACE_DAYS`    | `7`                     | How long a failed issue keeps its workspace, which can hold unpushed work.                                                  |
+| `FACTORIX_OPEN_WORKSPACE_DAYS`      | `30`                    | How long an open issue with no runs keeps its workspace.                                                                    |
+| `FACTORIX_FAILED_CONTAINER_HOURS`   | `1`                     | How long a failed agent's container stays for inspection.                                                                   |
+| `FACTORIX_PUBLIC_URL`               | `http://localhost:4101` | The address browsers and webhooks use. Link previews keep the one `web` was built with, so rebuild `web` after changing it. |
+| `COOKIE_SECURE`                     | `false`                 | HTTPS-only sign-in cookies. Needs an https public URL.                                                                      |
+| `FACTORIX_SESSION_DAYS`             | `30`                    | How long a sign-in lasts.                                                                                                   |
+
+These are set only in the environment:
+
+| Variable                              | Default                     | Purpose                                                                                                 |
+| ------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `FACTORIX_SECRET_KEY`                 | required                    | Encrypts stored connection secrets. Losing it makes them unreadable.                                    |
+| `FACTORIX_WEB_BIND`                   | `127.0.0.1`                 | The address port 4101 binds to.                                                                         |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | none                        | Fallback model keys. A connection under Settings takes priority.                                        |
+| `FACTORIX_SANDBOX_IMAGE`              | `factorix/sandbox-base:dev` | The image agents and git steps run in. It stays out of the web UI because the git steps hold the token. |
 
 Compose sets `DATABASE_URL`, `REDIS_URL`, `PORT`, `HOST`, `FACTORIX_STEP_NETWORK`, `FACTORIX_AGENT_NETWORK`, and `FACTORIX_PROXY_URL`. You only need them when running the API outside Compose.
 
@@ -97,7 +135,7 @@ More detail is in [docs/architecture.md](docs/architecture.md).
 
 The [runbook](docs/runbook.md) covers deploying on a VM, upgrades, backups and restore, disk use, rotating secrets, and what to check when something looks stuck.
 
-In short: put TLS in front of port 4101, set `COOKIE_SECURE=true`, keep `FACTORIX_SECRET_KEY` somewhere safe, and back up Postgres before upgrades. The worker mounts the Docker socket, so treat the host as part of the trusted base.
+In short: put TLS in front of port 4101, turn on HTTPS-only cookies, keep `FACTORIX_SECRET_KEY` somewhere safe, and back up Postgres before upgrades. The worker mounts the Docker socket, so treat the host as part of the trusted base.
 
 ## Development
 
@@ -132,13 +170,9 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 ## Known limits
 
-- **Early.** This is version 0.1.0. Full flows are tested on real containers and real git, using a scripted model and fake Linear and GitLab APIs. Importing from the real Linear API works. Merge request flows against real GitLab and live Claude or Codex runs have not been exercised yet.
-- **One bot identity.** A GitLab connection can name the bot on its commits, but agents still share one Linear and one GitLab account, told apart by comment prefixes, commit trailers, and the audit log. GitLab may refuse a bot's approval of its own merge request, and the verdict still counts.
 - **One organization in practice.** Tables carry `org_id`, but only one organization can be set up today.
 - **Email and password only.** There is no SSO yet.
-- **Linear and GitLab only.** Other sources go through the connector interfaces.
-- **Merges across repositories are not atomic.** If a later merge is refused, earlier ones have already landed.
-- **Disk grows with issues.** Each issue clones every repository in its project.
+- **Two connectors so far.** Linear and GitLab ship today. Other sources implement the same connector interfaces.
 
 ## License
 

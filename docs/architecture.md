@@ -49,7 +49,7 @@ The repositories on a project are a limit on what agents may change, and a ticke
 - The agent reports `mergeOrder` for the ticket, because only the ticket says which change the others depend on. Names that match no merge request are ignored, and anything unnamed follows, in the order the repositories were picked.
 - Every push runs before any merge request opens, so a failed push never leaves half a change up for review, and a retry opens only what is missing. When an issue has more than one, each gets a note listing the others and the merge order, repeated if the order changes.
 - Review gives one verdict for the whole change. Each comment names the repository it belongs to, and falls back to a note when the line cannot take an inline comment.
-- CI is checked on every open merge request before anything merges, then they merge in the ticket's order. A refused merge stops there and asks a person, remembering what already landed. Git cannot merge across repositories atomically, so this window is real.
+- CI and mergeability are checked on every open merge request before anything merges, then they merge in the ticket's order. A true atomic merge across repositories does not exist, so a refused merge stops there and asks a person: retry the rest, revert what merged, or keep it. Reverting closes what is still open, reverts newest first through a new merge request per repository, and asks again if one cannot land.
 - An issue finishes when no merge request is left open. It counts as merged if any merged, and as cancelled only if all closed.
 
 ## Pipelines
@@ -74,6 +74,18 @@ These guard against runaway flows:
 - A ticket created by a workflow carries a depth, and creation stops after 3 generations.
 
 Notifications go through `NotificationConnector`, with Slack as the first implementation. Values from a ticket are escaped before they are placed in a message, so ticket text cannot add links or ping a channel. Only links written in the template stay links.
+
+## Whose account does the work
+
+Agents use the project's connections unless they have their own, linked in `agent_connections` under the roles `scm` and `tracker`. Commits, pushes, merge requests, reviews, and comments follow the agent's account, resolved per run. Merges, webhooks, polling, and status changes stay on the project's account, so a project keeps working if an agent is removed. A repository id only means something on one server, so a git account on another server is ignored with a warning. Tokens stay in step containers either way.
+
+## Settings
+
+The environment sets the defaults and `platform_settings` overrides them, one row per setting, read through `readSettings`. Nothing is cached, so a change reaches the API on the next request, and the worker checks every 15 seconds. A stored value that no longer validates falls back to the environment.
+
+## Disk
+
+Each run ends with a `clear-cache` step, which has no token, mirror, or network. Every 15 minutes the worker removes workspaces past their limit, along with their stopped containers, and clears the session references stored on them. A workspace with a live run is never removed, and one left marked in use after its last run ended is freed. If a volume cannot be removed, the row stays as it was and the next pass retries.
 
 ## Keeping Linear and Factorix honest
 

@@ -13,6 +13,7 @@ import { runRoutes } from './routes/runs'
 import { settingsRoutes } from './routes/settings'
 import { webhookRoutes } from './routes/webhooks'
 import { workflowRoutes } from './routes/workflows'
+import { readSettings } from './services/settings'
 import { openSse, RedisFanout } from './sse'
 
 export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): FastifyInstance {
@@ -25,7 +26,7 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
 
   app.addHook('onRequest', async (request) => {
     const token = request.cookies[SESSION_COOKIE]
-    request.auth = token ? await loadSession(deps.db, token) : null
+    request.auth = token ? await loadSession(deps.db, token, async () => (await readSettings(deps)).sessionDays) : null
   })
 
   // SameSite=Lax already blocks cross-site POSTs in browsers. This also refuses them from anything that sends Origin.
@@ -33,9 +34,11 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
     if (request.method === 'GET' || request.method === 'HEAD' || request.url.startsWith('/webhooks/')) return
     const origin = request.headers.origin
     if (!origin) return
-    const allowed = new URL(deps.env.FACTORIX_PUBLIC_URL).origin
     const host = request.headers['x-forwarded-host'] ?? request.headers.host
-    if (origin !== allowed && new URL(origin).host !== host) throw new HttpError(403, 'bad_origin', 'Cross-origin requests are not allowed')
+    if (new URL(origin).host === host) return
+    // The environment's address stays allowed, so a wrong override cannot lock anyone out of fixing it.
+    const allowed = [deps.env.FACTORIX_PUBLIC_URL, (await readSettings(deps)).publicUrl].map((url) => new URL(url).origin)
+    if (!allowed.includes(origin)) throw new HttpError(403, 'bad_origin', 'Cross-origin requests are not allowed')
   })
 
   app.setErrorHandler((error: Error & { statusCode?: number; validation?: unknown }, request, reply) => {

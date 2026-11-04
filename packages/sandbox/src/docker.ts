@@ -303,6 +303,11 @@ export class DockerSandboxProvider implements SandboxProvider {
   }
 
   async destroyWorkspace(key: string): Promise<void> {
+    const filters = JSON.stringify({ label: [`factorix.workspace=${key}`] })
+    const containers = await this.docker.listContainers({ all: true, filters })
+    if (containers.some((container) => container.State === 'running')) throw new Error(`Workspace ${key} is in use`)
+    // A stopped container still pins its volumes, and these are only kept for looking at.
+    for (const container of containers) await this.remove(container.Id)
     for (const name of [`fx-ws-${key}`, `fx-mirror-${key}`]) {
       await this.docker
         .getVolume(name)

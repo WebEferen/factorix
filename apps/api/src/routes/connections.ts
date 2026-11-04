@@ -7,14 +7,15 @@ import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
 import { badRequest, conflict, isUniqueViolation, parseBody } from '../lib/errors'
 import { encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
+import { readSettings } from '../services/settings'
 
 export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
-  const { db, env } = deps
-  const publicUrl = env.FACTORIX_PUBLIC_URL
+  const { db } = deps
 
   app.get('/api/connections', async (request) => {
     const { account } = requireAuth(request)
     const rows = await db<ConnectionRow>('connections').where({ orgId: account.orgId }).orderBy('name')
+    const { publicUrl } = await readSettings(deps)
     return { connections: rows.map((row) => connectionDto(row, publicUrl, account.role === 'admin')) }
   })
 
@@ -42,7 +43,7 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
         targetId: row?.id,
         metadata: { kind: input.kind, name: input.name },
       })
-      return { connection: connectionDto(row as ConnectionRow, publicUrl, true) }
+      return { connection: connectionDto(row as ConnectionRow, (await readSettings(deps)).publicUrl, true) }
     } catch (error) {
       if (isUniqueViolation(error)) throw conflict(`A connection named ${input.name} already exists`)
       throw error
@@ -74,7 +75,7 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
       targetId: id,
       metadata: { secretChanged: input.secret !== undefined },
     })
-    return { connection: connectionDto(row as ConnectionRow, publicUrl, true) }
+    return { connection: connectionDto(row as ConnectionRow, (await readSettings(deps)).publicUrl, true) }
   })
 
   app.post('/api/connections/:id/test', async (request) => {

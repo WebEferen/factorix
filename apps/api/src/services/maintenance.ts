@@ -2,13 +2,11 @@ import type { IssueRow, ProjectRow, RunRow, WorkspaceRow } from '@factorix/db'
 import type { AppDeps } from '../deps'
 import { expireApprovals } from './approvals'
 import { pollOpenMergeRequests } from './scm-inbound'
+import { readSettings } from './settings'
 import { IMPORT_STALE_MS, requestProjectImport, syncProjectIssues } from './tracker-sync'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
-const KEEP_FAILED_CONTAINER_MS = HOUR
-const TERMINAL_WORKSPACE_RETENTION_MS = 7 * DAY
-const OPEN_WORKSPACE_RETENTION_MS = 30 * DAY
 const AD_HOC_RETENTION_MS = DAY
 
 /** Boot and periodic recovery. Claiming is the real guard, so an extra job for a run someone holds does nothing. */
@@ -28,9 +26,10 @@ export async function recoverRuns(deps: Pick<AppDeps, 'db' | 'queues'>): Promise
   return stale.length + queuedTooLong.length
 }
 
-export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'sandbox'>): Promise<{ containers: number; volumes: number }> {
+export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'>): Promise<{ containers: number; volumes: number }> {
   const { db, sandbox } = deps
   if (!sandbox) return { containers: 0, volumes: 0 }
+  const settings = await readSettings(deps)
   const managed = await sandbox.listManaged()
   const runIds = managed.containers.flatMap((container) => (container.runId ? [container.runId] : []))
   const runs = runIds.length > 0 ? await db<RunRow>('runs').whereIn('id', runIds).select('id', 'state', 'finishedAt') : []
@@ -46,7 +45,7 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'sandbox'>): Prom
       const run = container.runId ? byId.get(container.runId) : undefined
       if (!run) remove = age > HOUR
       else if (run.state === 'succeeded' || run.state === 'cancelled') remove = true
-      else if (run.state === 'failed') remove = run.finishedAt ? now - run.finishedAt.getTime() > KEEP_FAILED_CONTAINER_MS : true
+      else if (run.state === 'failed') remove = run.finishedAt ? now - run.finishedAt.getTime() > settings.failedContainerHours * HOUR : true
     }
     if (remove) {
       await sandbox.remove(container.id).catch(() => undefined)
@@ -55,6 +54,14 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'sandbox'>): Prom
   }
 
   let volumes = 0
+  // A run can end without the executor, on a lost lease or a cancel while queued, and nothing else would ever free its workspace.
+  await db.raw(`
+    UPDATE workspaces w SET state = 'ready'
+    WHERE w.state = 'in_use' AND NOT EXISTS (
+      SELECT 1 FROM runs r
+      WHERE (r.workspace_id = w.id OR r.issue_id = w.issue_id) AND r.state NOT IN ('succeeded', 'failed', 'cancelled')
+    )
+  `)
   const workspaces = await db<WorkspaceRow>('workspaces').whereNot({ state: 'expired' }).whereNot({ state: 'in_use' })
   const issues = await db<IssueRow>('issues')
     .whereIn(
@@ -69,14 +76,25 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'sandbox'>): Prom
     const limit = !workspace.issueId
       ? AD_HOC_RETENTION_MS
       : state === 'done' || state === 'cancelled'
-        ? TERMINAL_WORKSPACE_RETENTION_MS
-        : OPEN_WORKSPACE_RETENTION_MS
-    if (idle > limit) {
-      const key = workspace.volumeName.replace(/^fx-ws-/, '')
-      await sandbox.destroyWorkspace(key).catch(() => undefined)
-      await db('workspaces').where({ id: workspace.id }).update({ state: 'expired' })
-      volumes += 1
+        ? settings.finishedWorkspaceHours * HOUR
+        : state === 'failed'
+          ? settings.failedWorkspaceDays * DAY
+          : settings.openWorkspaceDays * DAY
+    if (idle < limit) continue
+    // Removing a large volume takes a while, so the list above can be out of date by the time this one comes up.
+    const current = await db<WorkspaceRow>('workspaces').where({ id: workspace.id }).first()
+    if (!current || current.state === 'in_use') continue
+    try {
+      await sandbox.destroyWorkspace(workspace.volumeName.replace(/^fx-ws-/, ''))
+    } catch {
+      continue
     }
+    await db.transaction(async (trx) => {
+      await trx('workspaces').where({ id: workspace.id }).whereNot({ state: 'in_use' }).update({ state: 'expired' })
+      // Agent sessions were stored on that volume, so a later run has nothing to resume.
+      await trx('runs').where({ workspaceId: workspace.id }).update({ sessionRef: null })
+    })
+    volumes += 1
   }
 
   await db('echo_markers').where('created_at', '<', db.raw(`now() - interval '1 day'`)).delete()
@@ -97,7 +115,7 @@ export async function resumeStaleImports(deps: Pick<AppDeps, 'db'>): Promise<num
 }
 
 export async function syncAllProjects(
-  deps: Pick<AppDeps, 'db' | 'secrets' | 'connectors' | 'queues' | 'timings'>,
+  deps: Pick<AppDeps, 'db' | 'env' | 'secrets' | 'connectors' | 'queues' | 'timings'>,
   log: (message: string) => void = () => {},
 ): Promise<void> {
   await expireApprovals(deps)

@@ -1,5 +1,5 @@
 import { json, type OrganizationRow } from '@factorix/db'
-import { networkSettingsInput } from '@factorix/schemas'
+import { networkSettingsInput, type PlatformSettingsInput, platformSettingsInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { networkSettingsDto } from '../dto'
@@ -7,6 +7,7 @@ import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
 import { notFound, parseBody } from '../lib/errors'
 import { emit } from '../lib/outbox'
+import { settingsDtos, updateSettings } from '../services/settings'
 
 export function settingsRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { db } = deps
@@ -40,5 +41,16 @@ export function settingsRoutes(app: FastifyInstance, deps: AppDeps): void {
       return updated
     })
     return { network: networkSettingsDto(org) }
+  })
+
+  app.get('/api/settings/general', async (request) => {
+    requireAuth(request)
+    return { settings: await settingsDtos(deps) }
+  })
+
+  app.put('/api/settings/general', async (request) => {
+    const { account } = requireAdmin(request)
+    await updateSettings(deps, account.orgId, account.id, parseBody(platformSettingsInput, request.body) as PlatformSettingsInput)
+    return { settings: await settingsDtos(deps) }
   })
 }

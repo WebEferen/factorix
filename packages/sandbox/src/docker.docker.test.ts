@@ -414,6 +414,57 @@ git config url."file:///nowhere".insteadOf /remote/repo.git`,
     }
   })
 
+  const execAgent = async (exec: string) => {
+    const script = spec({ scripted: { steps: [{ exec }] } })
+    const handle = await provider.startAgent(workspace, {
+      runId: script.runId,
+      issueKey: key,
+      readOnlyRepo: false,
+      env: { FX_AGENT: 'engineer-1', FX_RUN: script.runId },
+    })
+    containers.push(handle.containerId)
+    handle.send(encodeLine(script))
+    const events = await collect(handle)
+    await handle.wait()
+    return events.filter((event) => event.type === 'tool.result').map((event) => (event as unknown as { output: string }).output)
+  }
+
+  it('clears the package cache and nothing else, with no network or token', async () => {
+    await execAgent('mkdir -p /workspace/.cache/yarn && echo big > /workspace/.cache/yarn/blob && echo kept > /workspace/.home/kept')
+
+    const step = await provider.runStep(workspace, { op: 'clear-cache', env: baseEnv, timeoutSeconds: 60 })
+    expect(step.exitCode).toBe(0)
+
+    const [output] = await execAgent(
+      'test -e /workspace/.cache/yarn/blob && echo cache-left; cat /workspace/.home/kept; test -d /workspace/repos/repo/.git && echo repo-left',
+    )
+    expect(output).toContain('kept')
+    expect(output).toContain('repo-left')
+    expect(output).not.toContain('cache-left')
+  })
+
+  it('refuses to destroy a workspace an agent is using, then takes stopped containers with it', async () => {
+    const otherKey = `${key}-destroy`
+    const other = await provider.ensureWorkspace(otherKey)
+    const script = spec({ scripted: { steps: [{ exec: 'sleep 120' }] } })
+    const running = await provider.startAgent(other, {
+      runId: script.runId,
+      issueKey: otherKey,
+      readOnlyRepo: false,
+      env: { FX_AGENT: 'engineer-1', FX_RUN: script.runId },
+    })
+    running.send(encodeLine(script))
+    await expect(provider.destroyWorkspace(otherKey)).rejects.toThrow(/in use/)
+    expect((await provider.listManaged()).volumes.map((volume) => volume.name)).toContain(other.volume)
+
+    await provider.stop(running.containerId, 0)
+    await provider.destroyWorkspace(otherKey)
+    const managed = await provider.listManaged()
+    expect(managed.volumes.map((volume) => volume.name)).not.toContain(other.volume)
+    expect(managed.volumes.map((volume) => volume.name)).not.toContain(other.mirrorVolume)
+    expect(managed.containers.map((container) => container.id)).not.toContain(running.containerId)
+  })
+
   it('lists what it manages and leaves nothing behind when destroyed', async () => {
     const managed = await provider.listManaged()
     expect(managed.volumes.map((volume) => volume.name)).toEqual(expect.arrayContaining([workspace.volume, workspace.mirrorVolume]))

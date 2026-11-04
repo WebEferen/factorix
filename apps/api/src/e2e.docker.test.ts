@@ -5,6 +5,7 @@ import type { ScriptedPlan } from '@factorix/runtime'
 import { DockerSandboxProvider, dockerClientFromEnv } from '@factorix/sandbox'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import type { AppDeps } from './deps'
+import { reapSandboxes } from './services/maintenance'
 import { STATES, TEAM_ID } from './testing/fakes'
 import {
   ApiClient,
@@ -30,13 +31,13 @@ const docker = dockerClientFromEnv()
 const suffix = randomUUID().slice(0, 8)
 const remoteVolume = `fx-test-remote-${suffix}`
 
-async function inRemote(script: string): Promise<string> {
+async function inRemote(script: string, mount: { Source: string; Target: string } = { Source: remoteVolume, Target: '/remote' }): Promise<string> {
   const container = await docker.createContainer({
     Image: image,
     User: '0',
     Cmd: ['bash', '-c', script],
     Env: ['HOME=/tmp'],
-    HostConfig: { Mounts: [{ Type: 'volume', Source: remoteVolume, Target: '/remote' }] },
+    HostConfig: { Mounts: [{ Type: 'volume', ...mount }] },
   })
   await container.start()
   const { StatusCode } = (await container.wait()) as { StatusCode: number }
@@ -115,6 +116,13 @@ describe('factory end to end', () => {
       'a run event',
       90_000,
     )
+
+  // Docker is shared with a live factory, so this leaves the container sweep out and only removes volumes this database knows about.
+  const reapVolumes = () => {
+    const real = harness.deps.sandbox as NonNullable<AppDeps['sandbox']>
+    const volumesOnly = { listManaged: async () => ({ containers: [], volumes: [] }), destroyWorkspace: (key: string) => real.destroyWorkspace(key) }
+    return reapSandboxes({ db: harness.deps.db, env: harness.deps.env, sandbox: volumesOnly as never })
+  }
 
   const noteHook = (iid: number, discussionId: string, noteId: string, body: string) => ({
     object_kind: 'note',
@@ -750,6 +758,95 @@ describe('factory end to end', () => {
       180_000,
     )
     expect(await firstMrIid(row.id)).toBeGreaterThan(0)
+  })
+
+  it('works under an agent’s own accounts, merges under the project’s, and frees the disk when the issue ends', async () => {
+    await setAutonomy('full_auto')
+    harness.world.gitTokens.length = 0
+    harness.world.commentTokens.length = 0
+    harness.world.merges.length = 0
+    const ownGit = (
+      await admin.ok('POST', '/api/connections', {
+        kind: 'gitlab',
+        name: 'Own git',
+        secret: 'glpat-own-account',
+        config: { host: 'https://gitlab.com', botName: 'Own Bot', botEmail: 'own@acme.dev' },
+      })
+    ).connection
+    const ownTracker = (await admin.ok('POST', '/api/connections', { kind: 'linear', name: 'Own tracker', secret: 'lin_own_account' })).connection
+    const archetypes = (await admin.ok('GET', '/api/archetypes')).archetypes as { id: string; name: string }[]
+    const { agent } = await admin.ok('POST', '/api/agents', {
+      handle: 'engineer-own',
+      displayName: 'Own Engineer',
+      archetypeId: archetypes.find((archetype) => archetype.name === 'Engineer')?.id,
+      runtime: 'scripted',
+      policy: { mode: 'full' },
+      connectionIds: [ownGit.id, ownTracker.id],
+    })
+    script = (phase) =>
+      phase === 'implement'
+        ? {
+            steps: [
+              { exec: 'mkdir -p /workspace/.cache/yarn && echo big > /workspace/.cache/yarn/blob' },
+              { writeFile: { path: 'own.txt', content: 'written under my own account\n' } },
+              { exec: 'git add own.txt && git commit -qm "feat: own account"' },
+            ],
+            structuredOutput: { summary: 'Done.', approach: 'Direct.', testing: 'None.', notes: '' },
+          }
+        : undefined
+    const tracker = harness.world.addIssue({ title: 'Under my own account' })
+    await sendLinearWebhook(harness.app, linear.id, linear.webhookSecret, issuePayload(tracker, 'create'))
+    const row = await waitFor(() => harness.deps.db('issues').where({ trackerIssueId: tracker.id }).first(), 'the issue mirror row')
+    await admin.ok('POST', `/api/issues/${row.id}/assign`, { agentId: agent.id })
+    const finished = await untilState(row.id, 'done', 180_000)
+    script = () => undefined
+
+    expect(await remoteGit(`log --format='%an|%ae' ${finished.branchName} -n 1`)).toContain('Own Bot|own@acme.dev')
+    expect(harness.world.gitTokens).toContain('glpat-own-account')
+    expect(harness.world.gitTokens).toContain('glpat-supersecret')
+    expect(harness.world.commentTokens).toContain('lin_own_account')
+    expect(harness.world.merges).toContain(await firstMrIid(row.id))
+    const events = await harness.deps.db('run_events').select('payload')
+    expect(JSON.stringify(events.map((event) => event.payload))).not.toContain('glpat-own-account')
+
+    const workspace = await harness.deps.db('workspaces').where({ issueId: row.id }).first()
+    expect(workspace.state).toBe('ready')
+    const volume = { Source: workspace.volumeName, Target: '/workspace' }
+    const cacheCheck = await inRemote(
+      'test -e /workspace/.cache/yarn/blob && echo cache-left; test -d /workspace/repos/r/.git && echo repo-left; true',
+      volume,
+    )
+    expect(cacheCheck).toContain('repo-left')
+    expect(cacheCheck).not.toContain('cache-left')
+
+    const { volumes } = await reapVolumes()
+    expect(volumes).toBeGreaterThan(0)
+    expect((await harness.deps.db('workspaces').where({ issueId: row.id }).first()).state).toBe('expired')
+    await expect(docker.getVolume(workspace.volumeName).inspect()).rejects.toThrow(/no such volume/i)
+    await expect(docker.getVolume(workspace.mirrorVolumeName).inspect()).rejects.toThrow(/no such volume/i)
+  })
+
+  it('starts again from a fresh clone when a retry finds its workspace gone', async () => {
+    await setAutonomy('human_merge')
+    script = (phase) => (phase === 'implement' ? { steps: [{ say: 'about to fail' }], fail: { code: 'model', message: 'Broken' } } : undefined)
+    const { issueId } = await labelledIssue('Gone by the time of the retry')
+    await untilState(issueId, 'failed', 180_000)
+
+    await admin.ok('PUT', '/api/settings/general', { values: { failedWorkspaceDays: 0 } })
+    await reapVolumes()
+    await admin.ok('PUT', '/api/settings/general', { values: { failedWorkspaceDays: null } })
+    const gone = await harness.deps.db('workspaces').where({ issueId }).first()
+    expect(gone.state).toBe('expired')
+    await expect(docker.getVolume(gone.volumeName).inspect()).rejects.toThrow(/no such volume/i)
+    expect((await runsOf(issueId)).every((run) => run.sessionRef === null)).toBe(true)
+
+    script = () => undefined
+    await admin.ok('POST', `/api/issues/${issueId}/retry`)
+    const finished = await untilStep(issueId, 'await_merge', 180_000)
+    const back = await harness.deps.db('workspaces').where({ issueId }).first()
+    expect(back.state).toBe('ready')
+    await docker.getVolume(back.volumeName).inspect()
+    expect(await remoteGit(`show ${finished.branchName}:FACTORIX_DEMO.md`)).toBeTruthy()
   })
 
   it('keeps the git token out of run events and stored run data', async () => {

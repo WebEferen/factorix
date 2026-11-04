@@ -29,6 +29,8 @@ export interface MergeRequest {
   targetBranch: string
   sha: string | null
   hasConflicts: boolean
+  /** Why the server would refuse this merge right now, in words. Null when it would accept, or is still working it out. */
+  mergeBlocker: string | null
   diffRefs: DiffRefs | null
 }
 
@@ -108,6 +110,13 @@ export interface ScmConnector {
     iid: number,
     input: { sha?: string | null; squash?: boolean; removeSourceBranch?: boolean },
   ): Promise<{ merged: boolean; reason?: string }>
+  closeMergeRequest(repoId: string, iid: number): Promise<void>
+  /** Opens a merge request that undoes a merged one. Reverting can conflict, and that comes back as a reason, not an error. */
+  revertMergeRequest(
+    repoId: string,
+    iid: number,
+    input: { branch: string; title: string; description: string },
+  ): Promise<{ reverted: true; mergeRequest: MergeRequest } | { reverted: false; reason: string }>
   registerWebhook(repoId: string, input: { url: string; secret: string }): Promise<{ id: string }>
 }
 

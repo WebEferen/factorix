@@ -5,6 +5,7 @@
 ```sh
 git clone <repo> factorix && cd factorix
 cp .env.example .env    # set FACTORIX_SECRET_KEY and FACTORIX_PUBLIC_URL, and COOKIE_SECURE=true behind TLS
+# or skip the steps below and run ./install.sh, which also installs Docker
 docker compose --profile build-only build
 docker compose up -d
 ```
@@ -41,20 +42,24 @@ docker compose up -d
 
 ## Disk
 
-Each issue gets its own clone and mirror of every repository in its project, kept for 7 days after it finishes and 30 days otherwise. A project with a large repository adds up quickly, so size the disk for the number of open issues times the size of the project's repositories. Check with `docker system df`. `docker builder prune -af` clears the build cache.
+Each issue gets its own clone and mirror of every repository in its project. Package caches go when a run ends. The worker then removes a workspace at its next cleanup, every 15 minutes, once it passes its limit: straight away after an issue is done or cancelled, 7 days after it fails, and 30 days after the last run while it is open. Change these under Settings, General.
+
+A workspace with a run still going is never removed. A later run on that issue clones again and starts a new agent session, so size the disk for the open issues at once, times the size of the project's repositories. Check with `docker system df`. `docker builder prune -af` clears the build cache.
 
 ## Something looks stuck
 
-| Symptom                            | Where to look                                                                               |
-| ---------------------------------- | ------------------------------------------------------------------------------------------- |
-| A run sits in Queued               | `docker compose logs worker`. Check the Docker socket and `FACTORIX_RUN_CONCURRENCY`.       |
-| A run fails while preparing        | The run's logs, with Show logs on. A clone error usually means the GitLab token.            |
-| A merge stopped partway            | The issue names what is still open. Fix it, then approve again, or merge it by hand.        |
-| Cannot remove a repository         | It has an open merge request. Merge or close that first.                                    |
-| The model fails with 401           | The agent's or organization's model key. In the proxy logs, `No API key` means none is set. |
-| An agent cannot reach a host       | The run log names the denied host. Add it under the project's network settings.             |
-| Issues do not update               | Check webhook deliveries in Linear or GitLab, or press sync on the project.                 |
-| The tracker state stopped changing | Look for `sync.conflict` in the audit log. Someone moved the issue by hand.                 |
+| Symptom                            | Where to look                                                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| A run sits in Queued               | `docker compose logs worker`. Check the Docker socket and Agents running at once under Settings, General.           |
+| A run fails while preparing        | The run's logs, with Show logs on. A clone error usually means the GitLab token.                                    |
+| A merge stopped partway            | The issue names what merged and what stopped it. Retry the rest, revert what merged, or keep it.                    |
+| A revert did not land              | The issue names what is left. Fix it in GitLab and try again, or leave it and undo it by hand.                      |
+| Cannot remove a repository         | It has an open merge request. Merge or close that first.                                                            |
+| The model fails with 401           | The agent's or organization's model key. In the proxy logs, `No API key` means none is set.                         |
+| An agent cannot reach a host       | The run log names the denied host. Add it under the project's network settings.                                     |
+| Issues do not update               | Check webhook deliveries in Linear or GitLab, or press sync on the project.                                         |
+| A setting seems to have no effect  | Settings, General shows the value in force and its environment default. The worker reads changes within 15 seconds. |
+| The tracker state stopped changing | Look for `sync.conflict` in the audit log. Someone moved the issue by hand.                                         |
 
 ## Inspect a run from the host
 
@@ -64,7 +69,7 @@ docker logs <container>
 docker volume ls --filter name=fx-
 ```
 
-Failed containers stay for an hour. The reaper runs every 15 minutes. Workspaces stay for 7 days after an issue finishes, and 30 days otherwise.
+Failed containers stay for an hour, and cleanup runs every 15 minutes. Settings, General sets how long containers and workspaces stay.
 
 ## Rotate secrets
 

@@ -35,6 +35,30 @@ function mapDiffRefs(raw: Loose | null | undefined): DiffRefs | null {
   return { baseSha: raw.base_sha, headSha: raw.head_sha, startSha: raw.start_sha }
 }
 
+const MERGE_BLOCKERS: Record<string, string> = {
+  conflict: 'it has merge conflicts',
+  need_rebase: 'it needs a rebase',
+  not_approved: 'it still needs approval',
+  requested_changes: 'a reviewer requested changes',
+  draft_status: 'it is a draft',
+  discussions_not_resolved: 'it has unresolved threads',
+  ci_must_pass: 'its pipeline has to pass first',
+  ci_still_running: 'its pipeline is still running',
+}
+
+/* Undecided states settle by themselves, and blocked_status can be another merge request in the same chain, which merges first. */
+const NOT_BLOCKING = new Set(['mergeable', 'checking', 'unchecked', 'preparing', 'approvals_syncing', 'blocked_status'])
+
+function mergeBlockerOf(raw: Loose): string | null {
+  if (raw.state !== 'opened') return null
+  const status: string | undefined = raw.detailed_merge_status
+  if (status && !NOT_BLOCKING.has(status)) return MERGE_BLOCKERS[status] ?? status.replaceAll('_', ' ')
+  if (status) return null
+  // Servers older than 15.6 only report these two.
+  if (raw.has_conflicts) return MERGE_BLOCKERS.conflict as string
+  return raw.draft || raw.work_in_progress ? (MERGE_BLOCKERS.draft_status as string) : null
+}
+
 function mapMr(raw: Loose): MergeRequest {
   return {
     id: String(raw.id),
@@ -48,6 +72,7 @@ function mapMr(raw: Loose): MergeRequest {
     targetBranch: raw.target_branch,
     sha: raw.sha ?? null,
     hasConflicts: Boolean(raw.has_conflicts),
+    mergeBlocker: mergeBlockerOf(raw),
     diffRefs: mapDiffRefs(raw.diff_refs),
   }
 }
@@ -242,6 +267,45 @@ export class GitlabConnector implements ScmConnector {
     } catch (error) {
       const description = (error as { cause?: { description?: string } }).cause?.description
       return { merged: false, reason: description ?? (error as Error).message }
+    }
+  }
+
+  async closeMergeRequest(repoId: string, iid: number): Promise<void> {
+    await this.api.MergeRequests.edit(repoId, iid, { stateEvent: 'close' })
+  }
+
+  async revertMergeRequest(
+    repoId: string,
+    iid: number,
+    input: { branch: string; title: string; description: string },
+  ): Promise<{ reverted: true; mergeRequest: MergeRequest } | { reverted: false; reason: string }> {
+    const reasonOf = (error: unknown) => (error as { cause?: { description?: string } }).cause?.description ?? (error as Error).message
+    const merged = (await this.api.MergeRequests.show(repoId, iid)) as Loose
+    let commit: string | null = merged.merge_commit_sha ?? merged.squash_commit_sha ?? null
+    if (!commit) {
+      // A fast-forward without squash leaves no commit that stands for the whole merge request, unless it only had one.
+      const commits = (await this.api.MergeRequests.allCommits(repoId, iid)) as Loose[]
+      if (commits.length === 1) commit = merged.sha ?? null
+    }
+    if (!commit) return { reverted: false, reason: 'This merge left several commits on the branch, so there is no single commit to revert.' }
+    try {
+      await this.api.Branches.create(repoId, input.branch, merged.target_branch)
+    } catch (error) {
+      return { reverted: false, reason: reasonOf(error) }
+    }
+    try {
+      await this.api.Commits.revert(repoId, commit, input.branch)
+      const mergeRequest = await this.openMergeRequest({
+        repoId,
+        sourceBranch: input.branch,
+        targetBranch: merged.target_branch,
+        title: input.title,
+        description: input.description,
+      })
+      return { reverted: true, mergeRequest }
+    } catch (error) {
+      await this.api.Branches.remove(repoId, input.branch).catch(() => undefined)
+      return { reverted: false, reason: reasonOf(error) }
     }
   }
 

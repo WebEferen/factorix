@@ -122,6 +122,74 @@ describe('builtin pipeline', () => {
     expect(last.actions).toContainEqual({ type: 'postComment', template: 'merge_blocked', step: 'auto_merge' })
   })
 
+  it('asks a person when only part of a chain merged, and each answer goes where it says', () => {
+    const toGate: PipelineEvent[] = [
+      finished('completed'),
+      { type: 'ci.settled' },
+      finished('verdict:approve'),
+      { type: 'action.result', result: 'partial' },
+    ]
+    const gate = drive('full_auto', toGate)
+    expect(gate.cursor?.step).toBe('merge_partial')
+    expect(gate.last.factoryState).toBe('awaiting_merge')
+    expect(gate.last.actions).toContainEqual({ type: 'postComment', template: 'merge_partial', step: 'auto_merge' })
+    expect(gate.last.actions).toContainEqual({ type: 'createApproval', kind: 'partial_merge', timeoutMinutes: undefined })
+
+    const answer = (choice: string) => [...toGate, { type: 'approval.decided', decision: 'approved', choice } as PipelineEvent]
+    expect(drive('full_auto', answer('retry')).last.actions).toContainEqual({ type: 'scmMerge' })
+    expect(drive('full_auto', answer('keep')).cursor?.step).toBe('done')
+    const reverting = drive('full_auto', answer('revert'))
+    expect(reverting.cursor?.step).toBe('revert')
+    expect(reverting.last.actions).toContainEqual({ type: 'scmRevert' })
+    expect(reverting.last.factoryState).toBe('active')
+  })
+
+  it('does not take a plain approval at a gate that needs a choice', () => {
+    const { cursor, last } = drive('full_auto', [
+      finished('completed'),
+      { type: 'ci.settled' },
+      finished('verdict:approve'),
+      { type: 'action.result', result: 'partial' },
+      { type: 'approval.decided', decision: 'approved' },
+    ])
+    expect(cursor?.step).toBe('merge_partial')
+    expect(last.handled).toBe(false)
+  })
+
+  it('routes a partial merge found by webhook from every step that has merge requests', () => {
+    const external: PipelineEvent = { type: 'external', name: 'mr.partial' }
+    expect(drive('human_merge', [finished('completed'), { type: 'ci.settled' }, finished('verdict:approve'), external]).cursor?.step).toBe(
+      'merge_partial',
+    )
+    expect(drive('human_merge', [finished('completed'), external]).cursor?.step).toBe('merge_partial')
+    const atGate = drive('human_merge', [finished('completed'), external, external])
+    expect(atGate.cursor?.step).toBe('merge_partial')
+    expect(atGate.last.handled).toBe(false)
+  })
+
+  it('ends a finished revert as cancelled, and waits for a person when it cannot finish', () => {
+    const toRevert: PipelineEvent[] = [
+      finished('completed'),
+      { type: 'ci.settled' },
+      finished('verdict:approve'),
+      { type: 'action.result', result: 'partial' },
+      { type: 'approval.decided', decision: 'approved', choice: 'revert' },
+    ]
+    const done = drive('full_auto', [...toRevert, { type: 'external', name: 'mr.reverted' }])
+    expect(done.cursor?.step).toBe('cancel')
+    expect(done.last.factoryState).toBe('cancelled')
+    expect(done.last.actions).toContainEqual({ type: 'postComment', template: 'merge_reverted', step: 'revert' })
+
+    const toBlocked: PipelineEvent[] = [...toRevert, { type: 'action.result', result: 'blocked' }]
+    const blocked = drive('full_auto', toBlocked)
+    expect(blocked.cursor?.step).toBe('revert_blocked')
+    expect(blocked.last.actions).toContainEqual({ type: 'postComment', template: 'revert_blocked', step: 'revert' })
+    expect(drive('full_auto', [...toBlocked, { type: 'action.result', result: 'blocked' }]).last.handled).toBe(false)
+    expect(drive('full_auto', [...toBlocked, { type: 'external', name: 'mr.reverted' }]).cursor?.step).toBe('cancel')
+    expect(drive('full_auto', [...toBlocked, { type: 'approval.decided', decision: 'approved', choice: 'keep' }]).cursor?.step).toBe('cancel')
+    expect(drive('full_auto', [...toBlocked, { type: 'approval.decided', decision: 'approved', choice: 'retry' }]).cursor?.step).toBe('revert')
+  })
+
   it('stops the review ping-pong after maxLoops and hands over to a human', () => {
     const round: PipelineEvent[] = [{ type: 'ci.settled' }, finished('verdict:request_changes'), finished('completed')]
     const { cursor, last } = drive('human_merge', [finished('completed'), ...round, ...round, ...round])

@@ -1,7 +1,25 @@
 import type { FactoryState } from '../state/issue'
-import type { AdvanceContext, AdvanceResult, PipelineAction, PipelineCursor, PipelineDefinition, PipelineEvent, PipelineStep } from './types'
+import type {
+  AdvanceContext,
+  AdvanceResult,
+  CommentTemplate,
+  PipelineAction,
+  PipelineCursor,
+  PipelineDefinition,
+  PipelineEvent,
+  PipelineStep,
+} from './types'
 
 const MAX_HOPS = 16
+
+/** What a person has to hear about when an event moves merging on. */
+const COMMENT_ON: Record<string, CommentTemplate> = {
+  failed: 'merge_blocked',
+  partial: 'merge_partial',
+  blocked: 'revert_blocked',
+  'mr.partial': 'merge_partial',
+  'mr.reverted': 'merge_reverted',
+}
 
 export class PipelineError extends Error {}
 
@@ -87,7 +105,7 @@ export function advance(
         actions.push({ type: 'createApproval', kind: step.approval, timeoutMinutes: step.timeoutMinutes })
         return
       case 'action':
-        actions.push({ type: 'scmMerge' })
+        actions.push({ type: step.action === 'scm.revert' ? 'scmRevert' : 'scmMerge' })
         return
       case 'terminal':
         return
@@ -153,7 +171,7 @@ export function advance(
     }
     case 'approval.decided': {
       if (current.kind !== 'gate') return noop()
-      const target = current.on[event.decision]
+      const target = current.on[event.choice ?? event.decision]
       if (!target) return noop()
       leaveTo(target)
       return { cursor, actions, factoryState, handled: true }
@@ -162,6 +180,8 @@ export function advance(
       const target = current.on?.[event.name]
       if (!target) return noop()
       if (current.kind === 'run' && cursor.waitingFor === null) actions.push({ type: 'cancelActiveRun' })
+      const comment = COMMENT_ON[event.name]
+      if (comment) actions.push({ type: 'postComment', template: comment, step: cursor.step })
       leaveTo(target)
       return { cursor, actions, factoryState, handled: true }
     }
@@ -169,7 +189,8 @@ export function advance(
       if (current.kind !== 'action') return noop()
       const target = current.on[event.result]
       if (!target) return noop()
-      if (event.result === 'failed') actions.push({ type: 'postComment', template: 'merge_blocked', step: cursor.step })
+      const comment = COMMENT_ON[event.result]
+      if (comment) actions.push({ type: 'postComment', template: comment, step: cursor.step })
       leaveTo(target)
       return { cursor, actions, factoryState, handled: true }
     }

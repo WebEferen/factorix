@@ -11,6 +11,7 @@ const PREFIXES: Record<OrgStreamMessage['kind'], string[]> = {
   project: ['/api/projects', '/api/issues'],
   agent: ['/api/agents', '/api/archetypes'],
   network: ['/api/settings/network'],
+  settings: ['/api/settings/general', '/api/runtimes', '/api/connections'],
 }
 
 /** Everything the UI lists stays current from one stream of "this changed" pings, instead of each page polling. */

@@ -137,6 +137,10 @@ case "$op" in
     jq -cn --arg agents "$agents" --arg claude "$claude" '{agents: $agents, claude: $claude}'
     ;;
 
+  clear-cache)
+    rm -rf /workspace/.cache
+    ;;
+
   *)
     echo "unknown operation: $op" >&2
     exit 2

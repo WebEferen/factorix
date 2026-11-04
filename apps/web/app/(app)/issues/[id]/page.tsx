@@ -206,6 +206,18 @@ function MergeRequests({ items }: { items: MergeRequestDto[] }) {
                 <span className="shrink-0 text-ink-2">!{mr.iid}</span>
                 <ExternalLink className="size-3 shrink-0" />
               </a>
+              {mr.revert ? (
+                <div className="pl-5.5 text-xs text-ink-2">
+                  {mr.revert.url ? (
+                    <a href={mr.revert.url} target="_blank" rel="noreferrer" className="text-link hover:underline">
+                      Revert
+                    </a>
+                  ) : (
+                    'Revert'
+                  )}{' '}
+                  {mr.revert.state}
+                </div>
+              ) : null}
             </li>
           )
         })}
