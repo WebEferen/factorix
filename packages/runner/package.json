@@ -1,0 +1,22 @@
+{
+  "name": "@factorix/runner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@factorix/runtime": "0.1.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.317",
+    "@openai/codex-sdk": "0.166.0",
+    "@anthropic-ai/sdk": "1.4.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "zod": "4.6.7"
+  }
+}

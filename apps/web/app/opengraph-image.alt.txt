@@ -1,0 +1,1 @@
+Factorix: the agentic software factory. Work moves through plan, implement, review, and merge.

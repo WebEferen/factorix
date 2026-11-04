@@ -1,0 +1,26 @@
+{
+  "name": "@factorix/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/test-db.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "migrate": "tsx src/migrate-cli.ts"
+  },
+  "dependencies": {
+    "knex": "3.3.0",
+    "pg": "8.23.1",
+    "@factorix/core": "0.1.0",
+    "@factorix/runtime": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1",
+    "testcontainers": "12.2.1"
+  }
+}

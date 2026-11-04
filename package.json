@@ -1,0 +1,37 @@
+{
+  "name": "factorix",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "docker compose up -d --wait postgres redis && yarn migrate && concurrently -n api,worker,web \"yarn workspace @factorix/api dev\" \"yarn workspace @factorix/api dev:worker\" \"yarn workspace @factorix/web dev\"",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "yarn workspaces run typecheck",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:docker": "vitest run --project docker",
+    "migrate": "yarn workspace @factorix/db migrate",
+    "sandbox:build": "docker build -f docker/sandbox.Dockerfile -t factorix/sandbox-base:dev .",
+    "prepare-mr": "yarn lint && yarn typecheck && yarn test:unit && yarn test:integration"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.4",
+    "@types/node": "22.20.5",
+    "concurrently": "10.0.6",
+    "esbuild": "0.28.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "8.3.5",
+    "vitest": "5.1.0"
+  }
+}

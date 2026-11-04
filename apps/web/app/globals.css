@@ -1,0 +1,158 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  --canvas: #fcfcfc;
+  --surface: #ffffff;
+  --soft: #f5f5f5;
+  --softer: #fafafa;
+  --ink: #000000de;
+  --ink-2: #5f5f5f;
+  --ink-3: #8a8f94;
+  --divider: #e0e5eb;
+  --field: #d2dae3;
+  --selected: #d7eaff;
+  --signal: #0080ff;
+  /* Signal Blue with its documented foreground is 3.14:1. Small labels on it use this darker step, which is 5.3:1 with white. */
+  --action: #0069d1;
+  --action-hover: #005cb8;
+  --action-ink: #ffffff;
+  --link: #0069d1;
+  --success: #4d7c0f;
+  --success-soft: #ecfccb;
+  --warning: oklch(0.75 0.15 75);
+  --warning-ink: oklch(0.47 0.1 62);
+  --warning-soft: oklch(0.96 0.05 85);
+  --danger: #e7000b;
+  --danger-ink: #c10007;
+  --danger-soft: #ffe9e9;
+  --diff-add: #e8f6e0;
+  --diff-del: #fde8e8;
+  --lift-control: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --lift-overlay: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --canvas: #171718;
+  --surface: #1d1d1f;
+  --soft: #26262a;
+  --softer: #202023;
+  --ink: #cfd2d5;
+  --ink-2: #979a9d;
+  --ink-3: #6f7276;
+  --divider: #323840;
+  --field: #3d444d;
+  --selected: #1f3247;
+  --signal: #3b9cff;
+  --action: #0073e6;
+  --action-hover: #1a85f0;
+  --action-ink: #ffffff;
+  --link: #5aabff;
+  --success: #a3e635;
+  --success-soft: #24300f;
+  --warning: oklch(0.78 0.14 75);
+  --warning-ink: oklch(0.82 0.12 80);
+  --warning-soft: oklch(0.3 0.05 75);
+  --danger: #ff5a5f;
+  --danger-ink: #ff8a8d;
+  --danger-soft: #3a1c1e;
+  --diff-add: #1c2c17;
+  --diff-del: #351c1d;
+  --lift-control: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+  --lift-overlay: 0 10px 20px -3px rgb(0 0 0 / 0.5), 0 4px 6px -4px rgb(0 0 0 / 0.4);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: var(--font-averta), Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-soft: var(--soft);
+  --color-softer: var(--softer);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-divider: var(--divider);
+  --color-field: var(--field);
+  --color-selected: var(--selected);
+  --color-signal: var(--signal);
+  --color-action: var(--action);
+  --color-action-hover: var(--action-hover);
+  --color-action-ink: var(--action-ink);
+  --color-link: var(--link);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-ink: var(--warning-ink);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-ink: var(--danger-ink);
+  --color-danger-soft: var(--danger-soft);
+  --color-diff-add: var(--diff-add);
+  --color-diff-del: var(--diff-del);
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+  --shadow-control: var(--lift-control);
+  --shadow-overlay: var(--lift-overlay);
+  --text-xs: 12px;
+  --text-xs--line-height: 16px;
+  --text-sm: 13px;
+  --text-sm--line-height: 18px;
+  --text-base: 14px;
+  --text-base--line-height: 20px;
+  --text-lg: 15px;
+  --text-lg--line-height: 20px;
+  --text-xl: 19px;
+  --text-xl--line-height: 28px;
+  --text-2xl: 25px;
+  --text-2xl--line-height: 32px;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 1px;
+}
+
+[cmdk-input]:focus-visible {
+  outline: none;
+}
+
+::selection {
+  background: var(--selected);
+}
+
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: var(--field) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component style */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component style */
+    transition-duration: 0.01ms !important;
+  }
+}

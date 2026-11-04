@@ -1,0 +1,29 @@
+{
+  "name": "@factorix/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/server.ts",
+    "dev:worker": "tsx watch --env-file-if-exists=../../.env src/worker.ts",
+    "start": "tsx src/server.ts",
+    "start:worker": "tsx src/worker.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@factorix/connectors": "0.1.0",
+    "@factorix/core": "0.1.0",
+    "@factorix/db": "0.1.0",
+    "@factorix/runtime": "0.1.0",
+    "@factorix/sandbox": "0.1.0",
+    "@factorix/schemas": "0.1.0",
+    "@fastify/cookie": "11.1.5",
+    "@node-rs/argon2": "2.2.2",
+    "bullmq": "6.5.4",
+    "fastify": "5.12.8",
+    "fastify-plugin": "6.0.1",
+    "ioredis": "5.11.1",
+    "tsx": "4.23.15",
+    "zod": "4.6.7"
+  }
+}

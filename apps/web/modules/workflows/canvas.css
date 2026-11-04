@@ -1,0 +1,85 @@
+/* Colors come from the app's tokens, so the canvas follows the theme toggle by itself. */
+.fx-flow {
+  --xy-background-color: var(--canvas);
+  --xy-background-pattern-color: var(--field);
+  --xy-edge-stroke: var(--ink-3);
+  --xy-edge-stroke-width: 1.5;
+  --xy-edge-stroke-selected: var(--signal);
+  --xy-connectionline-stroke: var(--signal);
+  --xy-connectionline-stroke-width: 1.5;
+  --xy-handle-background-color: var(--surface);
+  --xy-handle-border-color: var(--ink-3);
+  --xy-minimap-background-color: var(--surface);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--soft) 70%, transparent);
+  --xy-minimap-mask-stroke-color: var(--field);
+  --xy-minimap-node-background-color: var(--field);
+  --xy-minimap-node-stroke-color: transparent;
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--soft);
+  --xy-controls-button-color: var(--ink-2);
+  --xy-controls-button-color-hover: var(--ink);
+  --xy-controls-button-border-color: var(--divider);
+  --xy-controls-box-shadow: var(--lift-control);
+  --xy-attribution-background-color: transparent;
+}
+
+.fx-flow .react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border-width: 1.5px;
+  transition:
+    background-color 100ms,
+    border-color 100ms;
+}
+
+/* A 10px dot is too small to grab, so the hit area is larger than what is drawn. */
+.fx-flow .react-flow__handle::after {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+.fx-flow .react-flow__handle:hover,
+.fx-flow .react-flow__handle.connectingfrom,
+.fx-flow .react-flow__handle.valid {
+  background: var(--signal);
+  border-color: var(--signal);
+}
+
+.fx-flow .fx-handle-failed:not(:hover) {
+  border-color: var(--danger);
+}
+
+.fx-flow .fx-edge-failed .react-flow__edge-path {
+  stroke: var(--danger);
+  stroke-dasharray: 5 4;
+}
+
+.fx-flow .fx-edge-taken .react-flow__edge-path {
+  stroke: var(--signal);
+  stroke-width: 2;
+}
+
+.fx-flow .fx-edge-idle .react-flow__edge-path {
+  opacity: 0.35;
+}
+
+.fx-flow .react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--signal);
+}
+
+.fx-flow .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+}
+
+.fx-flow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--divider);
+  border-radius: 8px;
+}
+
+.fx-flow .react-flow__attribution a {
+  color: var(--ink-3);
+}

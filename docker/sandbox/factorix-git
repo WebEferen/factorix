@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# Git steps that run around an agent. Every token-holding op (mirror-fetch, push) works only
+# on the trusted bare mirror and never runs git inside the agent-writable repo: an agent can
+# plant .git/config entries (core.fsmonitor, core.hooksPath, url.insteadOf, filters) that
+# would execute or exfiltrate if git read them while the token is in the environment.
+set -euo pipefail
+export GIT_TERMINAL_PROMPT=0
+
+op="${1:?operation required}"
+name="${FX_REPO_NAME:?repository name required}"
+# The name becomes a path below, including in steps that hold the git token.
+if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "invalid repository name" >&2
+  exit 2
+fi
+repo="/workspace/repos/$name"
+mirror="/mirror/$name.git"
+bundle="/workspace/.factorix/$name.bundle"
+
+trusted_git() {
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git "$@"
+}
+
+value() {
+  printf 'FX_%s=%s\n' "$1" "$2"
+}
+
+case "$op" in
+  mirror-fetch)
+    : "${FX_REPO_URL:?}"
+    export GIT_ASKPASS=/opt/factorix/bin/git-askpass
+    [ -d "$mirror" ] || trusted_git init -q --bare --template= "$mirror"
+    default_branch=$(trusted_git ls-remote --symref "$FX_REPO_URL" HEAD | awk '/^ref:/ { sub("refs/heads/", "", $2); print $2; exit }')
+    trusted_git -C "$mirror" fetch -q --prune "$FX_REPO_URL" '+refs/heads/*:refs/heads/*'
+    value DEFAULT_BRANCH "$default_branch"
+    ;;
+
+  checkout)
+    : "${FX_BRANCH:?}" "${FX_BASE_BRANCH:?}"
+    if [ ! -d "$repo/.git" ]; then
+      rm -rf "$repo"
+      mkdir -p /workspace/repos
+      git clone -q --no-hardlinks --no-checkout "$mirror" "$repo"
+      [ -n "${FX_PUBLIC_URL:-}" ] && git -C "$repo" remote set-url origin "$FX_PUBLIC_URL"
+    fi
+    cd "$repo"
+    git rebase --abort >/dev/null 2>&1 || true
+    git fetch -q --prune "$mirror" '+refs/heads/*:refs/remotes/origin/*'
+    git config user.name "${FX_GIT_NAME:-Factorix Bot}"
+    git config user.email "${FX_GIT_EMAIL:-factorix-bot@noreply.factorix.dev}"
+    git config core.hooksPath /opt/factorix/hooks
+
+    if [ -n "$(git status --porcelain 2>/dev/null)" ] && git rev-parse -q --verify HEAD >/dev/null; then
+      git add -A
+      git commit -q --no-verify -m "wip: recovered changes before run ${FX_RUN:-unknown}"
+    fi
+
+    if git show-ref --verify --quiet "refs/remotes/origin/$FX_BRANCH"; then
+      start="origin/$FX_BRANCH"
+    else
+      start="origin/$FX_BASE_BRANCH"
+    fi
+    if git show-ref --verify --quiet "refs/heads/$FX_BRANCH"; then
+      git checkout -q "$FX_BRANCH"
+      if [ "$start" = "origin/$FX_BRANCH" ] && ! git rebase -q "$start" >/dev/null 2>&1; then
+        git rebase --abort >/dev/null 2>&1 || true
+        value CONFLICT 1
+      fi
+    else
+      git checkout -q --no-track -b "$FX_BRANCH" "$start"
+    fi
+
+    if [ -n "${FX_SETUP:-}" ]; then
+      set +e
+      # Setup output goes to stderr so a repo script cannot forge FX_ values on stdout.
+      bash -lc "$FX_SETUP" 1>&2
+      setup_code=$?
+      set -e
+      [ "$setup_code" -eq 0 ] || value SETUP_FAILED "$setup_code"
+      git config core.hooksPath /opt/factorix/hooks
+    fi
+    value HEAD "$(git rev-parse HEAD)"
+    ;;
+
+  bundle)
+    : "${FX_BRANCH:?}"
+    cd "$repo"
+    git rebase --abort >/dev/null 2>&1 || true
+    if [ -n "$(git status --porcelain)" ]; then
+      git add -A
+      git -c core.hooksPath=/opt/factorix/hooks commit -q --no-verify -m "wip: unfinished changes from run ${FX_RUN:-unknown}"
+    fi
+    [ "$(git rev-parse --abbrev-ref HEAD)" = "$FX_BRANCH" ] || git branch -f "$FX_BRANCH" HEAD
+    commits=$(git rev-list --count "refs/heads/$FX_BRANCH" --not --remotes=origin)
+    mkdir -p "$(dirname "$bundle")"
+    rm -f "$bundle"
+    if [ "$commits" -gt 0 ]; then
+      git bundle create -q "$bundle" "refs/heads/$FX_BRANCH" --not --remotes=origin
+      value CHANGED 1
+    else
+      value CHANGED 0
+    fi
+    value COMMITS "$commits"
+    value AHEAD "$(git rev-list --count "origin/${FX_BASE_BRANCH:-HEAD}..refs/heads/$FX_BRANCH" 2>/dev/null || echo 0)"
+    value HEAD "$(git rev-parse "refs/heads/$FX_BRANCH")"
+    ;;
+
+  push)
+    : "${FX_REPO_URL:?}" "${FX_BRANCH:?}" "${FX_BASE_BRANCH:?}"
+    if [ "$FX_BRANCH" = "$FX_BASE_BRANCH" ]; then
+      echo "refusing to push to the base branch $FX_BASE_BRANCH" >&2
+      exit 3
+    fi
+    if [ -L "$bundle" ] || [ ! -f "$bundle" ]; then
+      echo "no regular bundle file at $bundle" >&2
+      exit 3
+    fi
+    export GIT_ASKPASS=/opt/factorix/bin/git-askpass
+    trusted_git -C "$mirror" fetch -q "$bundle" "+refs/heads/$FX_BRANCH:refs/factorix/pending"
+    if ! trusted_git -C "$mirror" push -q "$FX_REPO_URL" "refs/factorix/pending:refs/heads/$FX_BRANCH"; then
+      value PUSH_REJECTED 1
+      exit 4
+    fi
+    trusted_git -C "$mirror" update-ref "refs/heads/$FX_BRANCH" refs/factorix/pending
+    value PUSHED "$(trusted_git -C "$mirror" rev-parse refs/factorix/pending)"
+    ;;
+
+  diff)
+    : "${FX_BASE_BRANCH:?}"
+    prefix="${FX_DIFF_PREFIX:+$FX_DIFF_PREFIX/}"
+    git -C "$repo" diff --no-color --no-ext-diff --src-prefix="a/$prefix" --dst-prefix="b/$prefix" "origin/$FX_BASE_BRANCH...HEAD"
+    ;;
+
+  docs)
+    agents=$(head -c 65536 "$repo/AGENTS.md" 2>/dev/null || true)
+    claude=$(head -c 65536 "$repo/CLAUDE.md" 2>/dev/null || true)
+    jq -cn --arg agents "$agents" --arg claude "$claude" '{agents: $agents, claude: $claude}'
+    ;;
+
+  *)
+    echo "unknown operation: $op" >&2
+    exit 2
+    ;;
+esac
