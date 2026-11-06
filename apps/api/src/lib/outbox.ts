@@ -15,7 +15,10 @@ export type DomainEvent =
   | { type: 'workflow.event'; issueId: string; event: WorkflowEvent }
   | { type: 'workflow.advance'; runId: string }
   | { type: 'workflow.step'; runId: string; nodeId: string }
+  | { type: 'environment.action'; instanceId: string; action: EnvironmentAction }
   | { type: 'notify'; kind: 'issue' | 'run' | 'approval' | 'project' | 'agent' | 'network' | 'settings'; id: string; projectId?: string | null }
+
+export type EnvironmentAction = 'start' | 'reset' | 'refresh' | 'stop'
 
 export type DomainEventType = DomainEvent['type']
 

@@ -11,6 +11,7 @@ import type {
   ScmConnector,
   ScmDiscussion,
   ScmRepo,
+  SecretSourceConnector,
   TrackerComment,
   TrackerConnector,
   TrackerIssue,
@@ -19,7 +20,7 @@ import type {
   TrackerState,
   TrackerTeam,
 } from '@factorix/connectors'
-import type { ConnectorFactory } from '../deps'
+import { type ConnectorFactory, storedSecrets } from '../deps'
 
 export const TEAM_ID = 'team-1'
 
@@ -342,7 +343,48 @@ export class FakeWorld {
     }
   }
 
+  /** Doppler configs by `project/config`, the tokens it saw, and a switch to make it fail. */
+  dopplerConfigs = new Map<string, Record<string, string>>()
+  dopplerTokens: string[] = []
+  dopplerError: Error | null = null
+
+  doppler(token: string): SecretSourceConnector {
+    this.dopplerTokens.push(token)
+    const fail = () => {
+      if (this.dopplerError) throw this.dopplerError
+    }
+    const projects = () => [...new Set([...this.dopplerConfigs.keys()].map((key) => key.split('/')[0] as string))]
+    return {
+      kind: 'doppler',
+      viewer: async () => {
+        fail()
+        return { name: 'previews in Acme' }
+      },
+      listProjects: async () => {
+        fail()
+        return projects().map((id) => ({ id, name: id }))
+      },
+      listConfigs: async (project) => {
+        fail()
+        return [...this.dopplerConfigs.keys()]
+          .filter((key) => key.startsWith(`${project}/`))
+          .map((key) => ({ name: key.split('/')[1] as string, environment: null }))
+      },
+      fetch: async ({ project, config }) => {
+        fail()
+        const values = this.dopplerConfigs.get(`${project}/${config}`)
+        if (!values) throw new Error('Doppler has no such project or config.')
+        return { ...values }
+      },
+    }
+  }
+
   factory(): ConnectorFactory {
-    return { tracker: (_connection, secret) => this.tracker(secret), scm: (_connection, secret) => this.scm(secret), notifier: () => this.notifier() }
+    return {
+      tracker: (_connection, secret) => this.tracker(secret),
+      scm: (_connection, secret) => this.scm(secret),
+      notifier: () => this.notifier(),
+      secrets: (connection, secret) => (connection.kind === 'generic' ? storedSecrets(secret) : this.doppler(secret)),
+    }
   }
 }

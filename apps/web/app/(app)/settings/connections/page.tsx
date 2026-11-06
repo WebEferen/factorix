@@ -1,7 +1,7 @@
 'use client'
 
 import type { ConnectionDto } from '@factorix/schemas'
-import { Bot, CheckCircle2, CircleAlert, GitBranch, Hash, KeyRound, Plug, Plus, SquareKanban } from 'lucide-react'
+import { Bot, CheckCircle2, CircleAlert, GitBranch, Hash, KeyRound, Plug, Plus, SquareKanban, Vault } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from '@/modules/lib/api'
@@ -38,9 +38,16 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
   mcp_stdio: { label: 'MCP server (command)', hint: 'A tool server the sandbox starts', icon: <Plug />, secret: 'Environment as JSON' },
   generic: {
     label: 'Environment secret',
-    hint: 'Variables given to agents that hold this connection',
+    hint: 'Variables for agents that hold this connection, or a secret set in a project environment',
     icon: <KeyRound />,
     secret: 'Environment as JSON',
+  },
+  doppler: {
+    label: 'Doppler',
+    hint: 'Secret source: configs for previews and agent runs. The token stays in Factorix',
+    icon: <Vault />,
+    secret: 'Service token, or a service account token to pick from several configs',
+    placeholder: 'dp.st...',
   },
 }
 

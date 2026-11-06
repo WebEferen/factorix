@@ -5,6 +5,7 @@ import type {
   ApprovalDto,
   ArchetypeDto,
   ConnectionDto,
+  EnvironmentDto,
   InboxDto,
   IssueDetailDto,
   IssueFilterDto,
@@ -14,9 +15,11 @@ import type {
   NetworkSettings,
   NotificationChannelDto,
   PlatformSettingDto,
+  PreviewDto,
   ProjectDto,
   RunDto,
   RuntimeDto,
+  SecretSourceOptionDto,
   SkillDto,
   WorkflowDto,
   WorkflowRunDetailDto,
@@ -128,6 +131,31 @@ export function useIssueWorkflowRuns(issueId: string) {
   return useApi<{ runs: WorkflowRunDto[] }>(`/api/issues/${issueId}/workflow-runs`, {
     refreshInterval: (data) => (data?.runs.some((run) => run.status === 'running') ? 2000 : 0),
   })
+}
+
+export function usePreview(issueId: string) {
+  return useApi<{ preview: PreviewDto }>(`/api/issues/${issueId}/preview`, {
+    refreshInterval: (data) => (data?.preview.state && ['starting', 'refreshing', 'stopping'].includes(data.preview.state) ? 3000 : 0),
+  })
+}
+
+export function useEnvironment(projectId: string) {
+  return useApi<{ environment: EnvironmentDto }>(`/api/projects/${projectId}/environment`, { revalidateOnFocus: false })
+}
+
+/** Null lists mean the token reaches one place only, so there is nothing to pick. */
+export function useSecretSourceProjects(connectionId: string | null) {
+  return useApi<{ projects: SecretSourceOptionDto[] | null }>(connectionId ? `/api/secret-sources/${connectionId}/projects` : null, {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+  })
+}
+
+export function useSecretSourceConfigs(connectionId: string | null, project: string | null) {
+  return useApi<{ configs: SecretSourceOptionDto[] | null }>(
+    connectionId && project ? `/api/secret-sources/${connectionId}/configs?project=${encodeURIComponent(project)}` : null,
+    { revalidateOnFocus: false, shouldRetryOnError: false },
+  )
 }
 
 export function useNotificationChannels(connectionId: string | null) {

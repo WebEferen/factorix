@@ -15,7 +15,7 @@ import { toast } from 'sonner'
 import { cn, initials } from '../lib/format'
 import { ProblemArt } from './empty-art'
 
-const buttonStyles = cva(
+export const buttonStyles = cva(
   'inline-flex shrink-0 items-center justify-center gap-1.5 rounded-md font-normal whitespace-nowrap transition-colors duration-150 select-none disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0',
   {
     variants: {

@@ -1,0 +1,16 @@
+{
+  "name": "@factorix/preview-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/gateway.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "ioredis": "5.11.1",
+    "tsx": "4.23.15"
+  }
+}

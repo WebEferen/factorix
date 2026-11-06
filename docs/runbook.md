@@ -10,7 +10,9 @@ docker compose --profile build-only build
 docker compose up -d
 ```
 
-Put TLS in front of port 4101. It binds to 127.0.0.1 unless `FACTORIX_WEB_BIND` says otherwise. Keep `.env` safe: losing `FACTORIX_SECRET_KEY` makes stored connection secrets unreadable, and you would need to enter them again.
+Put TLS in front of port 4101. It binds to 127.0.0.1 unless `FACTORIX_WEB_BIND` says otherwise.
+
+Previews are served by the gateway on port 4102, one subdomain each. Locally `*.preview.localhost` needs nothing. On a VM, set `FACTORIX_PREVIEW_URL` to something like `https://preview.example.com`, add a wildcard DNS record for `*.preview.example.com`, and put a wildcard certificate in front of port 4102. Pass the `Host` header through and allow WebSocket upgrades, which dev servers use for hot reload. Rebuild `web` afterwards, because its content security policy names the preview address. Keep `.env` safe: losing `FACTORIX_SECRET_KEY` makes stored connection secrets unreadable, and you would need to enter them again.
 
 ## Upgrades
 
@@ -60,6 +62,7 @@ A workspace with a run still going is never removed. A later run on that issue c
 | Issues do not update               | Check webhook deliveries in Linear or GitLab, or press sync on the project.                                         |
 | A setting seems to have no effect  | Settings, General shows the value in force and its environment default. The worker reads changes within 15 seconds. |
 | The tracker state stopped changing | Look for `sync.conflict` in the audit log. Someone moved the issue by hand.                                         |
+| A preview will not start           | Logs on the issue's Preview panel. [docs/environments.md](environments.md) lists the usual causes.                  |
 
 ## Inspect a run from the host
 
@@ -70,6 +73,8 @@ docker volume ls --filter name=fx-
 ```
 
 Failed containers stay for an hour, and cleanup runs every 15 minutes. Settings, General sets how long containers and workspaces stay.
+
+Previews and the services of agent runs use `label=factorix.kind=env`, and `label=factorix.env=<id>` picks one. The worker finds the gateway and the egress proxy by their `factorix.role` label, and cleanup removes only objects labelled with its own stack. Both use `FACTORIX_STACK`, so two stacks on one Docker host need different stack names.
 
 ## Rotate secrets
 
@@ -84,4 +89,4 @@ yarn sandbox:build
 yarn test:docker
 ```
 
-These cover the credential boundary, worker crash recovery, cancel, and egress denial on real containers.
+These cover the credential boundary, worker crash recovery, cancel, egress denial, and previews end to end on real containers.

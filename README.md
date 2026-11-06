@@ -26,6 +26,7 @@ flowchart LR
 - **Gives agents their own accounts, or one shared account.** Each agent can use its own GitLab and Linear connection, or the project's. You choose per agent.
 - **Cleans up after itself.** Package caches go when a run ends and a workspace goes when its issue finishes, so disk use follows open work.
 - **Closes the loop.** An engineer agent implements, a reviewer agent reviews, and review comments go back to the engineer. Plans and merges can wait for a person.
+- **Previews every change.** A project describes how to run its code, with services, install and seed steps, and secrets from Doppler or Factorix. Anyone can start a preview of an issue and use the running app inside Factorix, and agents can preview their own working copy before they finish. See [docs/environments.md](docs/environments.md).
 - **Automates with workflows.** Build flows from blocks on a canvas: branch, wait for events, hand work to agents, create tickets, and post to Slack. Run them on tickets by hand or let ticket events start them.
 - **Keeps a record.** Runs stream live with full tool calls, spend is tracked per agent and project, and the audit log is append-only at the database level.
 
@@ -106,17 +107,21 @@ These can be set in both places:
 | `FACTORIX_PUBLIC_URL`               | `http://localhost:4101` | The address browsers and webhooks use. Link previews keep the one `web` was built with, so rebuild `web` after changing it. |
 | `COOKIE_SECURE`                     | `false`                 | HTTPS-only sign-in cookies. Needs an https public URL.                                                                      |
 | `FACTORIX_SESSION_DAYS`             | `30`                    | How long a sign-in lasts.                                                                                                   |
+| `FACTORIX_PREVIEW_MAX_RUNNING`      | `3`                     | Previews running at once.                                                                                                   |
+| `FACTORIX_PREVIEW_IDLE_MINUTES`     | `60`                    | Stops a preview nobody opened for this long. `0` turns this off.                                                            |
+| `FACTORIX_PREVIEW_MAX_HOURS`        | `24`                    | Stops any preview this long after it started.                                                                               |
 
 These are set only in the environment:
 
-| Variable                              | Default                     | Purpose                                                                                                 |
-| ------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `FACTORIX_SECRET_KEY`                 | required                    | Encrypts stored connection secrets. Losing it makes them unreadable.                                    |
-| `FACTORIX_WEB_BIND`                   | `127.0.0.1`                 | The address port 4101 binds to.                                                                         |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | none                        | Fallback model keys. A connection under Settings takes priority.                                        |
-| `FACTORIX_SANDBOX_IMAGE`              | `factorix/sandbox-base:dev` | The image agents and git steps run in. It stays out of the web UI because the git steps hold the token. |
+| Variable                              | Default                         | Purpose                                                                                                   |
+| ------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `FACTORIX_SECRET_KEY`                 | required                        | Encrypts stored connection secrets. Losing it makes them unreadable.                                      |
+| `FACTORIX_WEB_BIND`                   | `127.0.0.1`                     | The address ports 4101 and 4102 bind to.                                                                  |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | none                            | Fallback model keys. A connection under Settings takes priority.                                          |
+| `FACTORIX_SANDBOX_IMAGE`              | `factorix/sandbox-base:dev`     | The image agents and git steps run in. It stays out of the web UI because the git steps hold the token.   |
+| `FACTORIX_PREVIEW_URL`                | `http://preview.localhost:4102` | The base address previews get a subdomain of. The web image is built with it, so rebuild `web` after one. |
 
-Compose sets `DATABASE_URL`, `REDIS_URL`, `PORT`, `HOST`, `FACTORIX_STEP_NETWORK`, `FACTORIX_AGENT_NETWORK`, and `FACTORIX_PROXY_URL`. You only need them when running the API outside Compose.
+Compose sets `DATABASE_URL`, `REDIS_URL`, `PORT`, `HOST`, `FACTORIX_STEP_NETWORK`, `FACTORIX_AGENT_NETWORK`, `FACTORIX_PROXY_URL`, and `FACTORIX_STACK`. You only need them when running the API outside Compose.
 
 ## Security model
 
@@ -124,6 +129,7 @@ Tracker text, repository contents, and agent output are all treated as untrusted
 
 - **The git token never enters a container that runs agent or repo code.** Token steps work only on a separate bare mirror. The boundary is data in `packages/sandbox/src/profiles.ts`, and a Docker test plants a real `core.fsmonitor` attack against it.
 - **Model keys stay out of agent containers.** Each run gets a short-lived token, and the egress proxy swaps it for the real key.
+- **Previews are walled off.** Each preview gets its own network, and its only ways in and out are the preview gateway and the egress proxy. Secret values are fetched at start and never stored, and a preview opens on its own host with a cookie that works nowhere else.
 - **Agents have one way out.** Their network is internal, and the proxy enforces a per-project allowlist: package registries, the hosts each connector declares, what the organization sets under Settings, Network (which can extend or replace those defaults), and whatever the project adds in its settings. Denied requests show up in the run log.
 - **Containers are locked down.** They run as non-root with all capabilities dropped, with memory, CPU, process, and time limits. Review and plan phases mount the code read-only.
 - **Untrusted text cannot phone home.** It renders as Markdown with raw HTML dropped, and a content security policy only loads images and video through the same-origin media proxy.
@@ -135,7 +141,7 @@ More detail is in [docs/architecture.md](docs/architecture.md).
 
 The [runbook](docs/runbook.md) covers deploying on a VM, upgrades, backups and restore, disk use, rotating secrets, and what to check when something looks stuck.
 
-In short: put TLS in front of port 4101, turn on HTTPS-only cookies, keep `FACTORIX_SECRET_KEY` somewhere safe, and back up Postgres before upgrades. The worker mounts the Docker socket, so treat the host as part of the trusted base.
+In short: put TLS in front of port 4101 and the preview gateway on 4102, turn on HTTPS-only cookies, keep `FACTORIX_SECRET_KEY` somewhere safe, and back up Postgres before upgrades. The worker mounts the Docker socket, so treat the host as part of the trusted base.
 
 ## Development
 

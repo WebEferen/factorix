@@ -7,6 +7,7 @@ import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
 import { badRequest, conflict, isUniqueViolation, parseBody } from '../lib/errors'
 import { encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
+import { secretSourceFor } from '../services/environments'
 import { readSettings } from '../services/settings'
 
 export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -93,6 +94,10 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
       if (connection.kind === 'slack') {
         const viewer = await notifierFor(deps, connection).viewer()
         return { ok: true, message: `Connected to Slack as ${viewer.name}` }
+      }
+      if (connection.kind === 'doppler') {
+        const viewer = await (await secretSourceFor(deps, account.orgId, connection.id)).viewer()
+        return { ok: true, message: `Connected to Doppler as ${viewer.name}` }
       }
       return { ok: true, message: 'Nothing to test for this kind of connection yet' }
     } catch (error) {

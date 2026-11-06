@@ -141,6 +141,44 @@ case "$op" in
     rm -rf /workspace/.cache
     ;;
 
+  # Copies pushed code, or an agent's working copy, into a preview's source volume. Ignored files such as node_modules stay, so installs are quick.
+  export)
+    : "${FX_BRANCH:?}" "${FX_BASE_BRANCH:?}"
+    if [ ! -d "$repo/.git" ]; then
+      rm -rf "$repo"
+      mkdir -p /workspace/repos
+      git clone -q --no-hardlinks --no-checkout "$mirror" "$repo"
+    fi
+    cd "$repo"
+    git -c core.hooksPath=/dev/null fetch -q --prune "$mirror" '+refs/heads/*:refs/remotes/origin/*'
+    work="/source/repos/$name"
+    if [ "${FX_SOURCE:-}" = worktree ] && [ -d "$work/.git" ]; then
+      # The agent's files as they are, committed here with a throwaway index. Its repository is mounted read-only.
+      git -c core.hooksPath=/dev/null fetch -q "$work" '+HEAD:refs/factorix/agent-head'
+      index="$(mktemp -d)/index"
+      GIT_INDEX_FILE="$index" git read-tree refs/factorix/agent-head
+      GIT_INDEX_FILE="$index" git --work-tree="$work" add -A
+      tree=$(GIT_INDEX_FILE="$index" git write-tree)
+      rm -rf "$(dirname "$index")"
+      sha=$(git rev-parse refs/factorix/agent-head)
+      if [ "$tree" != "$(git rev-parse "$sha^{tree}")" ]; then
+        sha=$(git -c user.name=Factorix -c user.email=factorix@noreply.factorix.dev commit-tree "$tree" -p "$sha" -m "Working copy for a preview")
+      fi
+      ref="working copy"
+    else
+      if git show-ref --verify --quiet "refs/remotes/origin/$FX_BRANCH"; then
+        ref="$FX_BRANCH"
+      else
+        ref="$FX_BASE_BRANCH"
+      fi
+      sha=$(git rev-parse --verify "refs/remotes/origin/$ref^{commit}")
+    fi
+    git -c core.hooksPath=/dev/null checkout -q -f --detach "$sha"
+    git clean -q -fd
+    value REF "$ref"
+    value HEAD "$sha"
+    ;;
+
   *)
     echo "unknown operation: $op" >&2
     exit 2

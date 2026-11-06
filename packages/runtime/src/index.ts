@@ -1,4 +1,5 @@
 export * from './async-queue'
+export * from './bridge'
 export * from './capabilities'
 export * from './commands'
 export * from './events'

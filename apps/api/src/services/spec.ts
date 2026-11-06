@@ -1,6 +1,15 @@
 import { type OpenThread, PHASES, type PhaseContext, renderSystemPrompt, resolvePolicy } from '@factorix/core'
 import type { ApprovalRow, ConnectionRow, IssueInstructionRow, IssueRow, MrDiscussionRow, ProjectRow, RunRow } from '@factorix/db'
-import type { McpServerSpec, PermissionPolicy, Phase, ReasoningEffort, RunSpec, RuntimeId, ScriptedPlan } from '@factorix/runtime'
+import {
+  BRIDGE_SOCKET,
+  type McpServerSpec,
+  type PermissionPolicy,
+  type Phase,
+  type ReasoningEffort,
+  type RunSpec,
+  type RuntimeId,
+  type ScriptedPlan,
+} from '@factorix/runtime'
 import type { AppDeps } from '../deps'
 import { decryptConnection } from './connections'
 import { mergeRequestsOf } from './repos'
@@ -112,6 +121,18 @@ function openThreadsFrom(rows: MrDiscussionRow[], repos: { id?: string | null; n
   return threads
 }
 
+const FACTORIX_MCP_SERVER: McpServerSpec = {
+  type: 'stdio',
+  command: 'node',
+  args: ['/opt/factorix/runner/index.mjs', '--mcp'],
+  env: { FACTORIX_BRIDGE: BRIDGE_SOCKET },
+}
+
+/** An edit-only agent may use only what its policy allows, so the platform's own tools are allowed explicitly. */
+function withFactorixTools(policy: PermissionPolicy): PermissionPolicy {
+  return { ...policy, allow: [...policy.allow, 'mcp__factorix__*'] }
+}
+
 async function mcpServersFor(deps: Pick<AppDeps, 'db' | 'secrets'>, run: RunRow): Promise<Record<string, McpServerSpec>> {
   const rows = (await deps
     .db('connections')
@@ -212,6 +233,8 @@ export interface SpecInput {
   ciFailures: string[]
   extraNotes: string[]
   resumeSessionRef?: string
+  /** Adds the factorix MCP server, whose preview tools reach the worker through the runner. */
+  previewTool?: boolean
   scripted?: ScriptedPlan
 }
 
@@ -244,8 +267,11 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
       }),
       user: `${template.userPrompt(context)}${notes}`,
     },
-    mcpServers: await mcpServersFor(deps, run),
-    policy: resolvePolicy(agent.policy, phase),
+    mcpServers: {
+      ...(await mcpServersFor(deps, run)),
+      ...(input.previewTool ? { factorix: FACTORIX_MCP_SERVER } : {}),
+    },
+    policy: input.previewTool ? withFactorixTools(resolvePolicy(agent.policy, phase)) : resolvePolicy(agent.policy, phase),
     resume: input.resumeSessionRef ? { sessionRef: input.resumeSessionRef } : undefined,
     outputSchema: template.outputSchema,
     startSeq: run.lastRunnerSeq,

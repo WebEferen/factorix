@@ -6,7 +6,8 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 
 - `apps/api`: Fastify API (`src/server.ts`) and BullMQ worker (`src/worker.ts`). Both share `src/services`.
 - `apps/web`: Next.js App Router UI. Calls the API through rewrites, so everything is same-origin.
-- `apps/egress-proxy`: the only network path out of an agent container. Swaps run tokens for real model keys.
+- `apps/egress-proxy`: the only network path out of an agent or preview container. Swaps run tokens for real model keys.
+- `apps/preview-gateway`: the only way into a preview. Swaps a one-time ticket for a cookie scoped to one preview host.
 - `packages/core`: pure domain with no IO. State machines, the pipeline engine, phase templates, prompts.
 - `packages/runtime`: the contract between worker and runner. `RunSpec`, `RunEvent`, `RunCommand`.
 - `packages/runner`: runs inside the sandbox and hosts the SDKs. The only package that depends on them.
@@ -42,6 +43,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - Publish domain events with `emit` inside the same transaction as the state change. The relay moves them to queues.
 - Query rows come back camelCase, and identifiers are snake-cased for you. Wrap JSONB writes in `json()`.
 - Update bodies go through `updateOf` in `packages/schemas`. Zod's `.partial()` still applies defaults, which would wipe fields.
+- A preview runs pushed code on its own network. Code reaches it through `mirror-fetch` and then `export`, which has no token and no network. The worker fetches secret values when a preview starts, keeps them in memory, and masks them in logs. They are never stored, audited, or returned by the API. Factorix's session cookie never goes to a preview host. An agent run gets only the secret sets marked Agents can read these values, for the agent and for its services alike, since the agent can reach both.
 - Anything a workflow changes in the tracker records an echo marker first, so it cannot start another workflow. Runs execute a stored copy of the published definition, never the draft.
 
 ## Extending
@@ -53,6 +55,8 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - New workflow block: add it to `WORKFLOW_BLOCKS` in `packages/schemas/src/workflows.ts`, a handler to `BLOCK_HANDLERS` in `apps/api/src/services/workflow-blocks.ts`, and an icon and summary in `apps/web/modules/workflows/blocks.tsx`. The palette and inspector render from the catalog.
 - New default egress host: a connector declares `egressHosts` on its source, and hosts every restricted project needs go in `PACKAGE_REGISTRY_HOSTS` in `packages/schemas`. Settings, Network extends or replaces the defaults for the organization, and a project adds its own under Extra allowed hosts. All of it goes through `egressGroups`, so the UI lists what the worker enforces. Declare only what an agent can use without the connection's credentials, since every host is also somewhere it could send data.
 - New platform setting: add it to `PLATFORM_SETTINGS` in `packages/schemas/src/settings.ts`, its variable to `apps/api/src/env.ts`, `envSettings`, and `x-app-env` in `docker-compose.yml`, then read it through `readSettings`, never from `env`. The General page renders from the catalog. The environment is the default and a saved value overrides it. Nothing that can reach a credential goes in, which is why the sandbox image stays environment-only.
+- New secret source: implement `SecretSourceConnector` in `packages/connectors/src/secrets.ts`, add it to `SECRET_SOURCES`, return it from `realConnectors.secrets`, and add its kind to `CONNECTION_KINDS` with an entry on the connections page and to `SOURCE_KINDS` on the Environment page.
+- New tool for agents that needs the worker: add its op to `BRIDGE_OPS` in `packages/runtime`, the MCP tool to `packages/runner/src/mcp.ts`, and its answer beside `answerPreviewTool`, which the executor calls for each `request` event. It acts as the run's agent, on the agent's own issue.
 - New notification channel: implement `NotificationConnector` in `packages/connectors`, register it in `realConnectors.notifier`, and add its kind to `NOTIFICATION_KINDS` and `CONNECTION_KINDS`, plus its entry on the connections page. The Send notification block offers every connection of those kinds.
 
 ## Conventions

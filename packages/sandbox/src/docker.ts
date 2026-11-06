@@ -6,10 +6,34 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { AsyncQueue, LineSplitter, type RuntimeId, type RuntimeModelCatalog } from '@factorix/runtime'
 import Docker, { type ContainerCreateOptions } from 'dockerode'
-import { agentContainerConfig, type ContainerDefaults, catalogContainerConfig, parseStepValues, stepContainerConfig } from './profiles'
-import type { AgentHandle, ManagedContainer, SandboxProvider, StartAgentOptions, StepRequest, StepResult, Workspace } from './provider'
+import {
+  agentContainerConfig,
+  type ContainerDefaults,
+  catalogContainerConfig,
+  environmentNetwork,
+  environmentSourceVolume,
+  managedLabels,
+  parseStepValues,
+  serviceContainerConfig,
+  stepContainerConfig,
+} from './profiles'
+import type {
+  AgentHandle,
+  Environment,
+  LogLine,
+  ManagedContainer,
+  ManagedVolume,
+  SandboxProvider,
+  ServiceSpec,
+  ServiceState,
+  StartAgentOptions,
+  StepRequest,
+  StepResult,
+  Workspace,
+} from './provider'
 
 const STEP_OUTPUT_LIMIT = 16 * 1024 * 1024
+const LOG_LINE_LIMIT = 4000
 const DEFAULT_STEP_TIMEOUT_SECONDS = 600
 
 export function dockerClientFromEnv(): Docker {
@@ -191,7 +215,7 @@ export class DockerSandboxProvider implements SandboxProvider {
 
   async ensureWorkspace(key: string): Promise<Workspace> {
     const workspace: Workspace = { key, volume: `fx-ws-${key}`, mirrorVolume: `fx-mirror-${key}` }
-    const Labels = { 'factorix.managed': 'true', 'factorix.workspace': key }
+    const Labels = { ...managedLabels(this.defaults), 'factorix.workspace': key }
     await this.docker.createVolume({ Name: workspace.volume, Labels })
     await this.docker.createVolume({ Name: workspace.mirrorVolume, Labels })
     return workspace
@@ -253,6 +277,7 @@ export class DockerSandboxProvider implements SandboxProvider {
 
   async startAgent(workspace: Workspace, options: StartAgentOptions): Promise<AgentHandle> {
     const container = await this.docker.createContainer(agentContainerConfig(workspace, options, this.defaults))
+    for (const network of options.networks ?? []) await this.docker.getNetwork(network).connect({ Container: container.id })
     const stream = await attachWithStdin(this.docker, container.id, {})
     const handle = new DockerAgentHandle(container, stream, this.docker.modem)
     await container.start()
@@ -318,7 +343,7 @@ export class DockerSandboxProvider implements SandboxProvider {
     }
   }
 
-  async listManaged(): Promise<{ containers: ManagedContainer[]; volumes: { name: string; workspaceKey: string }[] }> {
+  async listManaged(): Promise<{ containers: ManagedContainer[]; volumes: ManagedVolume[] }> {
     const filters = JSON.stringify({ label: ['factorix.managed=true'] })
     const [containers, volumes] = await Promise.all([this.docker.listContainers({ all: true, filters }), this.docker.listVolumes({ filters })])
     return {
@@ -329,8 +354,162 @@ export class DockerSandboxProvider implements SandboxProvider {
         createdAt: new Date(container.Created * 1000),
         runId: container.Labels['factorix.run'],
         issueKey: container.Labels['factorix.issue'],
+        envKey: container.Labels['factorix.env'],
+        stack: container.Labels['factorix.stack'],
       })),
-      volumes: (volumes.Volumes ?? []).map((volume) => ({ name: volume.Name, workspaceKey: volume.Labels?.['factorix.workspace'] ?? '' })),
+      volumes: (volumes.Volumes ?? []).map((volume) => ({
+        name: volume.Name,
+        workspaceKey: volume.Labels?.['factorix.workspace'] ?? '',
+        envKey: volume.Labels?.['factorix.env'],
+        stack: volume.Labels?.['factorix.stack'],
+      })),
+    }
+  }
+
+  async ensureEnvironment(key: string, options: { internal: boolean; labels: Record<string, string>; sourceVolume?: string }): Promise<Environment> {
+    const environment: Environment = { key, network: environmentNetwork(key), sourceVolume: options.sourceVolume ?? environmentSourceVolume(key) }
+    const Labels = { ...managedLabels(this.defaults), 'factorix.env': key, ...options.labels }
+    if (!options.sourceVolume) await this.docker.createVolume({ Name: environment.sourceVolume, Labels })
+    const networks = await this.docker.listNetworks({ filters: JSON.stringify({ name: [environment.network] }) })
+    if (!networks.some((network) => network.Name === environment.network)) {
+      await this.docker.createNetwork({ Name: environment.network, Internal: options.internal, Labels }).catch((error: { statusCode?: number }) => {
+        if (error.statusCode !== 409) throw error
+      })
+    }
+    return environment
+  }
+
+  async startService(environment: Environment, spec: ServiceSpec): Promise<string> {
+    const config = serviceContainerConfig(environment, spec, this.defaults)
+    await this.remove(config.name as string)
+    const Labels = { ...managedLabels(this.defaults), 'factorix.env': environment.key }
+    for (const mount of spec.mounts) if (mount.volume !== environment.sourceVolume) await this.docker.createVolume({ Name: mount.volume, Labels })
+    await this.ensureImage(config.Image as string)
+    const container = await this.docker.createContainer(config)
+    await container.start()
+    return container.id
+  }
+
+  private async ensureImage(image: string): Promise<void> {
+    try {
+      await this.docker.getImage(image).inspect()
+      return
+    } catch (error) {
+      if (!isNotFound(error)) throw error
+    }
+    const stream = await this.docker.pull(image)
+    await new Promise<void>((resolve, reject) =>
+      this.docker.modem.followProgress(stream, (error: Error | null) => (error ? reject(error) : resolve())),
+    )
+  }
+
+  async serviceState(containerId: string): Promise<{ state: ServiceState; exitCode?: number }> {
+    try {
+      const info = await this.docker.getContainer(containerId).inspect()
+      if (!info.State.Running) return { state: 'exited', exitCode: info.State.ExitCode }
+      const health = info.State.Health?.Status
+      if (!health || health === 'none') return { state: 'running' }
+      return { state: health === 'healthy' ? 'healthy' : health === 'unhealthy' ? 'unhealthy' : 'starting' }
+    } catch (error) {
+      if (isNotFound(error)) return { state: 'missing' }
+      throw error
+    }
+  }
+
+  async joinEnvironment(environment: Environment, role: 'gateway' | 'egress', alias: string): Promise<boolean> {
+    const labels = [`factorix.role=${role}`, ...(this.defaults.stack ? [`factorix.stack=${this.defaults.stack}`] : [])]
+    const filters = JSON.stringify({ label: labels, status: ['running'] })
+    const [platform] = await this.docker.listContainers({ filters })
+    if (!platform) return false
+    const network = this.docker.getNetwork(environment.network)
+    const info = (await network.inspect()) as { Containers?: Record<string, unknown> }
+    if (info.Containers?.[platform.Id]) return true
+    await network.connect({ Container: platform.Id, EndpointConfig: { Aliases: [alias] } })
+    return true
+  }
+
+  async attachToEnvironment(key: string, containerId: string): Promise<boolean> {
+    const network = this.docker.getNetwork(environmentNetwork(key))
+    try {
+      const info = (await network.inspect()) as { Containers?: Record<string, unknown> }
+      if (!info.Containers?.[containerId]) await network.connect({ Container: containerId })
+      return true
+    } catch (error) {
+      if (isNotFound(error)) return false
+      throw error
+    }
+  }
+
+  async followLogs(containerId: string, options: { since?: number; signal: AbortSignal }, onLine: (line: LogLine) => void): Promise<void> {
+    if (options.signal.aborted) return
+    const stream = (await this.docker.getContainer(containerId).logs({
+      follow: true,
+      stdout: true,
+      stderr: true,
+      timestamps: true,
+      since: options.since ?? 0,
+    })) as unknown as NodeJS.ReadableStream & { destroy(): void }
+    const outputs = { stdout: new PassThrough(), stderr: new PassThrough() }
+    this.docker.modem.demuxStream(stream, outputs.stdout, outputs.stderr)
+    const emit = (name: LogLine['stream'], raw: string) => {
+      const space = raw.indexOf(' ')
+      const ts = Date.parse(raw.slice(0, space))
+      onLine({ ts: Number.isNaN(ts) ? Date.now() : ts, stream: name, text: (Number.isNaN(ts) ? raw : raw.slice(space + 1)).slice(0, LOG_LINE_LIMIT) })
+    }
+    for (const name of ['stdout', 'stderr'] as const) {
+      const splitter = new LineSplitter()
+      outputs[name].on('data', (chunk: Buffer) => {
+        for (const line of splitter.push(chunk.toString('utf8'))) emit(name, line.replace(/\r$/, ''))
+      })
+      outputs[name].on('end', () => {
+        const rest = splitter.flush()
+        if (rest) emit(name, rest)
+      })
+    }
+    const abort = () => stream.destroy()
+    options.signal.addEventListener('abort', abort, { once: true })
+    await new Promise<void>((resolve) => {
+      stream.on('end', () => resolve())
+      stream.on('close', () => resolve())
+      stream.on('error', () => resolve())
+    })
+    options.signal.removeEventListener('abort', abort)
+    outputs.stdout.end()
+    outputs.stderr.end()
+  }
+
+  async stopEnvironment(key: string, services?: string[]): Promise<void> {
+    const filters = JSON.stringify({ label: ['factorix.kind=env', `factorix.env=${key}`] })
+    const containers = await this.docker.listContainers({ all: true, filters })
+    const chosen = services ? containers.filter((container) => services.includes(container.Labels['factorix.service'] ?? '')) : containers
+    // A database asked to stop gets to flush, so its data volume is sound for the next start.
+    await Promise.all(
+      chosen.map(async (container) => {
+        if (container.State === 'running') await this.stop(container.Id, 10).catch(() => undefined)
+        await this.remove(container.Id)
+      }),
+    )
+    if (services) return
+    const network = this.docker.getNetwork(environmentNetwork(key))
+    try {
+      const info = (await network.inspect()) as { Containers?: Record<string, unknown> }
+      for (const id of Object.keys(info.Containers ?? {})) await network.disconnect({ Container: id, Force: true }).catch(() => undefined)
+      await network.remove()
+    } catch (error) {
+      if (!isNotFound(error)) throw error
+    }
+  }
+
+  async removeEnvironmentVolumes(key: string, options: { source: boolean }): Promise<void> {
+    const { Volumes } = await this.docker.listVolumes({ filters: JSON.stringify({ label: [`factorix.env=${key}`] }) })
+    for (const volume of Volumes ?? []) {
+      if (volume.Name === environmentSourceVolume(key) && !options.source) continue
+      await this.docker
+        .getVolume(volume.Name)
+        .remove({ force: true })
+        .catch((error) => {
+          if (!isNotFound(error)) throw error
+        })
     }
   }
 }

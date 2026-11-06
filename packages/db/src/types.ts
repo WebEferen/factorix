@@ -1,7 +1,7 @@
 import type { Autonomy, FactoryState, PipelineCursor, PipelineDefinition, RunState, TrackerStateKey } from '@factorix/core'
 import type { PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
 
-export type ConnectionKind = 'linear' | 'gitlab' | 'anthropic' | 'openai' | 'mcp_stdio' | 'mcp_http' | 'generic' | 'slack'
+export type ConnectionKind = 'linear' | 'gitlab' | 'anthropic' | 'openai' | 'mcp_stdio' | 'mcp_http' | 'generic' | 'slack' | 'doppler'
 
 export interface OrganizationRow {
   id: string
@@ -365,6 +365,62 @@ export interface RuntimeModelRow {
   defaultModel: string | null
   models: { id: string; label: string; description: string | null; efforts: ('low' | 'medium' | 'high' | 'xhigh' | 'max')[] }[]
   fetchedAt: Date
+}
+
+export interface ProjectEnvironmentRow {
+  projectId: string
+  orgId: string
+  source: string
+  /** Parsed and validated when saved, so readers can trust its shape. */
+  definition: Record<string, unknown> | null
+  secretSets: {
+    name: string
+    connectionId: string
+    project: string | null
+    config: string | null
+    only: string[]
+    except: string[]
+    agents: boolean
+  }[]
+  version: number
+  updatedBy: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type EnvironmentInstanceState = 'starting' | 'ready' | 'refreshing' | 'stopping' | 'stopped' | 'failed'
+
+export interface EnvironmentServiceStatus {
+  state: 'waiting' | 'starting' | 'ready' | 'failed' | 'stopped'
+  containerId?: string
+  message?: string
+}
+
+export interface EnvironmentInstanceRow {
+  id: string
+  orgId: string
+  projectId: string
+  issueId: string | null
+  runId: string | null
+  kind: 'preview' | 'run'
+  slug: string
+  state: EnvironmentInstanceState
+  definition: Record<string, unknown> | null
+  definitionVersion: number | null
+  secretSets: ProjectEnvironmentRow['secretSets']
+  commits: Record<string, { ref: string; sha: string }>
+  services: Record<string, EnvironmentServiceStatus>
+  source: 'branch' | 'worktree'
+  dataGeneration: number
+  error: string | null
+  startedBy: string | null
+  startedAt: Date | null
+  readyAt: Date | null
+  lastSeenAt: Date | null
+  expiresAt: Date | null
+  stoppedAt: Date | null
+  createdAt: Date
+  updatedAt: Date
 }
 
 export interface ProjectRepoRow {

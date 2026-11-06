@@ -5,7 +5,9 @@ import { connect, isIP, type Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 
 export interface ProxyGrant {
-  runId: string
+  runId?: string
+  /** Where denials are published. Without one they go to the run's own channel. */
+  channel?: string
   /** Exact hostnames, `*.suffix` wildcards, or `*` for any public host. */
   allow: string[]
   anthropicKey?: string | null
@@ -14,7 +16,7 @@ export interface ProxyGrant {
 
 export interface ProxyStore {
   grant(token: string): Promise<ProxyGrant | null>
-  denied(runId: string, denial: { host: string; reason: string }): void
+  denied(grant: ProxyGrant, denial: { host: string; reason: string }): void
 }
 
 export interface ProxyOptions {
@@ -117,8 +119,8 @@ export function createEgressProxy(options: ProxyOptions): Server {
   }
 
   const reject = (grant: ProxyGrant, host: string, reason: string) => {
-    log(`denied ${host} for run ${grant.runId}: ${reason}`)
-    options.store.denied(grant.runId, { host, reason })
+    log(`denied ${host} for ${grant.channel ?? `run ${grant.runId}`}: ${reason}`)
+    options.store.denied(grant, { host, reason })
   }
 
   const reverse = async (

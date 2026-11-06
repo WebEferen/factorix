@@ -70,7 +70,7 @@ describe('egress proxy', () => {
     proxy = createEgressProxy({
       store: {
         grant: async (token) => grants.get(token) ?? null,
-        denied: (runId, denial) => denials.push({ runId, ...denial }),
+        denied: (grant, denial) => denials.push({ runId: grant.runId ?? '', ...denial }),
       },
       anthropicUpstream: `http://127.0.0.1:${upstreamPort}`,
       openaiUpstream: `http://127.0.0.1:${upstreamPort}/`,

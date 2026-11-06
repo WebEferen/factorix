@@ -8,6 +8,7 @@ const image = process.env.FACTORIX_SANDBOX_IMAGE ?? 'factorix/sandbox-base:dev'
 const docker = dockerClientFromEnv()
 const suffix = randomUUID().slice(0, 8)
 const remoteVolume = `fx-test-remote-${suffix}`
+const previewVolume = `fx-test-preview-${suffix}`
 const key = `test-${suffix}`
 const remoteUrl = '/remote/repo.git'
 
@@ -23,6 +24,26 @@ async function runAsRoot(script: string): Promise<string> {
   const logs = (await container.logs({ stdout: true, stderr: true })).toString('utf8')
   await container.remove({ force: true })
   if (StatusCode !== 0) throw new Error(`setup failed: ${logs}`)
+  return logs
+}
+
+/** Runs a script as the agent's user with a volume at /v. */
+async function inVolume(volume: string, script: string, readOnly = true): Promise<string> {
+  const container = await docker.createContainer({
+    Image: image,
+    User: '1000',
+    Cmd: ['bash', '-c', script],
+    HostConfig: { Mounts: [{ Type: 'volume', Source: volume, Target: '/v', ReadOnly: readOnly }] },
+  })
+  await container.start()
+  const { StatusCode } = (await container.wait()) as { StatusCode: number }
+  const raw = await container.logs({ stdout: true, stderr: true })
+  await container.remove({ force: true })
+  let logs = ''
+  for (let offset = 0; offset + 8 <= raw.length; offset += 8 + raw.readUInt32BE(offset + 4)) {
+    logs += raw.subarray(offset + 8, offset + 8 + raw.readUInt32BE(offset + 4)).toString('utf8')
+  }
+  if (StatusCode !== 0) throw new Error(`script failed: ${logs}`)
   return logs
 }
 
@@ -90,6 +111,10 @@ describe('DockerSandboxProvider', () => {
     for (const id of containers) await provider.remove(id)
     await provider.destroyWorkspace(key)
     await docker.getVolume(remoteVolume).remove({ force: true })
+    await docker
+      .getVolume(previewVolume)
+      .remove({ force: true })
+      .catch(() => undefined)
   })
 
   it('fetches into a mirror and reports the default branch', async () => {
@@ -97,6 +122,14 @@ describe('DockerSandboxProvider', () => {
     expect(result.stderr).toBe('')
     expect(result.exitCode).toBe(0)
     expect(result.values.DEFAULT_BRANCH).toBe('main')
+  })
+
+  it('exports from the mirror into a preview volume without the token, falling back to the base branch', async () => {
+    const source: Workspace = { key, volume: previewVolume, mirrorVolume: workspace.mirrorVolume }
+    await expect(provider.runStep(source, { op: 'export', env: baseEnv, gitToken: 'not-a-real-token' })).rejects.toThrow(/must not receive/)
+    const result = await provider.runStep(source, { op: 'export', env: baseEnv })
+    expect(result.exitCode).toBe(0)
+    expect(result.values).toMatchObject({ REF: 'main', HEAD: expect.stringMatching(/^[0-9a-f]{40}$/) })
   })
 
   it('checks out the working branch with no remote credentials and a tokenless origin', async () => {
@@ -161,6 +194,22 @@ describe('DockerSandboxProvider', () => {
     expect(outputs[2]).toContain(`Factorix-Run: ${script.runId}`)
     expect(events.at(-1)).toMatchObject({ type: 'done', outcome: 'completed' })
     expect(events.map((event) => event.seq).filter((seq) => seq > 0)).toEqual(events.map((_, index) => index + 1))
+  })
+
+  it('exports an agent’s working copy, untracked files included, without touching its repository', async () => {
+    const repo = '/v/repos/repo'
+    await inVolume(workspace.volume, `cd ${repo} && echo changed > base.txt && echo secret.log > .gitignore && echo hidden > secret.log`, false)
+    const state = `cd ${repo} && git --no-optional-locks status --porcelain && git rev-parse HEAD && sha256sum .git/index`
+    const before = await inVolume(workspace.volume, state)
+    const source: Workspace = { key, volume: previewVolume, mirrorVolume: workspace.mirrorVolume }
+    const result = await provider.runStep(source, { op: 'export', env: { ...baseEnv, FX_SOURCE: 'worktree' }, sourceVolume: workspace.volume })
+    expect(result.exitCode, result.stderr).toBe(0)
+    expect(result.values.REF).toBe('working copy')
+    expect(await inVolume(workspace.volume, state)).toBe(before)
+    expect(
+      await inVolume(previewVolume, `cd ${repo} && cat base.txt hello.txt leftover.txt && test ! -e secret.log && git log -1 --format=%s HEAD^`),
+    ).toBe('changed\nhello from the agent\nnot committed\nfeat: add hello\n')
+    await inVolume(workspace.volume, `cd ${repo} && rm .gitignore secret.log && git checkout -q -- base.txt`, false)
   })
 
   it('bundles leftovers as a wip commit with no network', async () => {

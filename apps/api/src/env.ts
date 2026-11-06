@@ -25,6 +25,7 @@ const schema = z.object({
   FACTORIX_STEP_NETWORK: z.string().optional(),
   FACTORIX_AGENT_NETWORK: z.string().optional(),
   FACTORIX_PROXY_URL: z.string().optional(),
+  FACTORIX_STACK: z.string().optional(),
   FACTORIX_ALLOW_SCRIPTED_RUNTIME: booleanish,
   FACTORIX_SYNC_INTERVAL_SECONDS: count(300, 1),
   FACTORIX_RUN_CONCURRENCY: count(3, 1),
@@ -37,6 +38,10 @@ const schema = z.object({
   FACTORIX_OPEN_WORKSPACE_DAYS: count(30, 1),
   FACTORIX_FAILED_CONTAINER_HOURS: count(1),
   FACTORIX_SESSION_DAYS: count(30, 1),
+  FACTORIX_PREVIEW_URL: z.url({ protocol: /^https?$/ }).default('http://preview.localhost:4102'),
+  FACTORIX_PREVIEW_MAX_RUNNING: count(3, 1),
+  FACTORIX_PREVIEW_IDLE_MINUTES: count(60),
+  FACTORIX_PREVIEW_MAX_HOURS: count(24, 1),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
 })

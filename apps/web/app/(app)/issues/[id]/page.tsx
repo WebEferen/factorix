@@ -8,6 +8,7 @@ import { toast } from 'sonner'
 import { AgentPicker, refreshIssueData } from '@/modules/issues/agent-picker'
 import { ApprovalCard } from '@/modules/issues/approval-card'
 import { FACTORY_STATE_LABEL, FactoryStateIcon, PRIORITY_LABEL, PriorityIcon, TrackerStateIcon } from '@/modules/issues/icons'
+import { PreviewHeaderButton, PreviewPanel } from '@/modules/issues/preview-panel'
 import { api } from '@/modules/lib/api'
 import { useIssue } from '@/modules/lib/data'
 import { fullDate, money, stepLabel, timeAgo, titleCase } from '@/modules/lib/format'
@@ -339,6 +340,7 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
   return (
     <>
       <PageHeader crumbs={[{ label: issue.project.name, href: `/projects/${issue.projectId}` }, { label: issue.identifier }]}>
+        <PreviewHeaderButton issueId={issue.id} />
         <RunWorkflowButton issueId={issue.id} projectId={issue.projectId} />
         {canRetry ? (
           <Button size="sm" onClick={() => void action('retry', 'Back in the factory')}>
@@ -392,6 +394,9 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
                 </div>
               </section>
             ) : null}
+            <Boundary label="the preview" resetKey={issue.updatedAt}>
+              <PreviewPanel issueId={issue.id} />
+            </Boundary>
             <IssueWorkflowRuns issueId={issue.id} />
             {threads.length > 0 ? (
               <section>

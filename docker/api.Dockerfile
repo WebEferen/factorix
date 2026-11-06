@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json yarn.lock ./
 COPY apps/api/package.json apps/api/
 COPY apps/egress-proxy/package.json apps/egress-proxy/
+COPY apps/preview-gateway/package.json apps/preview-gateway/
 COPY packages/connectors/package.json packages/connectors/
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
@@ -17,6 +18,7 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY apps/api/src apps/api/src
 COPY apps/egress-proxy/src apps/egress-proxy/src
+COPY apps/preview-gateway/src apps/preview-gateway/src
 COPY packages/connectors/src packages/connectors/src
 COPY packages/core/src packages/core/src
 COPY packages/db/src packages/db/src
@@ -25,5 +27,5 @@ COPY packages/runtime/src packages/runtime/src
 COPY packages/sandbox/src packages/sandbox/src
 COPY packages/schemas/src packages/schemas/src
 USER node
-EXPOSE 4100 8080
+EXPOSE 4100 4102 8080
 CMD ["node_modules/.bin/tsx", "apps/api/src/server.ts"]

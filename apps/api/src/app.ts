@@ -7,7 +7,9 @@ import { HttpError } from './lib/errors'
 import { authRoutes } from './routes/auth'
 import { catalogRoutes } from './routes/catalog'
 import { connectionRoutes } from './routes/connections'
+import { environmentRoutes } from './routes/environments'
 import { issueRoutes } from './routes/issues'
+import { previewRoutes } from './routes/previews'
 import { projectRoutes } from './routes/projects'
 import { runRoutes } from './routes/runs'
 import { settingsRoutes } from './routes/settings'
@@ -68,8 +70,10 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
   authRoutes(app, deps)
   catalogRoutes(app, deps)
   connectionRoutes(app, deps)
+  environmentRoutes(app, deps)
   projectRoutes(app, deps)
   issueRoutes(app, deps)
+  previewRoutes(app, deps, fanout)
   runRoutes(app, deps, fanout)
   settingsRoutes(app, deps)
   webhookRoutes(app, deps)

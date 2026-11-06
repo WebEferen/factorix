@@ -47,6 +47,9 @@ export async function relayDomainEvents(deps: Pick<AppDeps, 'db' | 'queues' | 'r
         case 'workflow.step':
           await queues.workflows.add('step', { runId: payload.runId, nodeId: payload.nodeId }, { jobId })
           break
+        case 'environment.action':
+          await queues.environments.add(payload.action, { instanceId: payload.instanceId, action: payload.action }, { jobId })
+          break
         case 'run.ping':
           await redis.publish(runCommandChannel(payload.runId), '1')
           break

@@ -1,5 +1,6 @@
 export * from './dtos'
 export * from './egress'
+export * from './environments'
 export * from './inputs'
 export * from './settings'
 export * from './workflows'

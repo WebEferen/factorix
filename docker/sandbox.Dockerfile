@@ -21,7 +21,7 @@ RUN apt-get update \
 COPY docker/sandbox/package.json /opt/factorix/package.json
 RUN cd /opt/factorix && npm install --omit=dev --no-audit --no-fund
 COPY --from=build /out/index.mjs /opt/factorix/runner/index.mjs
-COPY docker/sandbox/factorix-git docker/sandbox/git-askpass /opt/factorix/bin/
+COPY docker/sandbox/factorix-git docker/sandbox/git-askpass docker/sandbox/doppler /opt/factorix/bin/
 COPY docker/sandbox/prepare-commit-msg /opt/factorix/hooks/prepare-commit-msg
 
 RUN usermod --login agent --home /workspace/.home node \

@@ -92,7 +92,7 @@ function updateOf<Shape extends z.ZodRawShape>(schema: z.ZodObject<Shape>): z.Zo
   return z.object(shape) as unknown as z.ZodType<Partial<z.output<z.ZodObject<Shape>>>>
 }
 
-export const CONNECTION_KINDS = ['linear', 'gitlab', 'anthropic', 'openai', 'mcp_stdio', 'mcp_http', 'generic', 'slack'] as const
+export const CONNECTION_KINDS = ['linear', 'gitlab', 'anthropic', 'openai', 'mcp_stdio', 'mcp_http', 'generic', 'slack', 'doppler'] as const
 export type ConnectionKind = (typeof CONNECTION_KINDS)[number]
 
 export const connectionInput = z.object({

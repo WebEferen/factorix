@@ -4,6 +4,7 @@ import type { Db, IssueRow, ProjectRow, RunRow } from '@factorix/db'
 import type { RunEventBody, RunOutcome } from '@factorix/runtime'
 import type { SandboxProvider, StepResult, Workspace } from '@factorix/sandbox'
 import { emit } from '../lib/outbox'
+import { refreshAfterPush } from './previews'
 import { type LinkedMergeRequest, mergeRequestsOf } from './repos'
 import { syncDiscussions } from './scm-sync'
 import type { SpecRepo } from './spec'
@@ -228,6 +229,7 @@ async function finalizeWrites(context: FinalizeContext): Promise<FinalizeResult>
   if (!issue || !project || !scm) throw new Error('A writing phase needs an issue, a project, and an SCM connection')
   const outcomes: PushOutcome[] = []
   for (const repo of context.repos) outcomes.push(await pushWork(context, repo))
+  if (outcomes.some((outcome) => outcome.pushed)) await refreshAfterPush(db, issue.id)
   const diff = await captureDiff(context)
 
   if (run.phase === 'address_review') {

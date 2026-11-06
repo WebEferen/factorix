@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import {
   type AgentRuntime,
+  BRIDGE_SOCKET,
   decodeCommand,
   encodeLine,
   JOURNAL_FILE,
@@ -12,6 +13,8 @@ import {
   type RuntimeId,
   type RuntimeModelCatalog,
 } from '@factorix/runtime'
+import { serveBridge } from './bridge'
+import { runMcpServer } from './mcp'
 import { RunnerSession } from './session'
 
 console.log = console.error
@@ -56,7 +59,7 @@ async function main(): Promise<void> {
       writes = writes.then(() => writeStdout(line))
     }
     const runtime = await loadRuntime(spec.runtime)
-    holder.session = new RunnerSession({
+    const session = new RunnerSession({
       spec,
       runtime,
       io,
@@ -65,7 +68,14 @@ async function main(): Promise<void> {
         void writes.finally(() => process.exit(0))
       },
     })
-    await holder.session.run()
+    holder.session = session
+    try {
+      await serveBridge(BRIDGE_SOCKET, (op, input) => session.request(op, input))
+      process.env.FACTORIX_BRIDGE = BRIDGE_SOCKET
+    } catch (error) {
+      console.error('the factorix bridge did not start', error)
+    }
+    await session.run()
     await writes
     process.exit(0)
   }
@@ -106,4 +116,5 @@ async function printModels(): Promise<void> {
   process.exit(0)
 }
 
-void (process.argv.includes('--models') ? printModels() : main())
+if (process.argv.includes('--mcp')) void runMcpServer().then(() => process.exit(0))
+else void (process.argv.includes('--models') ? printModels() : main())

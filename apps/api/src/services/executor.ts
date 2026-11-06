@@ -1,32 +1,37 @@
 import { randomUUID } from 'node:crypto'
-import { egressHostsOf, type ScmConnector } from '@factorix/connectors'
+import type { ScmConnector } from '@factorix/connectors'
 import { PHASES } from '@factorix/core'
-import { type ConnectionRow, type IssueRow, json, type OrganizationRow, type ProjectRow, type RunRow } from '@factorix/db'
+import { type ConnectionRow, type IssueRow, json, type ProjectRow, type RunRow } from '@factorix/db'
 import {
   decodeEvent,
   type ErrorCode,
   encodeLine,
   estimateCostUsd,
   type Phase,
+  RUNTIME_CAPABILITIES,
+  type RunCommand,
   type RunEvent,
   type RunOutcome,
   type RunSpec,
   type UsageSnapshot,
 } from '@factorix/runtime'
 import type { AgentHandle, SandboxProvider, StartAgentOptions, Workspace } from '@factorix/sandbox'
-import { egressGroups } from '@factorix/schemas'
 import type { Redis } from 'ioredis'
 import type { AppDeps } from '../deps'
-import { networkSettingsDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { orgChannel, proxyTokenKey, runCommandChannel, runProxyChannel } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
 import { emit } from '../lib/outbox'
 import { decryptConnection, resolveModelKey, scmConnectionFor, scmFor } from './connections'
+import { restrictedHosts } from './egress'
+import { PREVIEW_DOMAIN } from './environment-runtime'
+import { definitionOf, getEnvironmentRow } from './environments'
 import { EventBuffer } from './event-buffer'
 import { finalizePhase, StepFailed, type WorkRepo } from './finalize'
 import { releaseIssueLock } from './pipeline'
+import { answerPreviewTool } from './preview-tool'
 import { mergeRequestsOf, projectRepos } from './repos'
+import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
 import { buildRunSpec, sessionToResume } from './spec'
 import { ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
@@ -348,7 +353,7 @@ class RunExecution {
     }
     const proxy = new URL(env.FACTORIX_PROXY_URL)
     const authed = `${proxy.protocol}//${this.proxyToken}:x@${proxy.host}`
-    const noProxy = `${proxy.hostname},localhost,127.0.0.1`
+    const noProxy = `${proxy.hostname},localhost,127.0.0.1,.${PREVIEW_DOMAIN}`
     Object.assign(values, {
       HTTP_PROXY: authed,
       HTTPS_PROXY: authed,
@@ -385,16 +390,7 @@ class RunExecution {
     const connectionIds = this.project
       ? [this.project.trackerConnectionId, this.project.scmConnectionId]
       : [this.run.trigger.scmConnectionId as string | undefined].filter((id) => id !== undefined)
-    const connections = await this.deps.db<ConnectionRow>('connections').whereIn('id', connectionIds).select('kind', 'config')
-    const org = (await this.deps.db<OrganizationRow>('organizations').where({ id: this.run.orgId }).first()) as OrganizationRow
-    const groups = egressGroups(
-      networkSettingsDto(org),
-      connections.map((connection) => ({
-        name: connection.kind,
-        egressHosts: egressHostsOf(connection.kind, connection.config as Record<string, unknown>),
-      })),
-    )
-    return [...groups.flatMap((group) => group.hosts), ...(this.project?.networkAllowlist ?? []), ...mcpHosts]
+    return [...(await restrictedHosts(this.deps.db, this.run.orgId, this.project, connectionIds)), ...mcpHosts]
   }
 
   private async ciFailures(): Promise<string[]> {
@@ -423,6 +419,7 @@ class RunExecution {
     const checkout = await this.mirrorAndCheckout()
     if (checkout.head)
       await db('workspaces').where({ id: this.run.workspaceId }).update({ headSha: checkout.head, branch: this.branch, lastUsedAt: db.fn.now() })
+    const services = await this.startServices()
 
     const several = this.repos.length > 1
     const repoDocs: { path: string; content: string }[] = []
@@ -435,6 +432,12 @@ class RunExecution {
     }
 
     const notes: string[] = []
+    if (services.note) notes.push(services.note)
+    const previewTool = await this.offersPreviewTool()
+    if (previewTool)
+      notes.push(
+        'This project can run the issue as a preview. preview_start runs your working copy, uncommitted files included, and preview_status, preview_logs, and preview_stop follow it. Use it to check your change running before you finish.',
+      )
     if (checkout.conflicts.length > 0)
       notes.push(
         `The branch ${this.branch} in ${checkout.conflicts.join(', ')} could not be rebased onto its remote copy, so your local commits are not on top of the latest remote work. Reconcile them before you finish.`,
@@ -465,6 +468,7 @@ class RunExecution {
       ciFailures: await this.ciFailures(),
       extraNotes: notes,
       resumeSessionRef,
+      previewTool,
       scripted: this.deps.scriptFor?.(this.run.phase, this.run.attempt),
     })
     resumeSessionRef = undefined
@@ -473,7 +477,8 @@ class RunExecution {
       runId: this.run.id,
       issueKey: workspaceKey(this.run),
       readOnlyRepo: PHASES[this.run.phase as Phase].readOnlyRepo,
-      env: await this.containerEnv(),
+      env: withServices(await this.containerEnv(), services.started),
+      networks: services.started?.network ? [services.started.network] : undefined,
       image: this.project?.sandboxImage ?? undefined,
       limits:
         this.project?.limits.memoryMb || this.project?.limits.cpus
@@ -486,6 +491,36 @@ class RunExecution {
     handle.send(encodeLine(spec))
     this.scheduleTimeout()
     return handle
+  }
+
+  /** An issue run gets the preview tools when the project's environment has something to open and the runtime can host them. */
+  private async offersPreviewTool(): Promise<boolean> {
+    if (!this.issue || !this.project || !RUNTIME_CAPABILITIES[this.run.runtime].mcp.stdio) return false
+    return Boolean(definitionOf(await getEnvironmentRow(this.deps.db, this.project.id))?.expose)
+  }
+
+  /** What the project's environment gives agent runs. If the services fail, the run goes on without them and the agent is told. */
+  private async startServices(): Promise<{ started: RunServices | null; note?: string }> {
+    if (!this.project) return { started: null }
+    try {
+      const started = await startRunServices(this.deps, {
+        run: this.run,
+        project: this.project,
+        workspace: this.workspace as Workspace,
+        repos: this.repos.map((repo) => repo.name),
+        allow: () => this.allowlist(),
+        ttlSeconds: (this.project.runTimeoutMinutes ?? 90) * 60 + 3600,
+        log: (level, message) => this.log(level, message, 'services'),
+      })
+      return { started, note: started?.note || undefined }
+    } catch (error) {
+      const message = (error as Error).message
+      this.log('error', `The run's services did not start. ${message}`, 'services')
+      return {
+        started: null,
+        note: `The services this project gives agent runs did not start, so anything that needs them will fail: ${message.split('\n')[0]}`,
+      }
+    }
   }
 
   private scheduleTimeout(): void {
@@ -575,7 +610,22 @@ class RunExecution {
         if (event.sessionRef) this.run.sessionRef = event.sessionRef
         this.usage = event.usage
         break
+      case 'request':
+        // A preview can take minutes, and events keep flowing meanwhile.
+        void this.answer(event)
+        break
     }
+  }
+
+  private async answer(event: Extract<RunEvent, { type: 'request' }>): Promise<void> {
+    let response: RunCommand
+    try {
+      const result = await answerPreviewTool(this.deps, { run: this.run, issue: this.issue, op: event.op, input: event.input })
+      response = { type: 'response', requestId: event.requestId, ok: true, result }
+    } catch (error) {
+      response = { type: 'response', requestId: event.requestId, ok: false, error: (error as Error).message }
+    }
+    this.handle?.send(encodeLine(response))
   }
 
   private async onUsage(event: Extract<RunEvent, { type: 'usage' }>): Promise<void> {
@@ -649,6 +699,7 @@ class RunExecution {
     await this.setState('suspended', { leaseOwner: null, leaseExpiresAt: null, containerId: null, lastRunnerSeq: this.events.lastRunnerSeq })
     this.run.containerId = null
     if (containerId) await this.deps.sandbox.stop(containerId, 5).catch(() => undefined)
+    await stopRunServices(this.deps, this.run.id).catch(() => undefined)
     this.handle?.detach()
   }
 
@@ -818,7 +869,20 @@ class RunExecution {
       }
     })
     this.run.state = input.state
+    // The cleanup sweep retries anything left behind here.
+    await stopRunServices(this.deps, this.run.id).catch(() => undefined)
   }
+}
+
+/** The run's own values come first, so nothing in the definition can replace the proxy, the model keys, or the run's identity. */
+function withServices(env: Record<string, string>, services: RunServices | null): Record<string, string> {
+  if (!services) return env
+  const merged = { ...services.env, ...env }
+  if (env.NO_PROXY && services.noProxy.length > 0) {
+    merged.NO_PROXY = [env.NO_PROXY, ...services.noProxy].join(',')
+    merged.no_proxy = merged.NO_PROXY
+  }
+  return merged
 }
 
 function summaryOf(output: unknown, finalText: string | undefined): string | undefined {

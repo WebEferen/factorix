@@ -11,6 +11,7 @@ import { createQueues, QUEUE_NAMES } from './queues'
 import { abandonActiveRuns, executeRun, newWorkerId, releaseActiveRuns } from './services/executor'
 import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from './services/maintenance'
 import { advanceIssue } from './services/pipeline'
+import { runPreviewAction, stopAllPumps, sweepPreviews } from './services/preview-runner'
 import { relayDomainEvents } from './services/relay'
 import { refreshRuntimeModels } from './services/runtime-models'
 import { checkCi, handleScmEvent, mergeIssue, revertIssue, settleCi } from './services/scm-inbound'
@@ -23,6 +24,7 @@ const RECOVERY_INTERVAL_MS = 30_000
 const WORKFLOW_SWEEP_INTERVAL_MS = 15_000
 const REAP_INTERVAL_MS = 15 * 60_000
 const SETTINGS_INTERVAL_MS = 15_000
+const PREVIEW_SWEEP_INTERVAL_MS = 30_000
 
 export interface WorkerHandle {
   runConcurrency(): number
@@ -111,6 +113,11 @@ export function startWorkers(
       { ...base, concurrency: 5 },
     ),
     new Worker(
+      QUEUE_NAMES.environments,
+      async (job) => runPreviewAction({ ...deps, sandbox: deps.sandbox, owner }, job.data.instanceId, job.data.action),
+      { ...base, concurrency: 4, lockDuration: 60_000 },
+    ),
+    new Worker(
       QUEUE_NAMES.maintenance,
       async (job) => {
         if (job.name === 'sync') await syncAllProjects(deps, log)
@@ -165,12 +172,19 @@ export function startWorkers(
     REAP_INTERVAL_MS,
   )
 
+  const previewTimer = setInterval(
+    () => void sweepPreviews({ ...deps, sandbox: deps.sandbox, owner }).catch((error: Error) => log(`preview sweep failed: ${error.message}`)),
+    deps.timings?.previewSweepMs ?? PREVIEW_SWEEP_INTERVAL_MS,
+  )
+
   const workflowTimer = setInterval(
     () => void sweepWorkflows(deps).catch((error: Error) => log(`workflow sweep failed: ${error.message}`)),
     deps.timings?.workflowSweepMs ?? WORKFLOW_SWEEP_INTERVAL_MS,
   )
 
   const stopTimers = () => {
+    clearInterval(previewTimer)
+    stopAllPumps()
     clearInterval(workflowTimer)
     clearInterval(relayTimer)
     clearInterval(recoveryTimer)
@@ -206,6 +220,7 @@ async function main(): Promise<void> {
     image: env.FACTORIX_SANDBOX_IMAGE,
     stepNetwork: env.FACTORIX_STEP_NETWORK,
     agentNetwork: env.FACTORIX_AGENT_NETWORK,
+    stack: env.FACTORIX_STACK,
   })
   const deps = { db, redis, env, secrets: createSecretBox(env.FACTORIX_SECRET_KEY), connectors: realConnectors, queues, sandbox }
   const handle = startWorkers(deps)

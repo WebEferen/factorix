@@ -3,3 +3,4 @@ export type RunCommand =
   | { type: 'message'; text: string }
   | { type: 'cancel'; reason: string; graceSeconds: number }
   | { type: 'ping' }
+  | { type: 'response'; requestId: string; ok: boolean; result?: unknown; error?: string }

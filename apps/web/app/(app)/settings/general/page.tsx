@@ -11,6 +11,7 @@ const GROUPS: { name: PlatformSettingSpec['group']; description: string }[] = [
   { name: 'Agents', description: 'How much runs at once, and what it may run on.' },
   { name: 'Sync', description: 'How closely Factorix follows your tracker and your code.' },
   { name: 'Disk', description: 'What stays on disk, and for how long.' },
+  { name: 'Previews', description: 'How many previews run, and when they stop by themselves.' },
   { name: 'Access', description: 'How people and webhooks reach this instance.' },
 ]
 

@@ -11,6 +11,7 @@ export const QUEUE_NAMES = {
   maintenance: 'maintenance',
   projectSync: 'project-sync',
   workflows: 'workflows',
+  environments: 'environments',
 } as const
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES]
@@ -25,6 +26,7 @@ export interface Queues {
   maintenance: Queue
   projectSync: Queue
   workflows: Queue
+  environments: Queue
   close(): Promise<void>
 }
 
@@ -53,6 +55,11 @@ export function createQueues(connection: Redis, prefix?: string): Queues {
     maintenance: make(QUEUE_NAMES.maintenance),
     projectSync: make(QUEUE_NAMES.projectSync),
     workflows: make(QUEUE_NAMES.workflows),
+    // A failed start is recorded on the preview, and starting again is up to a person.
+    environments: new Queue(QUEUE_NAMES.environments, {
+      ...options,
+      defaultJobOptions: { removeOnComplete: { count: 1000 }, removeOnFail: { count: 5000 }, attempts: 1 },
+    }),
   }
   return {
     ...queues,

@@ -10,8 +10,8 @@ const server = createEgressProxy({
       const raw = await redis.get(`proxy:token:${token}`)
       return raw ? (JSON.parse(raw) as ProxyGrant) : null
     },
-    denied(runId, denial) {
-      void redis.publish(`run:${runId}:proxy`, JSON.stringify(denial)).catch(() => undefined)
+    denied(grant, denial) {
+      void redis.publish(grant.channel ?? `run:${grant.runId}:proxy`, JSON.stringify(denial)).catch(() => undefined)
     },
   },
   anthropicUpstream: process.env.FACTORIX_ANTHROPIC_UPSTREAM,

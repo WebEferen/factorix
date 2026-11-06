@@ -4,6 +4,7 @@ import {
   type ApprovalDecision,
   type ApprovalRequest,
   AsyncQueue,
+  type BridgeOp,
   EMPTY_USAGE,
   type RunCommand,
   type RunControl,
@@ -22,6 +23,15 @@ export interface SessionOptions {
   onForceExit?: () => void
 }
 
+/** A worker that restarts loses the question, so the caller hears back instead of waiting forever. */
+const REQUEST_TIMEOUT_MS = 90_000
+
+interface PendingRequest {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
+
 /** Owns everything between the wire protocol and an adapter: sequencing, approvals, cancellation, and the single-`done` guarantee. */
 export class RunnerSession {
   private seq: number
@@ -30,6 +40,7 @@ export class RunnerSession {
   private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>()
   /** Decisions can arrive before the request on a replay, or twice after a worker restart. */
   private readonly earlyDecisions = new Map<string, ApprovalDecision>()
+  private readonly pendingRequests = new Map<string, PendingRequest>()
   private doneEmitted = false
   private forceExitTimer: NodeJS.Timeout | null = null
 
@@ -66,7 +77,31 @@ export class RunnerSession {
         return
       case 'ping':
         return
+      case 'response': {
+        const pending = this.pendingRequests.get(command.requestId)
+        if (!pending) return
+        this.pendingRequests.delete(command.requestId)
+        clearTimeout(pending.timer)
+        if (command.ok) pending.resolve(command.result)
+        else pending.reject(new Error(command.error ?? 'Factorix could not do that.'))
+        return
+      }
     }
+  }
+
+  /** Asks the worker for something only Factorix can do. It answers with a `response` command. */
+  request(op: BridgeOp, input: unknown, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+    if (this.abort.signal.aborted || this.doneEmitted) return Promise.reject(new Error('The run is ending.'))
+    const requestId = randomUUID()
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(requestId)
+        reject(new Error('Factorix did not answer in time. Try again in a moment.'))
+      }, timeoutMs)
+      timer.unref?.()
+      this.pendingRequests.set(requestId, { resolve, reject, timer })
+      this.write({ type: 'request', requestId, op, input })
+    })
   }
 
   private cancel(graceSeconds: number): void {
@@ -78,6 +113,11 @@ export class RunnerSession {
       resolve({ decision: 'reject', message: 'The run was cancelled.' })
     }
     this.messages.close()
+    for (const [id, pending] of this.pendingRequests) {
+      this.pendingRequests.delete(id)
+      clearTimeout(pending.timer)
+      pending.reject(new Error('The run was cancelled.'))
+    }
     this.forceExitTimer = setTimeout(() => {
       this.write({ type: 'done', outcome: 'cancelled', finalText: '', sessionRef: this.options.spec.resume?.sessionRef ?? '', usage: EMPTY_USAGE })
       this.options.onForceExit?.()

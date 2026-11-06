@@ -31,6 +31,9 @@ export function envSettings(env: Env): PlatformSettings {
     publicUrl: env.FACTORIX_PUBLIC_URL,
     cookieSecure: env.COOKIE_SECURE,
     sessionDays: env.FACTORIX_SESSION_DAYS,
+    previewMaxRunning: env.FACTORIX_PREVIEW_MAX_RUNNING,
+    previewIdleMinutes: env.FACTORIX_PREVIEW_IDLE_MINUTES,
+    previewMaxHours: env.FACTORIX_PREVIEW_MAX_HOURS,
   }
 }
 

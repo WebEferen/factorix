@@ -15,6 +15,9 @@ export interface PlatformSettings {
   publicUrl: string
   cookieSecure: boolean
   sessionDays: number
+  previewMaxRunning: number
+  previewIdleMinutes: number
+  previewMaxHours: number
 }
 
 export type PlatformSettingKey = keyof PlatformSettings
@@ -22,7 +25,7 @@ export type PlatformSettingKey = keyof PlatformSettings
 export interface PlatformSettingSpec {
   key: PlatformSettingKey
   env: string
-  group: 'Agents' | 'Sync' | 'Disk' | 'Access'
+  group: 'Agents' | 'Sync' | 'Disk' | 'Previews' | 'Access'
   label: string
   hint: string
   kind: 'integer' | 'boolean' | 'url'
@@ -149,6 +152,38 @@ export const PLATFORM_SETTINGS: readonly PlatformSettingSpec[] = [
     unit: 'hours',
     min: 0,
     max: 168,
+  },
+  {
+    key: 'previewMaxRunning',
+    env: 'FACTORIX_PREVIEW_MAX_RUNNING',
+    group: 'Previews',
+    label: 'Previews running at once',
+    hint: 'Across all projects. Starting one more asks people to stop another first.',
+    kind: 'integer',
+    min: 1,
+    max: 50,
+  },
+  {
+    key: 'previewIdleMinutes',
+    env: 'FACTORIX_PREVIEW_IDLE_MINUTES',
+    group: 'Previews',
+    label: 'Stop a preview nobody opens after',
+    hint: 'Counted from the last request through the preview address. With 0, only the time limit below stops it.',
+    kind: 'integer',
+    unit: 'minutes',
+    min: 0,
+    max: 10_080,
+  },
+  {
+    key: 'previewMaxHours',
+    env: 'FACTORIX_PREVIEW_MAX_HOURS',
+    group: 'Previews',
+    label: 'Stop any preview after',
+    hint: 'Counted from its start. Installed dependencies and data stay, so starting it again is quick.',
+    kind: 'integer',
+    unit: 'hours',
+    min: 1,
+    max: 720,
   },
   {
     key: 'publicUrl',

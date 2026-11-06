@@ -1,7 +1,8 @@
 'use client'
 
 import type { ProjectDto } from '@factorix/schemas'
-import { AlertTriangle, Loader2, Plus, RefreshCw, Settings2 } from 'lucide-react'
+import { AlertTriangle, Container, Loader2, Plus, RefreshCw, Settings2 } from 'lucide-react'
+import Link from 'next/link'
 import { Suspense, use, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { useSWRConfig } from 'swr'
@@ -12,7 +13,21 @@ import { useAgents, useConnections, useIssues, useProject } from '@/modules/lib/
 import { AutonomyPicker, pickedFromProject, RepoCommands, RepoPicker, reposForApi, SandboxFields, WebhookSetup } from '@/modules/projects/forms'
 import { PageBody, PageHeader } from '@/modules/shell/page-header'
 import { useShell } from '@/modules/shell/state'
-import { Button, Dialog, DialogColumns, DialogFooter, EmptyState, ErrorState, Field, Input, ListSkeleton, Select, Tabs, Tooltip } from '@/modules/ui'
+import {
+  Button,
+  buttonStyles,
+  Dialog,
+  DialogColumns,
+  DialogFooter,
+  EmptyState,
+  ErrorState,
+  Field,
+  Input,
+  ListSkeleton,
+  Select,
+  Tabs,
+  Tooltip,
+} from '@/modules/ui'
 import { Boundary } from '@/modules/ui/boundary'
 import { IssuesArt, NoMatchArt } from '@/modules/ui/empty-art'
 
@@ -225,6 +240,11 @@ function ProjectView({ id }: { id: string }) {
           <Button size="icon" variant="ghost" aria-label="Sync with the tracker" loading={importing} onClick={() => void sync()}>
             {importing ? null : <RefreshCw />}
           </Button>
+        </Tooltip>
+        <Tooltip label="Environment for previews and agent runs">
+          <Link href={`/projects/${id}/environment`} aria-label="Environment" className={buttonStyles({ size: 'icon', variant: 'ghost' })}>
+            <Container />
+          </Link>
         </Tooltip>
         <Tooltip label="Project settings">
           <Button size="icon" variant="ghost" aria-label="Project settings" onClick={() => setSettings(true)}>

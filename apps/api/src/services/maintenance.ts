@@ -1,6 +1,9 @@
-import type { IssueRow, ProjectRow, RunRow, WorkspaceRow } from '@factorix/db'
+import type { EnvironmentInstanceRow, IssueRow, ProjectRow, RunRow, WorkspaceRow } from '@factorix/db'
+import type { PlatformSettings } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { expireApprovals } from './approvals'
+import { LIVE_STATES } from './previews'
+import { reapRunServices } from './run-services'
 import { pollOpenMergeRequests } from './scm-inbound'
 import { readSettings } from './settings'
 import { IMPORT_STALE_MS, requestProjectImport, syncProjectIssues } from './tracker-sync'
@@ -26,21 +29,41 @@ export async function recoverRuns(deps: Pick<AppDeps, 'db' | 'queues'>): Promise
   return stale.length + queuedTooLong.length
 }
 
+/** How long an issue's disk stays after its last use, by where the issue ended up. */
+function retentionMs(issueId: string | null, state: IssueRow['factoryState'] | undefined, settings: PlatformSettings): number {
+  if (!issueId) return AD_HOC_RETENTION_MS
+  if (state === 'done' || state === 'cancelled') return settings.finishedWorkspaceHours * HOUR
+  if (state === 'failed') return settings.failedWorkspaceDays * DAY
+  return settings.openWorkspaceDays * DAY
+}
+
 export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'>): Promise<{ containers: number; volumes: number }> {
   const { db, sandbox } = deps
   if (!sandbox) return { containers: 0, volumes: 0 }
   const settings = await readSettings(deps)
+  await reapRunServices({ db, sandbox })
+  // Another stack on the same Docker host owns what carries its name. Preview objects without one belong to a process with no
+  // stack, such as a test, so only such a process removes them.
+  const stack = deps.env.FACTORIX_STACK
   const managed = await sandbox.listManaged()
   const runIds = managed.containers.flatMap((container) => (container.runId ? [container.runId] : []))
   const runs = runIds.length > 0 ? await db<RunRow>('runs').whereIn('id', runIds).select('id', 'state', 'finishedAt') : []
   const byId = new Map(runs.map((run) => [run.id, run]))
+  const envKeys = [...new Set([...managed.containers, ...managed.volumes].flatMap((item) => (item.envKey ? [item.envKey] : [])))]
+  const instances = envKeys.length > 0 ? await db<EnvironmentInstanceRow>('environment_instances').whereIn('slug', envKeys) : []
+  const instanceBySlug = new Map(instances.map((instance) => [instance.slug, instance]))
   const now = Date.now()
   let containers = 0
   for (const container of managed.containers) {
+    if (container.kind === 'env' ? container.stack !== stack : container.stack !== undefined && container.stack !== stack) continue
     const age = now - container.createdAt.getTime()
     let remove = false
     if (container.kind === 'step') {
       remove = !container.running && age > HOUR
+    } else if (container.kind === 'env') {
+      // A start creates containers before it marks anything, so only leftovers older than a start are taken.
+      const instance = container.envKey ? instanceBySlug.get(container.envKey) : undefined
+      remove = age > 10 * 60_000 && (!instance || !LIVE_STATES.includes(instance.state))
     } else {
       const run = container.runId ? byId.get(container.runId) : undefined
       if (!run) remove = age > HOUR
@@ -73,13 +96,7 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'
   for (const workspace of workspaces) {
     const idle = now - workspace.lastUsedAt.getTime()
     const state = workspace.issueId ? issueState.get(workspace.issueId) : undefined
-    const limit = !workspace.issueId
-      ? AD_HOC_RETENTION_MS
-      : state === 'done' || state === 'cancelled'
-        ? settings.finishedWorkspaceHours * HOUR
-        : state === 'failed'
-          ? settings.failedWorkspaceDays * DAY
-          : settings.openWorkspaceDays * DAY
+    const limit = retentionMs(workspace.issueId, state, settings)
     if (idle < limit) continue
     // Removing a large volume takes a while, so the list above can be out of date by the time this one comes up.
     const current = await db<WorkspaceRow>('workspaces').where({ id: workspace.id }).first()
@@ -95,6 +112,27 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'
       await trx('runs').where({ workspaceId: workspace.id }).update({ sessionRef: null })
     })
     volumes += 1
+  }
+
+  // A stopped preview keeps its installs and data for a quick restart, as long as the issue would keep its workspace.
+  const volumeKeys = new Set(managed.volumes.flatMap((volume) => (volume.envKey && volume.stack === stack ? [volume.envKey] : [])))
+  const previewIssues = await db<IssueRow>('issues')
+    .whereIn(
+      'id',
+      instances.flatMap((instance) => (instance.issueId ? [instance.issueId] : [])),
+    )
+    .select('id', 'factoryState')
+  const previewIssueState = new Map(previewIssues.map((issue) => [issue.id, issue.factoryState]))
+  for (const key of volumeKeys) {
+    const instance = instanceBySlug.get(key)
+    if (instance && LIVE_STATES.includes(instance.state)) continue
+    const since = instance ? (instance.stoppedAt ?? instance.updatedAt).getTime() : 0
+    if (instance?.kind === 'preview' && now - since < retentionMs(instance.issueId, previewIssueState.get(instance.issueId ?? ''), settings)) continue
+    try {
+      await sandbox.stopEnvironment(key)
+      await sandbox.removeEnvironmentVolumes(key, { source: true })
+      volumes += 1
+    } catch {}
   }
 
   await db('echo_markers').where('created_at', '<', db.raw(`now() - interval '1 day'`)).delete()

@@ -1,3 +1,4 @@
+import type { BridgeOp } from './bridge'
 import type { RuntimeId } from './spec'
 
 export type ToolCategory = 'read' | 'search' | 'edit' | 'exec' | 'mcp' | 'web' | 'subagent' | 'other'
@@ -31,6 +32,7 @@ export type RunEventBody =
   | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string; source?: string }
   | { type: 'error'; code: ErrorCode; message: string; fatal: boolean }
   | { type: 'done'; outcome: RunOutcome; finalText: string; structuredOutput?: unknown; sessionRef: string; usage: UsageSnapshot }
+  | { type: 'request'; requestId: string; op: BridgeOp; input: unknown }
 
 export type RunEventType = RunEventBody['type']
 

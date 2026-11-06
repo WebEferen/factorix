@@ -1,0 +1,28 @@
+#!/bin/sh
+# Factorix fetches Doppler values itself and puts them in the environment, so the token never enters a container.
+# This stands in for the CLI so scripts written as `doppler run -- <command>` keep working.
+if [ "$1" = run ]; then
+  shift
+  command=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --) shift; break ;;
+      --command) command=$2; shift 2 ;;
+      --command=*) command=${1#--command=}; shift ;;
+      -p|--project|-c|--config|--token|--fallback|--config-dir|--scope|--name-transformer|--mount|--mount-format|--mount-template|--mount-max-reads|--api-host|--dashboard-host|--configuration) shift 2 ;;
+      -*) shift ;;
+      *) break ;;
+    esac
+  done
+  if [ -n "$command" ]; then exec /bin/sh -c "$command"; fi
+  if [ $# -eq 0 ]; then
+    echo 'doppler run: give the command after --' >&2
+    exit 64
+  fi
+  exec "$@"
+fi
+case "$1" in
+  -v|--version|version) echo 'Factorix stand-in for the Doppler CLI. Values come from the environment.'; exit 0 ;;
+esac
+echo "doppler $1: not available here. Factorix puts the secret set's values in the environment, and only doppler run works." >&2
+exit 1

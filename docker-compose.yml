@@ -18,6 +18,10 @@ x-app-env: &app-env
   FACTORIX_OPEN_WORKSPACE_DAYS: ${FACTORIX_OPEN_WORKSPACE_DAYS:-}
   FACTORIX_FAILED_CONTAINER_HOURS: ${FACTORIX_FAILED_CONTAINER_HOURS:-}
   FACTORIX_SESSION_DAYS: ${FACTORIX_SESSION_DAYS:-}
+  FACTORIX_PREVIEW_URL: ${FACTORIX_PREVIEW_URL:-http://preview.localhost:4102}
+  FACTORIX_PREVIEW_MAX_RUNNING: ${FACTORIX_PREVIEW_MAX_RUNNING:-}
+  FACTORIX_PREVIEW_IDLE_MINUTES: ${FACTORIX_PREVIEW_IDLE_MINUTES:-}
+  FACTORIX_PREVIEW_MAX_HOURS: ${FACTORIX_PREVIEW_MAX_HOURS:-}
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
@@ -93,6 +97,7 @@ services:
       FACTORIX_STEP_NETWORK: fx-egress
       FACTORIX_AGENT_NETWORK: fx-agents
       FACTORIX_PROXY_URL: http://egress-proxy:8080
+      FACTORIX_STACK: factorix
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
@@ -113,8 +118,31 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
+    labels:
+      factorix.role: egress
+      factorix.stack: factorix
     restart: unless-stopped
     networks: [fx-backend, fx-agents, fx-egress]
+
+  # The only way in to previews. The worker connects it to each preview's own network.
+  preview-gateway:
+    image: factorix/api:dev
+    pull_policy: never
+    command: [node_modules/.bin/tsx, apps/preview-gateway/src/index.ts]
+    environment:
+      REDIS_URL: redis://redis:6379
+      PORT: 4102
+      FACTORIX_PREVIEW_URL: ${FACTORIX_PREVIEW_URL:-http://preview.localhost:4102}
+    labels:
+      factorix.role: gateway
+      factorix.stack: factorix
+    ports:
+      - ${FACTORIX_WEB_BIND:-127.0.0.1}:4102:4102
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+    networks: [fx-backend]
 
   web:
     build:
@@ -123,6 +151,7 @@ services:
       args:
         API_URL: http://api:4100
         FACTORIX_PUBLIC_URL: ${FACTORIX_PUBLIC_URL:-http://localhost:4101}
+        FACTORIX_PREVIEW_URL: ${FACTORIX_PREVIEW_URL:-http://preview.localhost:4102}
     image: factorix/web:dev
     ports:
       - ${FACTORIX_WEB_BIND:-127.0.0.1}:4101:4101

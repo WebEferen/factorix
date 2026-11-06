@@ -11,7 +11,8 @@ COPY packages/runtime/src packages/runtime/src
 COPY packages/schemas/src packages/schemas/src
 ARG API_URL=http://api:4100
 ARG FACTORIX_PUBLIC_URL=http://localhost:4101
-ENV API_URL=$API_URL FACTORIX_PUBLIC_URL=$FACTORIX_PUBLIC_URL NEXT_TELEMETRY_DISABLED=1
+ARG FACTORIX_PREVIEW_URL=http://preview.localhost:4102
+ENV API_URL=$API_URL FACTORIX_PUBLIC_URL=$FACTORIX_PUBLIC_URL FACTORIX_PREVIEW_URL=$FACTORIX_PREVIEW_URL NEXT_TELEMETRY_DISABLED=1
 RUN cd apps/web && ../../node_modules/.bin/next build
 
 FROM node:22.23.4-bookworm-slim
