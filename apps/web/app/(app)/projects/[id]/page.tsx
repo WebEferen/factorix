@@ -56,6 +56,7 @@ function ProjectSettings({
   const [sandbox, setSandbox] = useState({
     networkPolicy: project.networkPolicy as string,
     networkAllowlist: project.networkAllowlist.join('\n'),
+    networkBypass: project.networkBypass.join('\n'),
     runTimeoutMinutes: String(project.runTimeoutMinutes),
     monthlyBudgetUsd: project.monthlyBudgetUsd?.toString() ?? '',
   })
@@ -75,6 +76,10 @@ function ProjectSettings({
         repos: reposForApi(repos),
         networkPolicy: sandbox.networkPolicy,
         networkAllowlist: sandbox.networkAllowlist
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+        networkBypass: sandbox.networkBypass
           .split('\n')
           .map((line) => line.trim())
           .filter(Boolean),

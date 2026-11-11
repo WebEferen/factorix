@@ -37,6 +37,8 @@ Model keys stay out of agent containers too. Each run gets a token in Redis. The
 
 The allowlist is package registries, the hosts each of the project's connectors declares, and the project's own additions. Settings, Network can extend those defaults for the whole organization or replace them with its own list. GitLab is on it so installs can fetch packages from public projects. Agents hold no token, so private code and pushes stay out of reach, but an agent could still send data to an account whose token it was given. The same is true of `npm publish` on the registries.
 
+An exact entry may name an internal host, such as a private registry. The proxy still refuses Factorix's own services (Postgres, Redis, the API, the worker, the preview gateway), any other address on a network it shares with them, and link-local and unspecified addresses, whatever the list says. A project's "Skip the proxy for" list goes into `NO_PROXY` for its runs, run services, and previews. It is for names that only exist inside the run, like a host a test suite fakes, and grants nothing, because the agent's network has no other way out.
+
 ## Several repositories
 
 The repositories on a project are a limit on what agents may change, and a ticket usually needs only some of them. The limit is enforced outside the agent: it holds no git credentials, its network cannot reach GitLab, and the factory only pushes the repositories on the project, so a new folder or a changed remote goes nowhere. Each repository keeps its row and folder name across edits, so workspaces and threads stay attached.

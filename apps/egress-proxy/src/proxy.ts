@@ -1,7 +1,8 @@
 import { lookup } from 'node:dns/promises'
 import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { request as httpsRequest } from 'node:https'
-import { connect, isIP, type Socket } from 'node:net'
+import { BlockList, connect, isIP, type Socket } from 'node:net'
+import { networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
 
 export interface ProxyGrant {
@@ -25,6 +26,27 @@ export interface ProxyOptions {
   openaiUpstream?: string
   resolve?: (host: string) => Promise<string[]>
   log?: (message: string) => void
+  /** Factorix's own services. No grant reaches them, or anything on the networks they share with the proxy. */
+  protectedHosts?: string[]
+  /** The proxy's own networks, as CIDRs. Defaults to its interfaces. */
+  ownNetworks?: () => string[]
+}
+
+const FENCE_TTL_MS = 30_000
+
+function interfaceNetworks(): string[] {
+  return Object.values(networkInterfaces()).flatMap((entries) => (entries ?? []).map((entry) => entry.cidr ?? '').filter(Boolean))
+}
+
+/** Link-local holds cloud metadata services, and 0.0.0.0 means this machine, so no allowlist entry may point there. */
+export function isUnreachable(address: string): boolean {
+  const mapped = address.toLowerCase().startsWith('::ffff:') ? address.slice(7) : address
+  if (isIP(mapped) === 4) {
+    const [a = 0, b = 0] = mapped.split('.').map(Number)
+    return a === 0 || (a === 169 && b === 254)
+  }
+  const lower = mapped.toLowerCase()
+  return lower === '::' || /^fe[89ab]/.test(lower)
 }
 
 const HOP_BY_HOP = new Set([
@@ -97,12 +119,35 @@ export function createEgressProxy(options: ProxyOptions): Server {
   const openaiUpstream = options.openaiUpstream ?? 'https://api.openai.com'
   const log = options.log ?? (() => undefined)
   const resolve = options.resolve ?? (async (host: string) => (await lookup(host, { all: true })).map((entry) => entry.address))
+  const protectedHosts = new Set((options.protectedHosts ?? []).map((host) => host.toLowerCase()))
+  const ownNetworks = options.ownNetworks ?? interfaceNetworks
+  let fence: { list: BlockList; at: number } | null = null
+
+  /** The protected services' addresses, and every network the proxy shares with them, looked up again every so often. */
+  const fenced = async (): Promise<BlockList> => {
+    if (fence && Date.now() - fence.at < FENCE_TTL_MS) return fence.list
+    const list = new BlockList()
+    const addresses = (await Promise.all([...protectedHosts].map((host) => resolve(host).catch(() => [] as string[])))).flat()
+    for (const address of addresses) list.addAddress(address, isIP(address) === 6 ? 'ipv6' : 'ipv4')
+    for (const cidr of addresses.length > 0 ? ownNetworks() : []) {
+      const [network = '', prefix = ''] = cidr.split('/')
+      const family = isIP(network) === 6 ? 'ipv6' : 'ipv4'
+      try {
+        const subnet = new BlockList()
+        subnet.addSubnet(network, Number(prefix), family)
+        if (addresses.some((address) => subnet.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4'))) list.addSubnet(network, Number(prefix), family)
+      } catch {}
+    }
+    fence = { list, at: Date.now() }
+    return list
+  }
 
   /**
    * Resolves once and connects to that exact address, so a name cannot rebind to an internal one after the check.
    * This proxy shares a network with Postgres and Redis, so `*` must never reach a private address.
    */
   const authorize = async (grant: ProxyGrant, host: string): Promise<{ address: string } | { denied: string }> => {
+    if (protectedHosts.has(host.toLowerCase())) return { denied: 'is part of Factorix' }
     const match = matchHost(host, grant.allow)
     if (!match) return { denied: 'not on the allowlist' }
     let addresses: string[]
@@ -111,6 +156,9 @@ export function createEgressProxy(options: ProxyOptions): Server {
     } catch {
       return { denied: 'could not resolve the host' }
     }
+    if (addresses.some(isUnreachable)) return { denied: 'resolves to a link-local or unspecified address' }
+    const list = await fenced()
+    if (addresses.some((address) => list.check(address, isIP(address) === 6 ? 'ipv6' : 'ipv4'))) return { denied: 'is part of Factorix' }
     const usable = match === 'exact' ? addresses : addresses.filter((address) => !isPrivateAddress(address))
     if (match === 'wildcard' && usable.length !== addresses.length) return { denied: 'resolves to a private address' }
     const address = usable[0]

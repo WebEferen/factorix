@@ -333,6 +333,7 @@ export function SandboxFields({
   value: {
     networkPolicy: string
     networkAllowlist: string
+    networkBypass: string
     runTimeoutMinutes: string
     monthlyBudgetUsd: string
   }
@@ -340,6 +341,7 @@ export function SandboxFields({
     patch: Partial<{
       networkPolicy: string
       networkAllowlist: string
+      networkBypass: string
       runTimeoutMinutes: string
       monthlyBudgetUsd: string
     }>,
@@ -370,7 +372,10 @@ export function SandboxFields({
       </Field>
       {value.networkPolicy === 'restricted' ? <DefaultHosts connections={connections} /> : null}
       {value.networkPolicy === 'restricted' ? (
-        <Field label="Extra allowed hosts" hint="One per line. *.example.com works too. Applies from the next run.">
+        <Field
+          label="Extra allowed hosts"
+          hint="One per line. *.example.com and internal names work too, though never Factorix's own services. Applies from the next run."
+        >
           <textarea
             className="min-h-16 w-full rounded-md border border-field bg-surface px-3 py-2 font-mono text-xs"
             value={value.networkAllowlist}
@@ -378,6 +383,16 @@ export function SandboxFields({
           />
         </Field>
       ) : null}
+      <Field
+        label="Skip the proxy for"
+        hint="One per line. Names that only exist inside a run, like hosts a test suite fakes. Tools connect to them directly, which reaches nothing outside the run."
+      >
+        <textarea
+          className="min-h-16 w-full rounded-md border border-field bg-surface px-3 py-2 font-mono text-xs"
+          value={value.networkBypass}
+          onChange={(event) => onChange({ networkBypass: event.target.value })}
+        />
+      </Field>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Field label="Time limit per run (minutes)">
           <Input

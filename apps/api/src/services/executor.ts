@@ -16,6 +16,7 @@ import {
   type UsageSnapshot,
 } from '@factorix/runtime'
 import type { AgentHandle, SandboxProvider, StartAgentOptions, Workspace } from '@factorix/sandbox'
+import { noProxyHost } from '@factorix/schemas'
 import type { Redis } from 'ioredis'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
@@ -353,7 +354,9 @@ class RunExecution {
     }
     const proxy = new URL(env.FACTORIX_PROXY_URL)
     const authed = `${proxy.protocol}//${this.proxyToken}:x@${proxy.host}`
-    const noProxy = `${proxy.hostname},localhost,127.0.0.1,.${PREVIEW_DOMAIN}`
+    const noProxy = [proxy.hostname, 'localhost', '127.0.0.1', `.${PREVIEW_DOMAIN}`, ...(this.project?.networkBypass ?? []).map(noProxyHost)].join(
+      ',',
+    )
     Object.assign(values, {
       HTTP_PROXY: authed,
       HTTPS_PROXY: authed,

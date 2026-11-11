@@ -59,6 +59,7 @@ export default function NewProjectPage() {
   const [sandbox, setSandbox] = useState({
     networkPolicy: 'restricted',
     networkAllowlist: '',
+    networkBypass: '',
     runTimeoutMinutes: '90',
     monthlyBudgetUsd: '',
   })
@@ -122,6 +123,10 @@ export default function NewProjectPage() {
         trigger: { states: triggers },
         networkPolicy: sandbox.networkPolicy,
         networkAllowlist: sandbox.networkAllowlist
+          .split('\n')
+          .map((line) => line.trim())
+          .filter(Boolean),
+        networkBypass: sandbox.networkBypass
           .split('\n')
           .map((line) => line.trim())
           .filter(Boolean),

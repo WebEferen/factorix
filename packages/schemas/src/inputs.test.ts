@@ -48,6 +48,14 @@ describe('network allowlist', () => {
   it('accepts an internal name and an address', () => {
     expect(projectUpdateInput.parse({ networkAllowlist: ['nexus', '10.0.0.5'] }).networkAllowlist).toEqual(['nexus', '10.0.0.5'])
   })
+
+  it('takes the same hosts for the proxy bypass list', () => {
+    expect(projectUpdateInput.parse({ networkBypass: [' Test-Internal-API ', '*.corp.test'] }).networkBypass).toEqual([
+      'test-internal-api',
+      '*.corp.test',
+    ])
+    expect(projectUpdateInput.safeParse({ networkBypass: ['*'] }).success).toBe(false)
+  })
 })
 
 describe('connection bot identity', () => {

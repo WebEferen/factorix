@@ -99,6 +99,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
             stateMap: json(input.stateMap) as never,
             trigger: json(input.trigger) as never,
             networkAllowlist: json(input.networkAllowlist) as never,
+            networkBypass: json(input.networkBypass) as never,
           })
           .returning('*')
         const created = row as ProjectRow
@@ -132,6 +133,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     if (input.stateMap) patch.stateMap = json(input.stateMap)
     if (input.trigger) patch.trigger = json(input.trigger)
     if (input.networkAllowlist) patch.networkAllowlist = json(input.networkAllowlist)
+    if (input.networkBypass) patch.networkBypass = json(input.networkBypass)
     await db.transaction(async (trx) => {
       await trx('projects').where({ id }).update(patch)
       if (repos) await saveProjectRepos(trx, existing, repos)

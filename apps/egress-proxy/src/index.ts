@@ -16,6 +16,10 @@ const server = createEgressProxy({
   },
   anthropicUpstream: process.env.FACTORIX_ANTHROPIC_UPSTREAM,
   openaiUpstream: process.env.FACTORIX_OPENAI_UPSTREAM,
+  protectedHosts: (process.env.FACTORIX_PROXY_PROTECTED_HOSTS ?? 'postgres,redis,migrate,api,worker,web,preview-gateway')
+    .split(',')
+    .map((host) => host.trim())
+    .filter(Boolean),
   log: (message) => console.error(`[egress-proxy] ${message}`),
 })
 

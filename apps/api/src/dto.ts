@@ -123,6 +123,7 @@ export function projectDto(row: ProjectRow, repos: ProjectRepoRow[], extra: Part
     sandboxImage: row.sandboxImage,
     networkPolicy: row.networkPolicy,
     networkAllowlist: row.networkAllowlist,
+    networkBypass: row.networkBypass,
     runTimeoutMinutes: row.runTimeoutMinutes,
     monthlyBudgetUsd: row.monthlyBudgetUsd,
     defaultEngineerAgentId: row.defaultEngineerAgentId,

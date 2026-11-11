@@ -125,6 +125,7 @@ export interface ProjectDto {
   sandboxImage: string | null
   networkPolicy: 'restricted' | 'open' | 'none'
   networkAllowlist: string[]
+  networkBypass: string[]
   runTimeoutMinutes: number
   monthlyBudgetUsd: number | null
   defaultEngineerAgentId: string | null

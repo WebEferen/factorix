@@ -152,6 +152,7 @@ export interface ProjectRow {
   lastSyncedAt: Date | null
   networkPolicy: 'restricted' | 'open' | 'none'
   networkAllowlist: string[]
+  networkBypass: string[]
   limits: { memoryMb?: number; cpus?: number }
   runTimeoutMinutes: number
   monthlyBudgetUsd: number | null

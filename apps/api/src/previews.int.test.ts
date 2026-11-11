@@ -118,6 +118,7 @@ describe('previews', () => {
         repos: [{ scmRepoId: '42', scmRepoPath: 'g/r', scmCloneUrl: 'https://gitlab.com/g/r.git', defaultBranch: 'main' }],
         stateMap: { in_progress: 'st-progress', in_review: 'st-review', done: 'st-done', blocked: 'st-blocked' },
         networkAllowlist: ['api.stripe.com'],
+        networkBypass: ['test-internal-api', '*.corp.test'],
       })
     ).project.id
     const { orgId } = await harness.deps.db('projects').where({ id: projectId }).first()
@@ -220,6 +221,8 @@ describe('previews', () => {
       NODE_USE_ENV_PROXY: '1',
     })
     expect(api.env.HTTP_PROXY).toMatch(/^http:\/\/[^:]+:x@factorix-egress:8080$/)
+    expect(api.env.NO_PROXY?.split(',')).toEqual(expect.arrayContaining(['db', 'test-internal-api', '.corp.test']))
+    expect(api.env.no_proxy).toBe(api.env.NO_PROXY)
     expect(sandbox.started[0]?.env.API_KEY).toBeUndefined()
 
     const redis = harness.deps.redis

@@ -86,6 +86,7 @@ export async function startRunServices(
       const platformEnv = await environmentProxyEnv(deps, {
         environment,
         services: agents.services,
+        bypass: input.project.networkBypass,
         grant: { runId: run.id },
         allow: await input.allow(),
         ttlSeconds: input.ttlSeconds,

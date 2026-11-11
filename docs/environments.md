@@ -142,7 +142,7 @@ agents:
 - `secrets` lists secret sets whose values go into the agent's environment. Only sets with **Agents can read these values** turned on qualify, and saving refuses the others. The listed services also get only such sets, because the agent can reach them. A set a service names without the toggle is left out, and the run log says so.
 - `env` sets variables for the agent. `${preview.url}` is refused, since a run has no preview.
 
-The agent's variables are layered like a service's: secret sets, then `agents.env`, then what Factorix sets for the run. Service names go in `NO_PROXY`, so the agent reaches them directly while everything else still goes through the egress proxy.
+The agent's variables are layered like a service's: secret sets, then `agents.env`, then what Factorix sets for the run. Service names go in `NO_PROXY`, so the agent reaches them directly while everything else still goes through the egress proxy. So do the hosts in the project's "Skip the proxy for" list, for previews and run services too.
 
 The services and their data go when the run ends or pauses for a decision, and a resumed run starts fresh copies. If they fail to start, the run goes on without the services or the values, its log says why, and the agent is told.
 

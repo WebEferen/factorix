@@ -148,6 +148,7 @@ export const projectInput = z.object({
   sandboxImage: z.string().max(300).nullable().default(null),
   networkPolicy: z.enum(['restricted', 'open', 'none']).default('restricted'),
   networkAllowlist: z.array(egressHost).default([]),
+  networkBypass: z.array(egressHost).max(100).default([]),
   runTimeoutMinutes: z.number().int().min(1).max(1440).default(90),
   monthlyBudgetUsd: z.number().positive().nullable().default(null),
   defaultEngineerAgentId: z.uuid().nullable().default(null),

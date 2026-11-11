@@ -1,4 +1,5 @@
 import { type Environment, type SandboxProvider, serviceContainerName } from '@factorix/sandbox'
+import { noProxyHost } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { previewKeys, proxyTokenKey } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
@@ -16,8 +17,8 @@ export class Aborted extends Error {}
 /** A service that will not become ready. The message says why, in words for the person reading the log. */
 export class ServiceNotReady extends Error {}
 
-export function noProxyFor(key: string, services: string[]): string {
-  return ['localhost', '127.0.0.1', ...services, ...services.map((name) => serviceContainerName(key, name))].join(',')
+export function noProxyFor(key: string, services: string[], bypass: string[] = []): string {
+  return ['localhost', '127.0.0.1', ...services, ...services.map((name) => serviceContainerName(key, name)), ...bypass.map(noProxyHost)].join(',')
 }
 
 /**
@@ -26,10 +27,17 @@ export function noProxyFor(key: string, services: string[]): string {
  */
 export async function environmentProxyEnv(
   deps: Pick<AppDeps, 'env' | 'redis'> & { sandbox: SandboxProvider },
-  input: { environment: Environment; services: string[]; grant: { runId?: string; channel?: string }; allow: string[]; ttlSeconds: number },
+  input: {
+    environment: Environment
+    services: string[]
+    bypass: string[]
+    grant: { runId?: string; channel?: string }
+    allow: string[]
+    ttlSeconds: number
+  },
 ): Promise<Record<string, string>> {
   const { env, redis, sandbox } = deps
-  const noProxy = noProxyFor(input.environment.key, input.services)
+  const noProxy = noProxyFor(input.environment.key, input.services, input.bypass)
   if (!env.FACTORIX_PROXY_URL) return { NO_PROXY: noProxy, no_proxy: noProxy }
   const token = (await redis.get(previewKeys.grant(input.environment.key))) ?? randomToken(24)
   await redis

@@ -459,6 +459,7 @@ class PreviewRun {
     return environmentProxyEnv(this.deps, {
       environment: this.environment as Environment,
       services: Object.keys(this.definition.services),
+      bypass: project.networkBypass,
       grant: { channel: previewKeys.proxyChannel(this.row.slug) },
       allow,
       ttlSeconds: ttl,

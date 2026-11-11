@@ -17,6 +17,11 @@ export const egressHost = z
   .toLowerCase()
   .regex(/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*$/, 'Use a host name like example.com or *.example.com')
 
+/** NO_PROXY spells a wildcard as a leading dot, which curl, Node, and Python all read. */
+export function noProxyHost(host: string): string {
+  return host.startsWith('*.') ? host.slice(1) : host
+}
+
 export const networkSettingsInput = z.object({
   mode: z.enum(['extend', 'replace']),
   hosts: z

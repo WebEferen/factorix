@@ -2,7 +2,7 @@ import { createServer, request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { connect } from 'node:net'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { createEgressProxy, isPrivateAddress, matchHost, type ProxyGrant } from './proxy'
+import { createEgressProxy, isPrivateAddress, isUnreachable, matchHost, type ProxyGrant } from './proxy'
 
 const listen = (server: Server) =>
   new Promise<number>((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port)))
@@ -43,6 +43,16 @@ describe('isPrivateAddress', () => {
   })
   it.each(['8.8.8.8', '172.32.0.1', '160.79.104.10', '2606:4700::1111'])('%s is public', (address) => {
     expect(isPrivateAddress(address)).toBe(false)
+  })
+})
+
+describe('isUnreachable', () => {
+  it.each(['169.254.169.254', '0.0.0.0', '0.1.2.3', '::', 'fe80::1', '::ffff:169.254.169.254'])('refuses %s', (address) => {
+    expect(isUnreachable(address)).toBe(true)
+  })
+
+  it.each(['10.0.0.5', '127.0.0.1', '8.8.8.8', '::1', 'fc00::1'])('leaves %s to the allowlist', (address) => {
+    expect(isUnreachable(address)).toBe(false)
   })
 })
 
@@ -197,6 +207,91 @@ describe('egress proxy', () => {
     it('denies a host that is not listed, and records it', async () => {
       expect(await tunnel('gitlab.com:443', 'tok')).toContain('403')
       expect(denials[0]).toMatchObject({ runId: 'run-1', host: 'gitlab.com' })
+    })
+  })
+
+  describe('Factorix itself', () => {
+    let fenced: Server
+    let fencedPort: number
+    const addresses: Record<string, string[]> = {
+      postgres: ['10.9.0.2'],
+      'db.test': ['10.9.0.7'],
+      'corp.test': ['127.0.0.1'],
+      'meta.test': ['169.254.169.254'],
+      'zero.test': ['0.0.0.0'],
+    }
+    let cacheUp = false
+
+    beforeAll(async () => {
+      fenced = createEgressProxy({
+        store: {
+          grant: async (token) => grants.get(token) ?? null,
+          denied: (grant, denial) => denials.push({ runId: grant.runId ?? '', ...denial }),
+        },
+        resolve: async (host) => {
+          if (host === 'cache' && !cacheUp) throw new Error('not running')
+          return host === 'cache' ? ['127.0.0.1'] : (addresses[host] ?? [])
+        },
+        protectedHosts: ['postgres', 'cache'],
+        ownNetworks: () => ['10.9.0.5/16', '127.0.0.5/8'],
+      })
+      fencedPort = await listen(fenced)
+    })
+    afterAll(() => fenced.close())
+
+    const through = (target: string) =>
+      new Promise<string>((resolve, reject) => {
+        const socket = connect(fencedPort, '127.0.0.1', () => {
+          socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\nProxy-Authorization: ${basic('listed')}\r\n\r\n`)
+        })
+        let data = ''
+        socket.on('data', (chunk) => {
+          data += chunk.toString('utf8')
+          if (data.includes('\r\n\r\n')) {
+            socket.destroy()
+            resolve(data.split('\r\n')[0] as string)
+          }
+        })
+        socket.on('error', reject)
+      })
+
+    beforeEach(() => {
+      grants.set('listed', { runId: 'run-3', allow: ['postgres', 'db.test', 'corp.test', 'meta.test', 'zero.test', '10.9.0.3', 'cache'] })
+    })
+
+    it('refuses its own services even when an admin lists them', async () => {
+      expect(await through('postgres:5432')).toContain('403')
+      expect(denials[0]).toMatchObject({ runId: 'run-3', host: 'postgres', reason: 'is part of Factorix' })
+      expect(await through('POSTGRES:5432')).toContain('403')
+    })
+
+    it('refuses any other address on a network it shares with them', async () => {
+      expect(await through('db.test:5432')).toContain('403')
+      expect(await through('10.9.0.3:6379')).toContain('403')
+      expect(denials.map((denial) => denial.reason)).toEqual(['is part of Factorix', 'is part of Factorix'])
+    })
+
+    it('refuses link-local and unspecified addresses', async () => {
+      expect(await through('meta.test:80')).toContain('403')
+      expect(await through('zero.test:80')).toContain('403')
+      expect(denials.map((denial) => denial.reason)).toEqual([
+        'resolves to a link-local or unspecified address',
+        'resolves to a link-local or unspecified address',
+      ])
+    })
+
+    it('still reaches a listed internal host on a network none of its services use', async () => {
+      expect(await through(`corp.test:${upstreamPort}`)).toContain('200')
+    })
+
+    it('refuses a service by name when it was down while the fence was built', async () => {
+      expect(await through(`corp.test:${upstreamPort}`)).toContain('200')
+      cacheUp = true
+      try {
+        expect(await through(`cache:${upstreamPort}`)).toContain('403')
+      } finally {
+        cacheUp = false
+      }
     })
   })
 
