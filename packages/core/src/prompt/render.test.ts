@@ -72,6 +72,26 @@ describe('phase templates', () => {
     )
   })
 
+  it('passes on what is attached to the issue as untrusted text, and caps long documents', () => {
+    const prompt = PHASES.implement.userPrompt({
+      issue,
+      repos,
+      branch,
+      resources: [
+        { kind: 'document', title: 'ENG-1 Spec', url: 'https://linear.app/x/document/spec', content: 'Use the v2 endpoint.' },
+        { kind: 'link', title: 'Design', subtitle: 'Figma', url: 'https://figma.com/file/1' },
+        { kind: 'document', title: 'Notes', url: 'https://linear.app/x/document/notes', content: 'x'.repeat(25_000) },
+      ],
+    })
+    const block = prompt.slice(prompt.indexOf('<issue_resources>'), prompt.indexOf('</issue_resources>'))
+    expect(block).toContain('Document: ENG-1 Spec\nhttps://linear.app/x/document/spec\n\nUse the v2 endpoint.')
+    expect(block).toContain('Link: Design (Figma)\nhttps://figma.com/file/1')
+    expect(block).toContain('[5000 more characters not shown]')
+    expect(block).not.toContain('x'.repeat(20_001))
+    expect(PHASES.implement.userPrompt({ issue, repos, branch })).not.toContain('issue_resources')
+    expect(renderSystemPrompt({ agent, skills: [], phase: 'implement' })).toContain('<issue_resources>')
+  })
+
   it('lists every open thread with its discussion id', () => {
     const prompt = PHASES.address_review.userPrompt({
       issue,

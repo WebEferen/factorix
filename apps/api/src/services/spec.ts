@@ -1,3 +1,4 @@
+import type { TrackerResource } from '@factorix/connectors'
 import { type OpenThread, PHASES, type PhaseContext, renderSystemPrompt, resolvePolicy } from '@factorix/core'
 import type { ApprovalRow, ConnectionRow, IssueInstructionRow, IssueRow, MrDiscussionRow, ProjectRow, RunRow } from '@factorix/db'
 import {
@@ -11,7 +12,7 @@ import {
   type ScriptedPlan,
 } from '@factorix/runtime'
 import type { AppDeps } from '../deps'
-import { decryptConnection } from './connections'
+import { decryptConnection, trackerConnectionFor, trackerFor } from './connections'
 import { mergeRequestsOf } from './repos'
 
 export interface SpecRepo {
@@ -208,6 +209,23 @@ export async function buildPhaseContext(
   return context
 }
 
+/** What people attached to the issue, read with the account this agent comments with. A tracker error leaves them out and never stops the run. */
+export async function readIssueResources(
+  deps: Pick<AppDeps, 'db' | 'secrets' | 'connectors'>,
+  input: { run: RunRow; issue: IssueRow | null; project: ProjectRow | null },
+  warn: (message: string) => void,
+): Promise<TrackerResource[]> {
+  const { run, issue, project } = input
+  if (!issue || !project) return []
+  try {
+    const connection = await trackerConnectionFor(deps.db, run.orgId, project.trackerConnectionId, run.agentId)
+    return await trackerFor(deps, connection).listResources(issue.trackerIssueId)
+  } catch (error) {
+    warn(`Could not read the documents and links attached to ${issue.identifier}: ${(error as Error).message}`)
+    return []
+  }
+}
+
 /** A reviewer gets a fresh session on purpose. A retry does too, because a broken session may be why the last attempt failed. */
 export async function sessionToResume(deps: Pick<AppDeps, 'db'>, run: RunRow): Promise<string | undefined> {
   if (run.sessionRef) return run.sessionRef
@@ -235,6 +253,7 @@ export interface SpecInput {
   resumeSessionRef?: string
   /** Adds the factorix MCP server, whose preview tools reach the worker through the runner. */
   previewTool?: boolean
+  resources?: TrackerResource[]
   scripted?: ScriptedPlan
 }
 
@@ -244,6 +263,7 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
   const phase = run.phase as Phase
   const template = PHASES[phase]
   const context = await buildPhaseContext(deps, run, issue, input.repos, input.branch, input.ciFailures)
+  if (input.resources?.length) context.resources = input.resources
   const notes = input.extraNotes.length > 0 ? `\n\n${input.extraNotes.join('\n\n')}` : ''
   return {
     runId: run.id,

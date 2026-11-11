@@ -91,6 +91,8 @@ Each run ends with a `clear-cache` step, which has no token, mirror, or network.
 
 ## Keeping Linear and Factorix honest
 
+When a run starts, the worker reads the documents and links attached to the issue (Resources in Linear) with the same tracker account the agent comments with, and puts them in the prompt as untrusted text. Each document is capped at 20,000 characters and all of them at 60,000. If the tracker fails, the run goes on without them and the log says so.
+
 Every outbound write records an echo marker, because a personal API key makes the factory's writes look like yours. Factory comments also carry a visible prefix and footer. Linear owns title, description, priority, labels, assignee, and state. Factorix writes state only through the project's state map, and only if the current state is the one it last set. Otherwise it logs `sync.conflict` and leaves it alone.
 
 Webhooks are verified, deduplicated, and queued. A polling sweep covers anything they miss.

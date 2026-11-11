@@ -8,6 +8,7 @@ import type {
   TrackerLabel,
   TrackerMedia,
   TrackerProject,
+  TrackerResource,
   TrackerState,
   TrackerStateType,
   TrackerTeam,
@@ -183,6 +184,29 @@ export class LinearConnector implements TrackerConnector {
       authorName: comment.user?.displayName ?? null,
       createdAt: comment.createdAt,
     }))
+  }
+
+  /** Linear shows these under Resources on the issue. */
+  async listResources(issueId: string): Promise<TrackerResource[]> {
+    const { issue } = await this.request<{
+      issue: {
+        documents: { nodes: { title: string; url: string; content: string | null }[] }
+        attachments: { nodes: { title: string; subtitle: string | null; url: string }[] }
+      }
+    }>(
+      'query IssueResources($id: String!) { issue(id: $id) { documents(first: 25) { nodes { title url content } } attachments(first: 50) { nodes { title subtitle url } } } }',
+      { id: issueId },
+    )
+    return [
+      ...issue.documents.nodes.map((document) => ({
+        kind: 'document' as const,
+        title: document.title,
+        url: document.url,
+        subtitle: null,
+        content: document.content,
+      })),
+      ...issue.attachments.nodes.map((link) => ({ kind: 'link' as const, title: link.title, url: link.url, subtitle: link.subtitle, content: null })),
+    ]
   }
 
   async createIssue(input: CreateIssueInput): Promise<TrackerIssue> {

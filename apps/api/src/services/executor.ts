@@ -34,7 +34,7 @@ import { answerPreviewTool } from './preview-tool'
 import { mergeRequestsOf, projectRepos } from './repos'
 import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
-import { buildRunSpec, sessionToResume } from './spec'
+import { buildRunSpec, readIssueResources, sessionToResume } from './spec'
 import { ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
 
 export const LEASE_SECONDS = 60
@@ -448,6 +448,12 @@ class RunExecution {
     if (checkout.setupFailures.length > 0)
       notes.push(`The setup command failed in ${checkout.setupFailures.join(', ')}. Some dependencies may be missing.`)
 
+    const resources = await readIssueResources(this.deps, { run: this.run, issue: this.issue, project: this.project }, (message) =>
+      this.log('warn', message),
+    )
+    if (resources.length > 0)
+      this.log('info', `Gave the agent ${resources.length} attached ${resources.length === 1 ? 'resource' : 'resources'} from the tracker.`)
+
     let resumeSessionRef = await sessionToResume(this.deps, this.run)
     if (this.run.sessionRef) {
       const decided = await this.deps
@@ -472,6 +478,7 @@ class RunExecution {
       extraNotes: notes,
       resumeSessionRef,
       previewTool,
+      resources,
       scripted: this.deps.scriptFor?.(this.run.phase, this.run.attempt),
     })
     resumeSessionRef = undefined

@@ -23,8 +23,18 @@ export interface PhaseRepo {
   mrUrl?: string | null
 }
 
+export interface PhaseResource {
+  kind: 'document' | 'link'
+  title: string
+  url: string
+  subtitle?: string | null
+  content?: string | null
+}
+
 export interface PhaseContext {
   issue?: { identifier: string; title: string; description: string | null; url: string | null }
+  /** Documents and links attached to the issue in the tracker, which the agent has no way to open itself. */
+  resources?: PhaseResource[]
   /** Everything the project allows. A ticket usually needs only some of these. */
   repos: PhaseRepo[]
   branch: string
@@ -49,12 +59,29 @@ export interface PhaseTemplate {
 
 const untrusted = (label: string, text: string) => `<${label}>\n${text}\n</${label}>`
 
+const MAX_DOCUMENT_CHARS = 20_000
+const MAX_RESOURCE_CHARS = 60_000
+
+function resourcesBlock(resources: PhaseResource[]): string {
+  let room = MAX_RESOURCE_CHARS
+  const entries = resources.map((resource) => {
+    const heading = `${resource.kind === 'document' ? 'Document' : 'Link'}: ${resource.title}${resource.subtitle ? ` (${resource.subtitle})` : ''}\n${resource.url}`
+    if (resource.kind !== 'document') return heading
+    const text = resource.content?.trim() || '(empty)'
+    const fits = Math.max(0, Math.min(MAX_DOCUMENT_CHARS, room))
+    room -= Math.min(text.length, fits)
+    return `${heading}\n\n${text.length > fits ? `${text.slice(0, fits)}\n[${text.length - fits} more characters not shown]` : text}`
+  })
+  return `Attached to the issue:\n${untrusted('issue_resources', entries.join('\n\n'))}`
+}
+
 function issueBlock(context: PhaseContext): string {
   const issue = context.issue
   if (!issue) return ''
   const parts = [`Issue ${issue.identifier}: ${issue.title}`]
   if (issue.url) parts.push(`Tracker link: ${issue.url}`)
   parts.push(untrusted('issue_description', issue.description?.trim() || '(no description)'))
+  if (context.resources?.length) parts.push(resourcesBlock(context.resources))
   return parts.join('\n')
 }
 

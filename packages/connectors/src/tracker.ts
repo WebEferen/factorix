@@ -57,6 +57,16 @@ export interface TrackerComment {
   createdAt: string
 }
 
+/** Something people attached to an issue: a tracker document with its text, or a link to another tool. */
+export interface TrackerResource {
+  kind: 'document' | 'link'
+  title: string
+  url: string
+  subtitle: string | null
+  /** A document's text in the source's dialect. Links have none. */
+  content: string | null
+}
+
 export interface Page<T> {
   nodes: T[]
   nextCursor: string | null
@@ -106,6 +116,7 @@ export interface TrackerConnector {
   }): Promise<Page<TrackerIssue>>
   getIssue(id: string): Promise<TrackerIssue | null>
   listComments(issueId: string): Promise<TrackerComment[]>
+  listResources(issueId: string): Promise<TrackerResource[]>
   createIssue(input: CreateIssueInput): Promise<TrackerIssue>
   updateIssueState(issueId: string, stateId: string): Promise<void>
   updateIssueLabels(issueId: string, change: { add?: string[]; remove?: string[] }): Promise<void>

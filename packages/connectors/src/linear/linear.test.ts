@@ -115,6 +115,21 @@ describe('LinearConnector against a stub GraphQL server', () => {
     expect(last()?.body.variables.input.resourceTypes).toEqual(['Issue', 'Comment'])
   })
 
+  it('reads the documents and links attached to an issue', async () => {
+    respond({
+      issue: {
+        documents: { nodes: [{ title: 'ABC-1 Spec', url: 'https://linear.app/x/document/spec-1', content: '# Spec\nDo it.' }] },
+        attachments: { nodes: [{ title: 'Design', subtitle: 'Figma', url: 'https://figma.com/file/1' }] },
+      },
+    })
+    expect(await linear.listResources('i1')).toEqual([
+      { kind: 'document', title: 'ABC-1 Spec', url: 'https://linear.app/x/document/spec-1', subtitle: null, content: '# Spec\nDo it.' },
+      { kind: 'link', title: 'Design', url: 'https://figma.com/file/1', subtitle: 'Figma', content: null },
+    ])
+    expect(last()?.body.variables).toEqual({ id: 'i1' })
+    expect(last()?.body.query).toContain('documents(first: 25)')
+  })
+
   it('surfaces GraphQL errors', async () => {
     stub.handle(() => ({ body: { errors: [{ message: 'Authentication required', extensions: { type: 'authentication error' } }] } }))
     await expect(linear.viewer()).rejects.toThrow()

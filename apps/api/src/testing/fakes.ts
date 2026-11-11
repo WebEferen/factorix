@@ -17,6 +17,7 @@ import type {
   TrackerIssue,
   TrackerLabel,
   TrackerProject,
+  TrackerResource,
   TrackerState,
   TrackerTeam,
 } from '@factorix/connectors'
@@ -48,8 +49,11 @@ export class FakeWorld {
   issues = new Map<string, TrackerIssue>()
   labels: TrackerLabel[] = []
   comments: TrackerComment[] = []
+  resources = new Map<string, TrackerResource[]>()
+  failResources: string | null = null
   /** The token behind each comment and each git operation, to prove which account did the work. */
   commentTokens: (string | undefined)[] = []
+  resourceTokens: (string | undefined)[] = []
   gitTokens: string[] = []
   stateWrites: { issueId: string; stateId: string }[] = []
   nextNumber = 1
@@ -163,6 +167,11 @@ export class FakeWorld {
       },
       getIssue: async (id) => this.issues.get(id) ?? null,
       listComments: async (issueId) => this.comments.filter((comment) => comment.issueId === issueId),
+      listResources: async (issueId) => {
+        if (this.failResources) throw new Error(this.failResources)
+        this.resourceTokens.push(token)
+        return this.resources.get(issueId) ?? []
+      },
       createIssue: async (input: CreateIssueInput) =>
         this.addIssue({
           title: input.title,
