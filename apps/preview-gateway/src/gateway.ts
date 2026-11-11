@@ -223,6 +223,12 @@ export function createGateway(options: GatewayOptions): Server {
       return void response.end('{"ok":true}')
     }
     const slug = slugOf(request.headers.host, options.baseUrl)
+    // Caddy's on-demand TLS asks this before it requests a certificate, so only running previews get one. A preview's own host never reaches it.
+    if (!slug && url.pathname === `${OWN_PREFIX}tls`) {
+      const asked = slugOf(url.searchParams.get('domain') ?? undefined, options.baseUrl)
+      response.writeHead(asked && (await store.route(asked)) ? 200 : 404, { 'cache-control': 'no-store' })
+      return void response.end()
+    }
     if (slug && url.pathname === `${OWN_PREFIX}enter`) return signIn(request, response, slug, url)
     const admission = await admit(request)
     if (!admission.ok) return respond(response, admission.status, page(admission.title, admission.body), frameOnly(admission.route))

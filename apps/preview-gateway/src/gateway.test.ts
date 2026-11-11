@@ -206,6 +206,16 @@ describe('gateway', () => {
     expect((await get('example.com', '/')).status).toBe(404)
   })
 
+  it('tells the certificate service only about previews it routes, and never on a preview host', async () => {
+    const ask = (domain: string, on = '127.0.0.1:4102') => get(on, `/__factorix/tls?domain=${domain}`).then((response) => response.status)
+    expect(await ask('aaaaaaaaaa.preview.localhost')).toBe(200)
+    expect(await ask('bbbbbbbbbb.preview.localhost')).toBe(404)
+    expect(await ask('aaaaaaaaaa.preview.localhost.evil.test')).toBe(404)
+    expect(await ask('preview.localhost')).toBe(404)
+    expect((await get('127.0.0.1:4102', '/__factorix/tls')).status).toBe(404)
+    expect(await ask('aaaaaaaaaa.preview.localhost', host('aaaaaaaaaa'))).toBe(401)
+  })
+
   const upgrade = (headers: string) =>
     new Promise<string>((resolve) => {
       const socket = connect(gatewayPort, '127.0.0.1', () => {

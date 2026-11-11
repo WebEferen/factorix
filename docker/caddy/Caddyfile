@@ -1,0 +1,21 @@
+# HTTPS for a server install, which `./install.sh --domain` sets up. Caddy runs on the host network, so it
+# reaches web and the preview gateway on the loopback ports they publish.
+{
+	email {$FACTORIX_ACME_EMAIL}
+	on_demand_tls {
+		ask http://127.0.0.1:4102/__factorix/tls
+	}
+}
+
+{$FACTORIX_DOMAIN} {
+	reverse_proxy 127.0.0.1:4101
+}
+
+# Each preview has its own random subdomain, and a certificate is issued on its first visit. The gateway
+# answers the ask above only for previews that are running.
+*.{$FACTORIX_PREVIEW_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:4102
+}

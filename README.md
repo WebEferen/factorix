@@ -44,6 +44,14 @@ From a checkout, run `./install.sh` instead. It installs Docker if needed, creat
 - On macOS it uses Homebrew. Docker Desktop asks you to accept its terms the first time it opens. Without Homebrew, the script points you to the download.
 - Outside a checkout it downloads Factorix to `~/factorix`, or to `FACTORIX_DIR` if you set it.
 
+On a dedicated Linux server, give it a domain. Point an A record for the domain, and a wildcard one for `*.preview.<domain>`, at the server first:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com --email ops@example.com
+```
+
+That also serves Factorix over HTTPS on the domain and previews on its subdomains, through Caddy with Let's Encrypt certificates, turns on HTTPS-only cookies, and opens ports 80 and 443 in ufw or firewalld. The [runbook](docs/runbook.md) has the details.
+
 To do it by hand, with Docker already running:
 
 ```sh

@@ -160,6 +160,23 @@ services:
     restart: unless-stopped
     networks: [fx-public]
 
+  # HTTPS on a server, turned on by `./install.sh --domain`, which writes COMPOSE_PROFILES=https to .env.
+  https:
+    image: caddy:2
+    profiles: [https]
+    network_mode: host
+    environment:
+      FACTORIX_DOMAIN: ${FACTORIX_DOMAIN:-}
+      FACTORIX_PREVIEW_DOMAIN: ${FACTORIX_PREVIEW_DOMAIN:-}
+      FACTORIX_ACME_EMAIL: ${FACTORIX_ACME_EMAIL:-}
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - fx-caddy:/data
+    depends_on:
+      web: { condition: service_started }
+      preview-gateway: { condition: service_started }
+    restart: unless-stopped
+
   sandbox-image:
     build: { context: ., dockerfile: docker/sandbox.Dockerfile }
     image: ${FACTORIX_SANDBOX_IMAGE:-factorix/sandbox-base:dev}
@@ -168,6 +185,7 @@ services:
 volumes:
   fx-postgres:
   fx-redis:
+  fx-caddy:
 
 networks:
   fx-backend:

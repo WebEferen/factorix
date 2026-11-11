@@ -4,6 +4,12 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash
 #
+# On a Linux server, give it a domain to serve Factorix over HTTPS there, with previews on *.preview.<domain>:
+#
+#   curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com --email ops@example.com
+#
+# Point an A record for the domain and a wildcard one for *.preview.<domain> at the server first.
+#
 # Run it from a checkout to use that checkout. Otherwise it downloads Factorix to $FACTORIX_DIR, or ~/factorix.
 # Running it again is safe: an existing .env and its secret key are never replaced.
 
@@ -13,11 +19,55 @@ REPO_URL="https://github.com/WebEferen/factorix"
 DOCKER_WAIT_SECONDS=300
 DOCKER=(docker)
 SUDO=()
+DOMAIN=''
+PREVIEW_DOMAIN=''
+EMAIL=''
+MIN_MEMORY_MB=7500
+MIN_DISK_GB=40
 
 say() { printf '==> %s\n' "$*"; }
 die() {
   printf 'Error: %s\n' "$*" >&2
   exit 1
+}
+warn() { printf 'Warning: %s\n' "$*" >&2; }
+
+usage() {
+  cat <<'USAGE'
+Usage: install.sh [--domain HOST --email ADDRESS [--preview-domain HOST]]
+
+  --domain HOST           Serve Factorix over HTTPS at HOST. Linux servers only.
+  --email ADDRESS         Contact address for Let's Encrypt. Required with --domain.
+  --preview-domain HOST   Previews live on *.HOST. Defaults to preview.<domain>.
+
+Without options, Factorix runs on http://localhost:4101 for this machine only.
+USAGE
+}
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --domain) DOMAIN="${2:-}"; shift 2 || die "--domain needs a host name." ;;
+      --domain=*) DOMAIN="${1#*=}"; shift ;;
+      --email) EMAIL="${2:-}"; shift 2 || die "--email needs an address." ;;
+      --email=*) EMAIL="${1#*=}"; shift ;;
+      --preview-domain) PREVIEW_DOMAIN="${2:-}"; shift 2 || die "--preview-domain needs a host name." ;;
+      --preview-domain=*) PREVIEW_DOMAIN="${1#*=}"; shift ;;
+      -h | --help) usage; exit 0 ;;
+      *) usage >&2; die "Unknown option: $1" ;;
+    esac
+  done
+  if [ -z "$DOMAIN" ]; then
+    [ -z "$EMAIL$PREVIEW_DOMAIN" ] || die "--email and --preview-domain only apply with --domain."
+    return
+  fi
+  DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
+  PREVIEW_DOMAIN="$(printf '%s' "${PREVIEW_DOMAIN:-preview.$DOMAIN}" | tr '[:upper:]' '[:lower:]')"
+  local host='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
+  [[ "$DOMAIN" =~ $host ]] || die "$DOMAIN is not a host name such as factorix.example.com."
+  [[ "$PREVIEW_DOMAIN" =~ $host ]] || die "$PREVIEW_DOMAIN is not a host name such as preview.example.com."
+  [[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "--email needs an address, which Let's Encrypt uses to warn about certificates."
+  [ "$(uname -s)" = Linux ] || die "--domain sets up a Linux server. On this machine, run it without options."
 }
 
 pick_sudo() {
@@ -169,6 +219,68 @@ ensure_env() {
   mv "$updated" .env
 }
 
+set_env() {
+  local updated=".env.install.$$"
+  (umask 077 && grep -v "^$1=" .env >"$updated" || true)
+  printf '%s=%s\n' "$1" "$2" >>"$updated"
+  chmod 600 "$updated"
+  mv "$updated" .env
+}
+
+check_resources() {
+  local memory_mb disk_gb
+  memory_mb="$(awk '/^MemTotal:/ { print int($2 / 1024) }' /proc/meminfo)"
+  disk_gb="$(df -Pk . | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
+  [ "$memory_mb" -ge "$MIN_MEMORY_MB" ] || warn "This machine has ${memory_mb} MB of memory. Agents and previews need 8 GB or more."
+  [ "$disk_gb" -ge "$MIN_DISK_GB" ] || warn "Only ${disk_gb} GB of disk is free here. Images, workspaces and previews need ${MIN_DISK_GB} GB or more."
+}
+
+check_ports() {
+  # Rerunning finds its own Caddy on these ports.
+  [ -z "$("${DOCKER[@]}" compose ps -q https 2>/dev/null)" ] || return 0
+  command -v ss >/dev/null 2>&1 || return 0
+  local taken
+  taken="$(ss -Hltn 2>/dev/null | awk '{ print $4 }' | grep -E '[:.](80|443)$' || true)"
+  [ -z "$taken" ] || die "Something already listens on port 80 or 443 ($(printf '%s' "$taken" | tr '\n' ' ')). Stop it, since Factorix serves HTTPS there."
+}
+
+check_dns() {
+  local name
+  for name in "$DOMAIN" "check.$PREVIEW_DOMAIN"; do
+    getent hosts "$name" >/dev/null 2>&1 ||
+      warn "$name does not resolve yet. HTTPS starts working once DNS points $DOMAIN and *.$PREVIEW_DOMAIN at this server."
+  done
+}
+
+open_firewall() {
+  if command -v ufw >/dev/null 2>&1 && "${SUDO[@]}" ufw status 2>/dev/null | grep -q '^Status: active'; then
+    say "Allowing HTTP and HTTPS through ufw"
+    "${SUDO[@]}" ufw allow 80/tcp >/dev/null
+    "${SUDO[@]}" ufw allow 443/tcp >/dev/null
+  elif command -v firewall-cmd >/dev/null 2>&1 && "${SUDO[@]}" firewall-cmd --state >/dev/null 2>&1; then
+    say "Allowing HTTP and HTTPS through firewalld"
+    "${SUDO[@]}" firewall-cmd --quiet --permanent --add-service=http --add-service=https
+    "${SUDO[@]}" firewall-cmd --quiet --reload
+  fi
+}
+
+setup_https() {
+  pick_sudo
+  check_resources
+  check_ports
+  check_dns
+  open_firewall
+  say "Serving https://$DOMAIN, with previews on *.$PREVIEW_DOMAIN"
+  set_env FACTORIX_DOMAIN "$DOMAIN"
+  set_env FACTORIX_PREVIEW_DOMAIN "$PREVIEW_DOMAIN"
+  set_env FACTORIX_ACME_EMAIL "$EMAIL"
+  set_env FACTORIX_PUBLIC_URL "https://$DOMAIN"
+  set_env FACTORIX_PREVIEW_URL "https://$PREVIEW_DOMAIN"
+  set_env COOKIE_SECURE true
+  # Compose reads this from .env, so a plain `docker compose up -d` keeps HTTPS on.
+  set_env COMPOSE_PROFILES https
+}
+
 public_url() {
   local url
   url="$(sed -n 's/^FACTORIX_PUBLIC_URL=//p' .env | tail -n 1)"
@@ -176,11 +288,13 @@ public_url() {
 }
 
 main() {
+  parse_args "$@"
   ensure_docker
   local source_dir
   source_dir="$(find_source)"
   cd "$source_dir"
   ensure_env
+  [ -z "$DOMAIN" ] || setup_https
 
   say "Building the images. The first build takes several minutes."
   "${DOCKER[@]}" compose --profile build-only build
@@ -188,6 +302,7 @@ main() {
   "${DOCKER[@]}" compose up -d --wait
 
   say "Factorix is running at $(public_url)"
+  [ -z "$DOMAIN" ] || printf 'Certificates are issued on the first visit to each address, which takes a few seconds.\n'
   printf 'On a first install, open it and create the admin account. Your files are in %s.\n' "$source_dir"
   printf 'To stop it, run this from that folder: %s compose down\n' "${DOCKER[*]}"
 }

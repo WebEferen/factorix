@@ -2,15 +2,26 @@
 
 ## Deploy on a VM
 
+The installer sets up a fresh Linux server in one command, Docker and HTTPS included:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com --email ops@example.com
+```
+
+Before running it, point DNS at the server: an A record for `factorix.example.com` and one for `*.preview.factorix.example.com`. `--preview-domain` picks another name for previews. Give the server 8 GB of memory or more and 40 GB of free disk, since agents and previews run beside Factorix.
+
+It writes the domain, the HTTPS URLs, `COOKIE_SECURE=true`, and `COMPOSE_PROFILES=https` to `.env`. That profile starts Caddy on ports 80 and 443 (`docker/caddy/Caddyfile`), in front of web and the preview gateway, which stay on 127.0.0.1. Caddy gets a certificate for each preview's subdomain on its first visit, and only for previews the gateway is running. Let's Encrypt issues 50 new certificates a week per registered domain, counting every subdomain, so put previews on a domain of their own if many start each week. Running the installer again with the same options is safe.
+
+To use your own TLS instead, skip `--domain`, set `FACTORIX_PUBLIC_URL`, `FACTORIX_PREVIEW_URL` and `COOKIE_SECURE=true` in `.env`, and put your proxy in front of port 4101 and the gateway's port 4102. By hand:
+
 ```sh
 git clone <repo> factorix && cd factorix
-cp .env.example .env    # set FACTORIX_SECRET_KEY and FACTORIX_PUBLIC_URL, and COOKIE_SECURE=true behind TLS
-# or skip the steps below and run ./install.sh, which also installs Docker
+cp .env.example .env    # set FACTORIX_SECRET_KEY, FACTORIX_PUBLIC_URL, FACTORIX_PREVIEW_URL, and COOKIE_SECURE=true behind TLS
 docker compose --profile build-only build
 docker compose up -d
 ```
 
-Put TLS in front of port 4101. It binds to 127.0.0.1 unless `FACTORIX_WEB_BIND` says otherwise.
+Both ports bind to 127.0.0.1 unless `FACTORIX_WEB_BIND` says otherwise.
 
 Previews are served by the gateway on port 4102, one subdomain each. Locally `*.preview.localhost` needs nothing. On a VM, set `FACTORIX_PREVIEW_URL` to something like `https://preview.example.com`, add a wildcard DNS record for `*.preview.example.com`, and put a wildcard certificate in front of port 4102. Pass the `Host` header through and allow WebSocket upgrades, which dev servers use for hot reload. Rebuild `web` afterwards, because its content security policy names the preview address. Keep `.env` safe: losing `FACTORIX_SECRET_KEY` makes stored connection secrets unreadable, and you would need to enter them again.
 
