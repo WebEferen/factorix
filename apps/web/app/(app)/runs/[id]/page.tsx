@@ -15,8 +15,9 @@ import { RunActivity } from '@/modules/runs/run-activity'
 import { ACTIVE_RUN_STATES, RunStateChip } from '@/modules/runs/run-state'
 import { useRunStream } from '@/modules/runs/use-run-stream'
 import { PageHeader } from '@/modules/shell/page-header'
-import { Avatar, Button, Chip, ErrorState, Input, ListSkeleton, Tabs, Toggle, Tooltip } from '@/modules/ui'
+import { Avatar, Button, buttonStyles, Chip, EmptyState, ErrorState, Input, ListSkeleton, Tabs, Toggle, Tooltip } from '@/modules/ui'
 import { Boundary } from '@/modules/ui/boundary'
+import { NoResultArt } from '@/modules/ui/empty-art'
 
 type View = 'activity' | 'diff' | 'output'
 
@@ -197,6 +198,26 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
             <DiffView diff={diff?.diff} />
           </Boundary>
         </div>
+      ) : !run.summary && !run.structuredOutput && !run.adHocPrompt ? (
+        <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
+          <EmptyState
+            art={<NoResultArt />}
+            title={live ? 'No result yet' : 'No result'}
+            action={
+              run.issueId ? (
+                <Link href={`/issues/${run.issueId}`} className={buttonStyles({ size: 'sm' })}>
+                  Back to the issue
+                </Link>
+              ) : undefined
+            }
+          >
+            {live
+              ? 'The agent’s summary shows up here when the run finishes.'
+              : run.error
+                ? 'This run stopped before the agent wrote a summary.'
+                : 'This run finished without a summary.'}
+          </EmptyState>
+        </div>
       ) : (
         <div className="scroll-thin min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
           <div className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -220,7 +241,6 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
                 </pre>
               </div>
             ) : null}
-            {!run.summary && !run.structuredOutput && !run.adHocPrompt ? <p className="text-sm text-ink-2">No result yet.</p> : null}
             {run.issueId ? (
               <Link href={`/issues/${run.issueId}`} className="text-sm text-link hover:underline">
                 Back to the issue

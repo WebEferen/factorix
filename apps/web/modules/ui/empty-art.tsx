@@ -400,6 +400,23 @@ export function NoChangesArt() {
   )
 }
 
+export function NoResultArt() {
+  return (
+    <Art>
+      <Panel x={74} y={16} w={92} h={118} />
+      <Bar x={86} y={28} w={40} o={0.34} />
+      <path d="M74 42H166" {...lineProps('faint')} />
+      <Rows x={86} y={54} widths={[64, 48, 58, 30, 44]} gap={12} />
+      <Badge cx={166} cy={116} r={20}>
+        <circle cx={166} cy={116} r={9} {...lineProps('strong', 2)} />
+        <path d="M166 111V116L169.5 118.5" {...lineProps('strong', 2)} />
+      </Badge>
+      <Spark x={50} y={46} s={5} />
+      <Spark x={198} y={34} s={4} o={0.3} />
+    </Art>
+  )
+}
+
 export function ProjectsArt() {
   return (
     <Art>
