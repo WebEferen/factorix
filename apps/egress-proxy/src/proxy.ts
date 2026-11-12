@@ -5,6 +5,12 @@ import { BlockList, connect, isIP, type Socket } from 'node:net'
 import { networkInterfaces } from 'node:os'
 import type { Duplex } from 'node:stream'
 
+export interface McpGrant {
+  url: string
+  /** Sent to the server in place of the run token, so the agent never holds them. */
+  headers: Record<string, string>
+}
+
 export interface ProxyGrant {
   runId?: string
   /** Where denials are published. Without one they go to the run's own channel. */
@@ -13,6 +19,8 @@ export interface ProxyGrant {
   allow: string[]
   anthropicKey?: string | null
   openaiKey?: string | null
+  /** The run's MCP servers by name, reached at /mcp/<name>. */
+  mcp?: Record<string, McpGrant>
 }
 
 export interface ProxyStore {
@@ -33,6 +41,7 @@ export interface ProxyOptions {
 }
 
 const FENCE_TTL_MS = 30_000
+const MCP_ROUTE = /^\/mcp\/([A-Za-z0-9_-]+)(\/[^?]*)?(\?.*)?$/
 
 function interfaceNetworks(): string[] {
   return Object.values(networkInterfaces()).flatMap((entries) => (entries ?? []).map((entry) => entry.cidr ?? '').filter(Boolean))
@@ -205,6 +214,48 @@ export function createEgressProxy(options: ProxyOptions): Server {
     response.on('close', () => outbound.destroy())
   }
 
+  /** An MCP server of the run's agent. The agent sends its run token, and the server gets the connection's headers instead. */
+  const mcp = async (request: IncomingMessage, response: ServerResponse, name: string, path: string, query: string) => {
+    const token = request.headers.authorization?.replace(/^Bearer\s+/i, '')
+    const grant = token ? await options.store.grant(token) : null
+    if (!grant) return send(response, 401, 'Unknown run token')
+    const server = grant.mcp?.[name]
+    if (!server) return send(response, 404, `This run has no MCP server called ${name}`)
+    const target = new URL(server.url)
+    if (path) target.pathname = `${target.pathname.replace(/\/$/, '')}${path}`
+    if (query) target.search = query
+    // An admin chose the address, but it still must not be Factorix itself.
+    const decision = await authorize({ ...grant, allow: [target.hostname] }, target.hostname)
+    if ('denied' in decision) {
+      reject(grant, target.hostname, decision.denied)
+      return send(response, 403, `Egress to ${target.hostname} is blocked: ${decision.denied}`)
+    }
+    const headers = forwardHeaders(request.headers)
+    delete headers.authorization
+    headers.host = target.host
+    for (const [header, value] of Object.entries(server.headers)) headers[header.toLowerCase()] = value
+    const https = target.protocol === 'https:'
+    const connection = {
+      host: decision.address,
+      port: target.port || (https ? 443 : 80),
+      path: `${target.pathname}${target.search}`,
+      method: request.method,
+      headers,
+      ...(https && !isIP(target.hostname) ? { servername: target.hostname } : {}),
+    }
+    const outbound = (https ? httpsRequest : httpRequest)(connection, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode ?? 502, forwardHeaders(upstreamResponse.headers))
+      upstreamResponse.pipe(response)
+    })
+    outbound.on('error', (error) => {
+      log(`MCP server ${target.host} failed: ${error.message}`)
+      if (!response.headersSent) send(response, 502, 'The MCP server could not be reached')
+      else response.destroy()
+    })
+    request.pipe(outbound)
+    response.on('close', () => outbound.destroy())
+  }
+
   const forward = async (request: IncomingMessage, response: ServerResponse) => {
     const token = tokenFrom(request.headers['proxy-authorization'])
     const grant = token ? await options.store.grant(token) : null
@@ -252,6 +303,8 @@ export function createEgressProxy(options: ProxyOptions): Server {
         response.writeHead(200, { 'content-type': 'application/json' })
         return void response.end('{"ok":true}')
       }
+      const route = MCP_ROUTE.exec(url)
+      if (route) return mcp(request, response, route[1] ?? '', route[2] ?? '', route[3] ?? '')
       if (url.startsWith('/anthropic/')) {
         const header = (request.headers['x-api-key'] as string | undefined) ?? request.headers.authorization
         return reverse(

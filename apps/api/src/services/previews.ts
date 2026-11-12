@@ -58,6 +58,9 @@ export async function previewDto(deps: Pick<AppDeps, 'db' | 'env'>, issue: Issue
     }),
     commits: Object.entries(row?.commits ?? {}).map(([repo, commit]) => ({ repo, ...commit })),
     source: row?.source ?? null,
+    withoutSecrets: Boolean(
+      live && row.secretSets.length === 0 && Object.values(definition?.services ?? {}).some((entry) => entry.secrets.length > 0),
+    ),
     error: row?.error ?? null,
     startedBy: startedBy ? { id: startedBy.id as string, name: startedBy.displayName as string } : null,
     startedAt: row?.startedAt?.toISOString() ?? null,
@@ -88,7 +91,7 @@ export type PreviewActor = { kind: 'human' | 'agent'; accountId: string } | { ki
 
 /** Every change of a preview goes through here, so the state check, the job, and the audit entry commit together. */
 export async function requestPreview(
-  deps: Pick<AppDeps, 'db' | 'env'>,
+  deps: Pick<AppDeps, 'db' | 'env' | 'redis'>,
   issue: IssueRow,
   action: EnvironmentAction,
   actor: PreviewActor,
@@ -126,7 +129,8 @@ export async function requestPreview(
         state: 'starting',
         definition: json(definition),
         definitionVersion: environment.version,
-        secretSets: json(environment.secretSets),
+        // An agent can reach a preview it starts, so that preview never gets secret values.
+        secretSets: json(actor.kind === 'agent' ? [] : environment.secretSets),
         services: json(Object.fromEntries(Object.keys(definition.services).map((name) => [name, { state: 'waiting' }]))),
         commits: json({}),
         source: options.source ?? 'branch',
@@ -139,6 +143,8 @@ export async function requestPreview(
         expiresAt: trx.raw(`now() + make_interval(hours => ?)`, [settings.previewMaxHours]),
       })
       if (action === 'reset' && row) patch.dataGeneration = row.dataGeneration + 1
+      // The agent will read these logs, and the last start may have had secret values. Cleared before the commit, so no reader sees both.
+      if (actor.kind === 'agent' && row) await deps.redis.del(previewKeys.logs(row.slug))
     } else if (action === 'refresh') {
       patch.state = 'refreshing'
       patch.source = options.source ?? 'branch'

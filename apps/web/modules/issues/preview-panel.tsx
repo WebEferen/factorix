@@ -7,6 +7,7 @@ import {
   Eraser,
   ExternalLink,
   GitCommitHorizontal,
+  KeyRound,
   Loader2,
   MonitorPlay,
   Play,
@@ -336,6 +337,12 @@ export function PreviewPanel({ issueId }: { issueId: string }) {
               <span className="flex items-center gap-1.5">
                 <CircleAlert className="size-3.5 text-ink-3" />
                 An agent's working copy, not pushed yet. Refresh switches to the pushed branch.
+              </span>
+            ) : null}
+            {preview.withoutSecrets ? (
+              <span className="flex items-center gap-1.5">
+                <KeyRound className="size-3.5 text-ink-3" />
+                An agent started it, so it runs without secret values. Stop and start it to add them.
               </span>
             ) : null}
             {preview.startedAt ? (

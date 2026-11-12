@@ -5,6 +5,7 @@ import {
   type ApprovalRequest,
   AsyncQueue,
   EMPTY_USAGE,
+  ISSUE_FILES_DIR,
   matchesAnyToolRule,
   type PermissionPolicy,
   RUNTIME_CAPABILITIES,
@@ -79,6 +80,7 @@ export function buildClaudeOptions(spec: RunSpec, control: RunControl, io: Runne
   return {
     abortController,
     cwd: spec.cwd,
+    additionalDirectories: [ISSUE_FILES_DIR],
     model: model.name ?? DEFAULT_CLAUDE_MODEL,
     effort: model.reasoningEffort,
     maxTurns: model.maxTurns,

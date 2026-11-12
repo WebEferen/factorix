@@ -73,7 +73,6 @@ export interface ConnectionDto {
   name: string
   config: Record<string, unknown>
   hasSecret: boolean
-  agentVisible: boolean
   webhookUrl: string | null
   webhookSecret: string | null
   egressHosts: string[]

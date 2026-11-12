@@ -65,7 +65,7 @@ Each service is one container.
 
 `expose` names the service a preview opens. Each entry in `paths` sends a path prefix to another service, longest prefix first, and `strip` removes the prefix before forwarding. One origin serves the whole app, so the browser makes no cross-origin calls.
 
-`agents` names the services, secret sets, and variables agent runs get. See [Agent runs](#agent-runs).
+`agents` names the services and variables agent runs get. See [Agent runs](#agent-runs).
 
 ### Templates
 
@@ -94,7 +94,7 @@ A new source implements `SecretSourceConnector` in `packages/connectors/src/secr
 
 ## Sharing a definition
 
-Export on the Environment page downloads the saved version as a YAML file (`factorix/environment@1`). It holds the definition with its comments and each secret set's name, source kind, connection name, Doppler project and config, key filters, and whether agents can read it. It never holds values, tokens, or connection IDs, so it is safe to hand to a teammate or another Factorix. Any member can export.
+Export on the Environment page downloads the saved version as a YAML file (`factorix/environment@1`). It holds the definition with its comments and each secret set's name, source kind, connection name, Doppler project and config, and key filters. It never holds values, tokens, or connection IDs, so it is safe to hand to a teammate or another Factorix. Any member can export.
 
 Import, for admins, reads such a file and asks which local connection each secret set uses. It preselects a connection of the same kind and name, or the only connection of that kind, and a set you leave out is dropped. Import only fills the editor: Test it and save. The definition's `repo` names must match this project's repositories, which Test and Save check.
 
@@ -133,22 +133,20 @@ The preview gateway on port 4102 is the only way in. Opening a preview hands the
 ```yaml
 agents:
   services: [db, cache]
-  secrets: [backend]
   env:
     DATABASE_URL: postgres://postgres:local@${services.db.host}:5432/app
 ```
 
 - `services` lists services that come from an image. Each run starts its own copies on a network of their own, and the agent's container joins it, so `db` resolves from the agent. They start empty, and `files` mounts come from the run's own checkout. Repository services are refused, since the agent runs that code itself.
-- `secrets` lists secret sets whose values go into the agent's environment. Only sets with **Agents can read these values** turned on qualify, and saving refuses the others. The listed services also get only such sets, because the agent can reach them. A set a service names without the toggle is left out, and the run log says so.
 - `env` sets variables for the agent. `${preview.url}` is refused, since a run has no preview.
 
-The agent's variables are layered like a service's: secret sets, then `agents.env`, then what Factorix sets for the run. Service names go in `NO_PROXY`, so the agent reaches them directly while everything else still goes through the egress proxy. So do the hosts in the project's "Skip the proxy for" list, for previews and run services too.
+Agent runs never get secret values, and neither do the services they start, because the agent can reach them. A service that names secret sets starts without them in a run, and the run log says so. Saving refuses a definition that still lists `agents.secrets`.
+
+The agent's variables are `agents.env`, then what Factorix sets for the run. Service names go in `NO_PROXY`, so the agent reaches them directly while everything else still goes through the egress proxy. So do the hosts in the project's "Skip the proxy for" list, for previews and run services too.
 
 The services and their data go when the run ends or pauses for a decision, and a resumed run starts fresh copies. If they fail to start, the run goes on without the services or the values, its log says why, and the agent is told.
 
-The sandbox image has a stand-in `doppler` command, because the values are already in the environment. `doppler run [flags] -- <command>` runs the command, and anything else exits with a message saying so. Options such as `--mount` are not supported, and services with their own `image:` do not have the command.
-
-Run logs do not mask these values yet, so a value an agent prints is visible to anyone who can read the run.
+The sandbox image has a stand-in `doppler` command, because a repository service already has its values in the environment. `doppler run [flags] -- <command>` runs the command, and anything else exits with a message saying so. In an agent run it finds no values. Options such as `--mount` are not supported, and services with their own `image:` do not have the command.
 
 ### Previews from agents
 
@@ -158,6 +156,7 @@ When the environment has `expose`, Claude and Codex runs on an issue get four to
 - The copy reads the agent's workspace read-only and commits its files with a throwaway index inside the preview's own volume. The agent's files, index, and branch never change.
 - Once the preview is ready, the agent's container joins its network and reaches each service at `<name>.preview.internal:<port>`. Its `NO_PROXY` leaves that domain out, so requests go straight to the preview.
 - People open it from the issue page as usual. The panel says it runs an unpushed working copy, and Refresh or a push switches it back to the pushed branch.
+- A preview an agent starts runs without secret values. One that a person started with them stays out of the agent's reach: the agent sees its state, but no addresses, logs, or errors, and `preview_start` asks it to stop that preview first. Refresh keeps whatever the last start had.
 
 The tools act as the agent, on its own issue only, and the audit log records them under its name. A preview an agent started stops by itself like any other.
 

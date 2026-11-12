@@ -94,8 +94,7 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
     }))
   }
   const canAsk = capabilities?.toolApproval === 'per_call'
-  const attachable =
-    connections?.connections.filter((connection) => ['mcp_stdio', 'mcp_http', 'generic', 'anthropic', 'openai'].includes(connection.kind)) ?? []
+  const attachable = connections?.connections.filter((connection) => ['mcp_stdio', 'mcp_http', 'anthropic', 'openai'].includes(connection.kind)) ?? []
 
   const accountsOf = (role: 'scm' | 'tracker') => connections?.connections.filter((connection) => connection.accountRole === role) ?? []
   const accountChoice = (role: 'scm' | 'tracker') =>
@@ -303,7 +302,7 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
               checked={form.connectionIds.includes(connection.id)}
               onChange={(on) => toggleIn('connectionIds', connection.id, on)}
               label={connection.name}
-              hint={connection.agentVisible ? 'Its secrets are visible to the agent.' : connection.kind}
+              hint={connection.kind}
             />
           ))}
         </section>

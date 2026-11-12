@@ -112,7 +112,6 @@ export const connectionInput = z.object({
     .default({}),
   /** A token for most kinds, an env map for generic and MCP kinds. Never returned by the API. */
   secret: z.union([z.string().min(1), z.record(z.string(), z.string())]).optional(),
-  agentVisible: z.boolean().default(false),
 })
 export type ConnectionInput = z.infer<typeof connectionInput>
 

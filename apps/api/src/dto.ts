@@ -81,7 +81,6 @@ export function connectionDto(row: ConnectionRow, publicUrl: string, admin: bool
     name: row.name,
     config,
     hasSecret: row.secretCiphertext !== null,
-    agentVisible: row.agentVisible,
     webhookUrl: hasWebhook ? `${publicUrl.replace(/\/$/, '')}/webhooks/${row.kind}/${row.id}` : null,
     webhookSecret: hasWebhook && admin ? (webhookSecret ?? null) : null,
     egressHosts: egressHostsOf(row.kind, config),

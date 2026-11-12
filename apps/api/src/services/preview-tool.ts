@@ -13,6 +13,7 @@ const WAIT_MS = 45_000
 const POLL_MS = 1000
 const LOG_LINES = 50
 const MAX_LOG_LINES = 200
+const WITH_SECRETS = 'This preview runs with the project’s secret values, which agents never see, so you cannot reach it or read its logs.'
 
 type Deps = Pick<AppDeps, 'db' | 'env' | 'redis'> & { sandbox: SandboxProvider }
 
@@ -38,6 +39,8 @@ export async function answerPreviewTool(deps: Deps, request: ToolInput): Promise
       const source = args.source === 'branch' ? 'branch' : 'worktree'
       const row = await previewOf(deps.db, issue.id)
       if (row?.state === 'stopping') throw new Error('The preview is stopping. Try again in a moment.')
+      if (row && row.state !== 'stopped' && row.state !== 'failed' && holdsSecrets(row))
+        throw new Error(`${WITH_SECRETS} Call preview_stop first, then preview_start runs one without them.`)
       if (row?.state === 'ready') await requestPreview(deps, issue, 'refresh', actor, { source })
       else if (!row || row.state === 'stopped' || row.state === 'failed') await requestPreview(deps, issue, 'start', actor, { source })
       return status(deps, issue, run, waitMs)
@@ -60,19 +63,40 @@ async function status(deps: Deps, issue: IssueRow, run: RunRow, waitMs: number):
     row = await previewOf(deps.db, issue.id)
   }
   if (!row) return { state: 'none', next: 'Start one with preview_start.' }
-  const reachable = row.state === 'ready' && run.containerId ? await deps.sandbox.attachToEnvironment(row.slug, run.containerId) : false
+  // Messages and errors can carry service output, which could carry a secret value.
+  const secret = holdsSecrets(row)
+  const reachable = !secret && row.state === 'ready' && run.containerId ? await deps.sandbox.attachToEnvironment(row.slug, run.containerId) : false
   return {
     state: row.state,
     source: row.source,
     commits: row.commits,
     services: Object.fromEntries(
-      Object.entries(row.services).map(([name, service]) => [name, service.message ? `${service.state}: ${service.message}` : service.state]),
+      Object.entries(row.services).map(([name, service]) => [
+        name,
+        service.message && !secret ? `${service.state}: ${service.message}` : service.state,
+      ]),
     ),
-    ...(row.error ? { error: row.error } : {}),
+    ...(row.error && !secret ? { error: row.error } : {}),
     ...(reachable ? addresses(row) : {}),
     url: previewAddress(deps.env.FACTORIX_PREVIEW_URL, row.slug).url,
-    next: nextStep(row, reachable),
+    next: secret ? secretStep(row) : nextStep(row, reachable),
   }
+}
+
+/**
+ * Whether the preview's services got secret values when it last started. Agent-written code may run there, so an agent never reaches
+ * it, reads its output, or restarts it. A preview an agent starts gets none.
+ */
+function holdsSecrets(row: EnvironmentInstanceRow): boolean {
+  const definition = row.definition as EnvironmentDefinition | null
+  const used = new Set(Object.values(definition?.services ?? {}).flatMap((entry) => entry.secrets))
+  return row.secretSets.some((set) => used.has(set.name))
+}
+
+function secretStep(row: EnvironmentInstanceRow): string {
+  return row.state === 'stopped' || row.state === 'failed'
+    ? 'It is not running. preview_start runs it again without the project’s secret values, so you can reach it.'
+    : `${WITH_SECRETS} Call preview_stop, then preview_start runs one without them.`
 }
 
 /** Where each service answers from the agent's container, and how the public address routes between them. */
@@ -108,6 +132,7 @@ function nextStep(row: EnvironmentInstanceRow, reachable: boolean): string {
 async function logs(deps: Deps, issue: IssueRow, service: string | undefined, lines: number): Promise<string> {
   const row = await previewOf(deps.db, issue.id)
   if (!row) return 'This issue has no preview yet.'
+  if (holdsSecrets(row)) throw new Error(WITH_SECRETS)
   const entries = (await deps.redis.lrange(previewKeys.logs(row.slug), 0, -1)).map((line) => JSON.parse(line) as PreviewLogDto)
   const chosen = (service ? entries.filter((entry) => entry.service === service) : entries).slice(-Math.min(Math.max(1, lines), MAX_LOG_LINES))
   if (chosen.length === 0) return service ? `${service} has written nothing yet.` : 'The preview has written nothing yet.'

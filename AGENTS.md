@@ -6,7 +6,7 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 
 - `apps/api`: Fastify API (`src/server.ts`) and BullMQ worker (`src/worker.ts`). Both share `src/services`.
 - `apps/web`: Next.js App Router UI. Calls the API through rewrites, so everything is same-origin.
-- `apps/egress-proxy`: the only network path out of an agent or preview container. Swaps run tokens for real model keys.
+- `apps/egress-proxy`: the only network path out of an agent or preview container. Swaps run tokens for real model keys and MCP server headers.
 - `apps/preview-gateway`: the only way into a preview. Swaps a one-time ticket for a cookie scoped to one preview host.
 - `packages/core`: pure domain with no IO. State machines, the pipeline engine, phase templates, prompts.
 - `packages/runtime`: the contract between worker and runner. `RunSpec`, `RunEvent`, `RunCommand`.
@@ -35,6 +35,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 ## Rules that keep it safe
 
 - The repositories in `project_repos` are the limit of what agents may change, each checked out at `/workspace/repos/<name>`. An issue has one row in `issue_merge_requests` per repository it changed, and everything that touches a merge request reads `mergeRequestsOf`, which keeps the merge order the agent chose for that ticket. `iid` is only unique inside one repository, so never look one up without the repository.
+- Model keys and the headers of HTTP MCP servers live in the run's egress proxy grant, and the agent holds only its run token. No connection's secret enters an agent's container, so a stdio MCP server gets none.
 - The git token never enters a container that runs agent or repo code. Change `STEP_PROFILES` in `packages/sandbox/src/profiles.ts` only with a matching test in `docker.docker.test.ts`.
 - An agent can have its own git and tracker account, linked in `agent_connections` under the roles `scm` and `tracker`. Resolve them with `scmConnectionFor` and `trackerConnectionFor`. Work done as the agent follows its account, and merges, webhooks, polling, and status changes stay on the project's. Those roles never reach a container: the same boundary applies to their tokens.
 - The API and worker never import an SDK. Only `packages/runner` does.
@@ -43,7 +44,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - Publish domain events with `emit` inside the same transaction as the state change. The relay moves them to queues.
 - Query rows come back camelCase, and identifiers are snake-cased for you. Wrap JSONB writes in `json()`.
 - Update bodies go through `updateOf` in `packages/schemas`. Zod's `.partial()` still applies defaults, which would wipe fields.
-- A preview runs pushed code on its own network. Code reaches it through `mirror-fetch` and then `export`, which has no token and no network. The worker fetches secret values when a preview starts, keeps them in memory, and masks them in logs. They are never stored, audited, or returned by the API. Factorix's session cookie never goes to a preview host. An agent run gets only the secret sets marked Agents can read these values, for the agent and for its services alike, since the agent can reach both.
+- A preview runs pushed code on its own network. Code reaches it through `mirror-fetch` and then `export`, which has no token and no network. The worker fetches secret values when a preview starts, keeps them in memory, and masks them in logs. They are never stored, audited, or returned by the API. Factorix's session cookie never goes to a preview host. Agent runs never get secret values, and neither do their services or a preview an agent starts. A preview that has them stays out of the agent's reach, logs and errors included. The prompt and text files an agent reads go through `agentRedactor`.
 - Anything a workflow changes in the tracker records an echo marker first, so it cannot start another workflow. Runs execute a stored copy of the published definition, never the draft.
 
 ## Extending

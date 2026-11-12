@@ -116,6 +116,10 @@ describe('egress control', () => {
                     exec: `node -e "fetch('http://allowed.test:8000/node-fetch').then((r)=>r.json()).then((b)=>console.log(b.url))" 2>/dev/null; echo " exit=$?"`,
                   },
                   { exec: 'curl -sS --max-time 10 http://org.test:8000/through-org; echo " exit=$?"' },
+                  {
+                    exec: `curl -sS --max-time 10 -H "Authorization: Bearer $ANTHROPIC_API_KEY" -d '{}' "http://egress-proxy:8080/mcp/docs/rpc?x=1"; echo " exit=$?"`,
+                  },
+                  { exec: 'env | grep -c -e real-mcp-key -e real-generic-value -e real-stdio-value; echo " exit=$?"' },
                   { writeFile: { path: 'egress.txt', content: 'done\n' } },
                   { exec: 'git add egress.txt && git commit -qm "chore: egress check"' },
                 ],
@@ -155,6 +159,18 @@ describe('egress control', () => {
   it('confines the agent to the allowlist, logs denials, and keeps the real model key out of the container', async () => {
     const admin = new ApiClient(harness.app)
     await admin.ok('POST', '/api/auth/setup', { orgName: 'Acme', name: 'Ada', email: 'ada@example.com', password: 'correct horse battery' })
+    const docs = (
+      await admin.ok('POST', '/api/connections', {
+        kind: 'mcp_http',
+        name: 'Docs',
+        config: { url: 'http://allowed.test:8000/mcp' },
+        secret: { 'X-Api-Key': 'real-mcp-key' },
+      })
+    ).connection
+    const stdio = (
+      await admin.ok('POST', '/api/connections', { kind: 'mcp_stdio', name: 'Db', config: { command: 'true' }, secret: { DB: 'real-stdio-value' } })
+    ).connection
+    const generic = (await admin.ok('POST', '/api/connections', { kind: 'generic', name: 'Env', secret: { LEAK: 'real-generic-value' } })).connection
     const { agents } = await admin.ok('GET', '/api/agents')
     for (const agent of agents)
       await admin.ok('PUT', `/api/agents/${agent.id}`, {
@@ -163,6 +179,7 @@ describe('egress control', () => {
         archetypeId: agent.archetype.id,
         runtime: 'scripted',
         policy: { mode: agent.policy.mode },
+        connectionIds: [docs.id, stdio.id, generic.id],
       })
     await admin.ok('POST', '/api/connections', { kind: 'anthropic', name: 'Claude', secret: 'real-anthropic-key' })
     const linear = (await admin.ok('POST', '/api/connections', { kind: 'linear', name: 'Linear', secret: 'x' })).connection
@@ -209,8 +226,21 @@ describe('egress control', () => {
     const payloads = await events(run.id)
     expect(run.state, JSON.stringify(payloads.filter((event) => event.type === 'log' || event.type === 'error'))).toBe('succeeded')
     const results = payloads.filter((event) => event.type === 'tool.result').map((event) => String(event.output))
-    const [allowed, deniedTls, deniedPlain, directStub, directInternet, model, keyCount, connectorHost, otherConnectorHost, nodeFetch, orgHost] =
-      results
+    const [
+      allowed,
+      deniedTls,
+      deniedPlain,
+      directStub,
+      directInternet,
+      model,
+      keyCount,
+      connectorHost,
+      otherConnectorHost,
+      nodeFetch,
+      orgHost,
+      mcpServer,
+      connectionValues,
+    ] = results
 
     const seenByStub = JSON.parse((allowed as string).replace(/ exit=\d+\s*$/, ''))
     expect(seenByStub.url).toBe('/through-proxy')
@@ -232,6 +262,10 @@ describe('egress control', () => {
     expect(nodeFetch).toContain('/node-fetch')
     expect(nodeFetch).toContain('exit=0')
     expect(seen(orgHost).url).toBe('/through-org')
+    expect(seen(mcpServer).url).toBe('/mcp/rpc?x=1')
+    expect(seen(mcpServer).headers['x-api-key']).toBe('real-mcp-key')
+    expect(seen(mcpServer).headers.authorization).toBeUndefined()
+    expect(connectionValues?.trim().startsWith('0')).toBe(true)
 
     const denials = payloads.filter((event) => event.type === 'log' && event.source === 'egress-proxy').map((event) => event.message)
     expect(denials.some((message) => message.includes('denied.example'))).toBe(true)

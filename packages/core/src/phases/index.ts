@@ -24,16 +24,19 @@ export interface PhaseRepo {
 }
 
 export interface PhaseResource {
-  kind: 'document' | 'link'
+  kind: 'document' | 'link' | 'file'
   title: string
   url: string
   subtitle?: string | null
   content?: string | null
+  /** Where a file's copy is in the container. Without one, `note` says why it is missing. */
+  path?: string | null
+  note?: string | null
 }
 
 export interface PhaseContext {
   issue?: { identifier: string; title: string; description: string | null; url: string | null }
-  /** Documents and links attached to the issue in the tracker, which the agent has no way to open itself. */
+  /** Documents, links, and files attached to the issue in the tracker, which the agent has no way to open itself. */
   resources?: PhaseResource[]
   /** Everything the project allows. A ticket usually needs only some of these. */
   repos: PhaseRepo[]
@@ -65,7 +68,10 @@ const MAX_RESOURCE_CHARS = 60_000
 function resourcesBlock(resources: PhaseResource[]): string {
   let room = MAX_RESOURCE_CHARS
   const entries = resources.map((resource) => {
-    const heading = `${resource.kind === 'document' ? 'Document' : 'Link'}: ${resource.title}${resource.subtitle ? ` (${resource.subtitle})` : ''}\n${resource.url}`
+    const name = `${resource.title}${resource.subtitle ? ` (${resource.subtitle})` : ''}`
+    // A file's source URL needs the tracker's credentials, so the agent gets the copy instead.
+    if (resource.kind === 'file') return `File: ${name}\n${resource.path ?? `Not copied: ${resource.note ?? 'it could not be read'}`}`
+    const heading = `${resource.kind === 'document' ? 'Document' : 'Link'}: ${name}\n${resource.url}`
     if (resource.kind !== 'document') return heading
     const text = resource.content?.trim() || '(empty)'
     const fits = Math.max(0, Math.min(MAX_DOCUMENT_CHARS, room))

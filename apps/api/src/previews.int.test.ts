@@ -444,7 +444,7 @@ describe('previews', () => {
     expect(await ask('preview.status')).toMatchObject({ state: 'none' })
     expect(await ask('preview.start')).toMatchObject({ state: 'starting', source: 'worktree' })
     const started = await row()
-    expect(started).toMatchObject({ source: 'worktree', startedBy: agent.accountId })
+    expect(started).toMatchObject({ source: 'worktree', startedBy: agent.accountId, secretSets: [] })
     expect(await harness.deps.db('audit_log').where({ action: 'preview.start' }).orderBy('id', 'desc').first()).toMatchObject({
       actorKind: 'agent',
       actorAccountId: agent.accountId,
@@ -455,6 +455,8 @@ describe('previews', () => {
     expect(sandbox.steps.find((step) => step.op === 'export')).toMatchObject({ env: { FX_SOURCE: 'worktree' }, sourceVolume: `fx-ws-${issueIds[0]}` })
     expect(sandbox.steps.find((step) => step.op === 'mirror-fetch')?.sourceVolume).toBeUndefined()
     expect(sandbox.started.find((spec) => spec.service === 'api')?.aliases).toEqual(['api.preview.internal'])
+    expect(sandbox.started.find((spec) => spec.service === 'api')?.env.API_KEY).toBeUndefined()
+    expect((await member.ok('GET', url())).preview.withoutSecrets).toBe(true)
     expect(await ask('preview.status', { wait: true }, 2000)).toMatchObject({
       state: 'ready',
       reach: { api: 'http://api.preview.internal:3000' },
@@ -465,8 +467,8 @@ describe('previews', () => {
 
     await harness.deps.redis.rpush(
       previewKeys.logs(started.slug),
-      JSON.stringify({ seq: 1, ts: 1, service: 'api', text: 'listening on 3000' }),
-      JSON.stringify({ seq: 2, ts: 2, service: 'db', text: 'ready to accept connections' }),
+      JSON.stringify({ seq: 1, ts: Date.now(), service: 'api', text: 'listening on 3000' }),
+      JSON.stringify({ seq: 2, ts: Date.now(), service: 'db', text: 'ready to accept connections' }),
     )
     expect(await ask('preview.logs', { service: 'api' })).toBe('api: listening on 3000')
     expect(await ask('preview.logs', { lines: 1 })).toBe('db: ready to accept connections')
@@ -480,5 +482,61 @@ describe('previews', () => {
     expect(await ask('preview.stop')).toEqual({ state: 'stopping' })
     await expect(ask('preview.start')).rejects.toThrow('stopping')
     await expect(answerPreviewTool(workerDeps, { run, issue: null, op: 'preview.status', input: {} })).rejects.toThrow('has no issue')
+  })
+
+  it('keeps the agent away from a preview that has secret values', async () => {
+    await saveEnvironment(SOURCE)
+    const { orgId } = await harness.deps.db('projects').where({ id: projectId }).first()
+    const agent = await harness.deps.db('agents').first()
+    const [run] = await harness.deps
+      .db('runs')
+      .insert({
+        orgId,
+        issueId: issueIds[0],
+        agentId: agent.accountId,
+        agentSnapshot: json({ handle: 'engineer-1' }),
+        phase: 'implement',
+        state: 'running',
+        runtime: 'scripted',
+        model: 'scripted',
+        containerId: 'agent-container',
+      })
+      .returning('*')
+    const issue = await harness.deps.db('issues').where({ id: issueIds[0] }).first()
+    const ask = (op: Parameters<typeof answerPreviewTool>[1]['op'], input: unknown = {}, waitMs = 0) =>
+      answerPreviewTool(workerDeps, { run, issue, op, input, waitMs })
+
+    await member.ok('POST', url(0, 'start'))
+    await runPreviewAction(workerDeps, (await row()).id, 'start')
+    expect(sandbox.started.find((spec) => spec.service === 'api')?.env.API_KEY).toBe('doppler-secret-value')
+    expect((await member.ok('GET', url())).preview.withoutSecrets).toBe(false)
+    await harness.deps.redis.rpush(
+      previewKeys.logs((await row()).slug),
+      JSON.stringify({ seq: 1, ts: Date.now(), service: 'api', text: 'ZG9wcGxlci1zZWNyZXQ=' }),
+    )
+
+    const status = (await ask('preview.status')) as Record<string, unknown>
+    expect(status).toMatchObject({ state: 'ready' })
+    expect(status.reach).toBeUndefined()
+    expect(String(status.next)).toContain('secret values')
+    expect(sandbox.attached).toEqual([])
+    await expect(ask('preview.logs')).rejects.toThrow('secret values')
+    await expect(ask('preview.start')).rejects.toThrow('Call preview_stop first')
+
+    await harness.deps
+      .db('environment_instances')
+      .where({ issueId: issueIds[0] })
+      .update({ state: 'failed', error: 'api exited: ZG9wcGxlci1zZWNyZXQ=' })
+    const failed = (await ask('preview.status')) as Record<string, unknown>
+    expect(failed).toMatchObject({ state: 'failed' })
+    expect(JSON.stringify(failed)).not.toContain('ZG9wcGxlci1zZWNyZXQ=')
+
+    sandbox.started = []
+    expect(await ask('preview.start')).toMatchObject({ state: 'starting' })
+    expect((await row()).secretSets).toEqual([])
+    await runPreviewAction(workerDeps, (await row()).id, 'start')
+    expect(sandbox.started.find((spec) => spec.service === 'api')?.env.API_KEY).toBeUndefined()
+    expect(await ask('preview.status')).toMatchObject({ state: 'ready', reach: { api: 'http://api.preview.internal:3000' } })
+    expect(await ask('preview.logs')).not.toContain('ZG9wcGxlci1zZWNyZXQ=')
   })
 })

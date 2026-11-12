@@ -16,7 +16,7 @@ export const PREVIEW_TOOLS: Tool[] = [
     description:
       'Starts a preview of this issue with the project environment, or refreshes the running one, and waits up to 45 seconds for it. ' +
       'source "worktree" (the default) runs your files as they are now, including uncommitted and untracked ones. source "branch" runs what is pushed. ' +
-      'Returns its state and the addresses to reach it from here.',
+      'It runs without the project’s secret values. Returns its state and the addresses to reach it from here.',
     inputSchema: { type: 'object', properties: { source: { type: 'string', enum: ['worktree', 'branch'] } }, additionalProperties: false },
   },
   {

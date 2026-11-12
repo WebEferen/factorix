@@ -88,7 +88,6 @@ export async function saveEnvironment(
   const parsed = parseEnvironment(input.source, {
     repos: await repoNames(db, project.id),
     secretSets: secretSets.map((set) => set.name),
-    agentSecretSets: secretSets.filter((set) => set.agents).map((set) => set.name),
   })
   if (parsed.issues.length > 0) throw invalid(parsed.issues)
   const row = await db.transaction(async (trx) => {
@@ -126,7 +125,6 @@ export async function saveEnvironment(
           connectionId: set.connectionId,
           project: set.project,
           config: set.config,
-          agents: set.agents,
         })),
       },
     })
@@ -181,7 +179,6 @@ export async function testEnvironment(
   const parsed = parseEnvironment(input.source, {
     repos: await repoNames(deps.db, project.id),
     secretSets: input.secretSets.map((set) => set.name),
-    agentSecretSets: input.secretSets.filter((set) => set.agents).map((set) => set.name),
   })
   let sets: SecretSet[]
   try {

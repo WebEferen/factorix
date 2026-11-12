@@ -33,7 +33,7 @@ The agent can write anything in its workspace, including `.git/config` and hooks
 
 `STEP_PROFILES` in `packages/sandbox/src/profiles.ts` states this as data, and a Docker test plants a `core.fsmonitor` attack to prove it holds.
 
-Model keys stay out of agent containers too. Each run gets a token in Redis. The egress proxy swaps it for the real key and enforces the project's allowlist. Denials appear in the run log.
+Model keys stay out of agent containers too. Each run gets a token in Redis. The egress proxy swaps it for the real key and enforces the project's allowlist. Denials appear in the run log. An agent reaches its HTTP MCP servers at the proxy's `/mcp/<name>`, which puts the connection's headers on the request, so those stay out as well. A stdio MCP server runs inside the container, so it starts without the values stored on its connection, and Environment secret connections never reach an agent. Without the proxy, Claude and Codex runs are refused, and only scripted runs work.
 
 The allowlist is package registries, the hosts each of the project's connectors declares, and the project's own additions. Settings, Network can extend those defaults for the whole organization or replace them with its own list. GitLab is on it so installs can fetch packages from public projects. Agents hold no token, so private code and pushes stay out of reach, but an agent could still send data to an account whose token it was given. The same is true of `npm publish` on the registries.
 
@@ -92,6 +92,10 @@ Each run ends with a `clear-cache` step, which has no token, mirror, or network.
 ## Keeping Linear and Factorix honest
 
 When a run starts, the worker reads the documents and links attached to the issue (Resources in Linear) with the same tracker account the agent comments with, and puts them in the prompt as untrusted text. Each document is capped at 20,000 characters and all of them at 60,000. If the tracker fails, the run goes on without them and the log says so.
+
+Files, such as uploads attached to the issue or pasted into its description, are read the same way and copied into the container at `/workspace/.factorix/issue-files`, outside the repositories: at most 20 files, 10 MB each and 25 MB in all. The description points at the copies, and the agent never gets the tracker's URL or credentials. A source declares files through `listResources` and uploads through its markup's `isMediaUrl`, and `fetchMedia` reads both.
+
+Before the prompt and any text file reach the agent, the worker masks every connection token in the organization, the values of the project's secret sets whose names say they are secret, and known token formats such as `glpat-` or `lin_api_`. Images, PDFs, and other binary files go as they are.
 
 Every outbound write records an echo marker, because a personal API key makes the factory's writes look like yours. Factory comments also carry a visible prefix and footer. Linear owns title, description, priority, labels, assignee, and state. Factorix writes state only through the project's state map, and only if the current state is the one it last set. Otherwise it logs `sync.conflict` and leaves it alone.
 

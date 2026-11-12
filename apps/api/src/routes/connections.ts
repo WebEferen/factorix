@@ -30,7 +30,6 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
           kind: input.kind,
           name: input.name,
           config: json(withWebhookSecret(input.kind, input.config)) as never,
-          agentVisible: input.agentVisible,
           createdBy: account.id,
           ...encodeSecret(deps, input.secret),
         })
@@ -62,7 +61,6 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
       .update({
         name: input.name ?? current.name,
         config: json(config) as never,
-        agentVisible: input.agentVisible ?? current.agentVisible,
         updatedAt: db.fn.now() as never,
         ...encodeSecret(deps, input.secret),
       })

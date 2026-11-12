@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { TrackerResource } from '@factorix/connectors'
 import type { EnvironmentInstanceRow } from '@factorix/db'
 import type { ScriptedPlan } from '@factorix/runtime'
 import { DockerSandboxProvider, dockerClientFromEnv } from '@factorix/sandbox'
@@ -41,7 +42,6 @@ expose:
   service: web
 agents:
   services: [cache]
-  secrets: [app]
   env:
     CACHE_URL: redis://\${services.cache.host}:6379
 `
@@ -164,7 +164,7 @@ describe('agent runs with the project environment', () => {
     const gitlab = (await admin.ok('POST', '/api/connections', { kind: 'gitlab', name: 'GitLab', secret: 'y', config: {} })).connection
     const doppler = (await admin.ok('POST', '/api/connections', { kind: 'doppler', name: 'Doppler', secret: 'dp.sa.the-token' })).connection
     harness.world.dopplerConfigs = new Map<string, Record<string, string>>([
-      ['app/dev', { APP_SECRET: 'agent-readable-value' }],
+      ['app/dev', { APP_SECRET: 'app-secret-value' }],
       ['hidden/dev', { HIDDEN_SECRET: 'not-for-agents' }],
     ])
     const { project } = await admin.ok('POST', '/api/projects', {
@@ -179,7 +179,7 @@ describe('agent runs with the project environment', () => {
     await admin.ok('PUT', `/api/projects/${project.id}/environment`, {
       source: DEFINITION,
       secretSets: [
-        { name: 'app', connectionId: doppler.id, project: 'app', config: 'dev', agents: true },
+        { name: 'app', connectionId: doppler.id, project: 'app', config: 'dev' },
         { name: 'hidden', connectionId: doppler.id, project: 'hidden', config: 'dev' },
       ],
     })
@@ -191,8 +191,9 @@ describe('agent runs with the project environment', () => {
   })
 
   /** Files an issue for engineer-1 and waits for its implement run to end. */
-  async function implement(title: string) {
+  async function implement(title: string, resources: TrackerResource[] = []) {
     const tracker = harness.world.addIssue({ title, labels: [{ id: labelId, name: 'engineer-1', parentId: null, isGroup: false }] })
+    harness.world.resources.set(tracker.id, resources)
     await sendLinearWebhook(harness.app, linear.id, linear.webhookSecret, issuePayload(tracker, 'create'))
     const issue = await waitFor(() => harness.deps.db('issues').where({ trackerIssueId: tracker.id }).first(), 'the mirror row')
     const run = await waitFor(
@@ -232,14 +233,14 @@ describe('agent runs with the project environment', () => {
       .catch(() => undefined)
   })
 
-  it('gives the agent its own services and the values it may read, then removes the services with the run', async () => {
+  it('gives the agent its own services and no secret values, then removes the services with the run', async () => {
     script = {
       steps: [
         {
           exec: `node -e "const u = new URL(process.env.CACHE_URL); const s = require('net').connect(Number(u.port), u.hostname, () => s.write('PING\\r\\n')); s.on('data', (d) => { process.stdout.write(d.toString().trim()); s.end() })"; echo " exit=$?"`,
         },
-        { exec: 'echo "$APP_SECRET/${HIDDEN_SECRET:-none}"' },
-        { exec: `doppler run -p app -c dev -- sh -c 'echo "doppler sees $APP_SECRET"'; echo " exit=$?"` },
+        { exec: 'echo "${APP_SECRET:-none}/${HIDDEN_SECRET:-none}"' },
+        { exec: `doppler run -p app -c dev -- sh -c 'echo "doppler sees \${APP_SECRET:-nothing}"'; echo " exit=$?"` },
         { exec: 'env | grep -c dp.sa; echo " exit=$?"' },
         { writeFile: { path: 'services.txt', content: 'done\n' } },
         { exec: 'git add services.txt && git commit -qm "chore: services check"' },
@@ -249,24 +250,42 @@ describe('agent runs with the project environment', () => {
     const { issue, run, payloads, outputs } = await implement('Use the cache')
     const [ping, secrets, viaDoppler, tokenCount] = outputs
     expect(ping).toContain('+PONG exit=0')
-    expect(secrets?.trim()).toBe('agent-readable-value/none')
-    expect(viaDoppler).toContain('doppler sees agent-readable-value')
+    expect(secrets?.trim()).toBe('none/none')
+    expect(viaDoppler).toContain('doppler sees nothing')
     expect(tokenCount?.trim().startsWith('0')).toBe(true)
     const logs = payloads.filter((event) => event.type === 'log').map((event) => String(event.message))
     expect(logs).toContain('Starting cache for this run.')
-    expect(logs.some((message) => message.includes('hidden is not marked Agents can read these values'))).toBe(true)
+    expect(logs).toContain('cache starts without the secret sets hidden, since agent runs never get secret values.')
 
     const instance = await waitFor(
       () => harness.deps.db<EnvironmentInstanceRow>('environment_instances').where({ runId: run.id, kind: 'run', state: 'stopped' }).first(),
       'the run services to stop',
     )
-    expect(instance.secretSets.map((set) => set.name)).toEqual(['app'])
+    expect(instance.secretSets).toEqual([])
     const left = { label: [`factorix.env=${instance.slug}`] }
     expect(await docker.listContainers({ all: true, filters: JSON.stringify(left) })).toEqual([])
     expect((await docker.listVolumes({ filters: JSON.stringify(left) })).Volumes ?? []).toEqual([])
     expect((await docker.listNetworks({ filters: JSON.stringify({ name: [`fx-env-${instance.slug}`] }) })).length).toBe(0)
     const workspace = await harness.deps.db('workspaces').where({ issueId: issue.id }).first()
     expect((await docker.getVolume(workspace.volumeName).inspect()).Name).toBe(workspace.volumeName)
+  })
+
+  it('hands the agent copies of the files attached to the issue, outside its repository and masked', async () => {
+    harness.world.media.set('https://uploads.linear.app/o/n/1', { contentType: 'text/plain', body: 'the token is dp.sa.the-token\n' })
+    script = {
+      steps: [
+        { exec: 'cat /workspace/.factorix/issue-files/1-notes.txt' },
+        { exec: 'git status --porcelain; echo " exit=$?"' },
+        { writeFile: { path: 'files.txt', content: 'done\n' } },
+        { exec: 'git add files.txt && git commit -qm "chore: files check"' },
+      ],
+      structuredOutput: { summary: 'Read the files.', approach: 'cat', testing: 'cat', notes: '' },
+    }
+    const { outputs } = await implement('Read the notes', [
+      { kind: 'file', title: 'notes.txt', url: 'https://uploads.linear.app/o/n/1', subtitle: null, content: null },
+    ])
+    expect(outputs[0]).toBe('the token is [secret removed]\n')
+    expect(outputs[1]?.trim()).toBe('exit=0')
   })
 
   it('lets the agent preview its uncommitted files through the MCP tools and reach the preview directly', async () => {

@@ -7,7 +7,7 @@ import { toast } from 'sonner'
 import { api } from '@/modules/lib/api'
 import { useConnections, useMe } from '@/modules/lib/data'
 import { timeAgo } from '@/modules/lib/format'
-import { Button, Chip, CopyField, Dialog, EmptyState, ErrorState, Field, Input, ListSkeleton, Select, Textarea, Toggle } from '@/modules/ui'
+import { Button, Chip, CopyField, Dialog, EmptyState, ErrorState, Field, Input, ListSkeleton, Select, Textarea } from '@/modules/ui'
 import { ConnectionsArt } from '@/modules/ui/empty-art'
 
 const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: React.ReactNode; secret: string; placeholder?: string }> = {
@@ -27,7 +27,12 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
   },
   anthropic: { label: 'Anthropic', hint: 'API key for Claude agents', icon: <Bot />, secret: 'API key', placeholder: 'sk-ant-...' },
   openai: { label: 'OpenAI', hint: 'API key for Codex agents', icon: <Bot />, secret: 'API key', placeholder: 'sk-...' },
-  mcp_http: { label: 'MCP server (HTTP)', hint: 'A tool server agents reach over HTTP', icon: <Plug />, secret: 'Headers as JSON' },
+  mcp_http: {
+    label: 'MCP server (HTTP)',
+    hint: 'A tool server agents reach over HTTP. The egress proxy adds its headers, so agents never see them',
+    icon: <Plug />,
+    secret: 'Headers as JSON',
+  },
   slack: {
     label: 'Slack',
     hint: 'Workflows post to its channels. The bot token needs chat:write, chat:write.public, channels:read, and groups:read',
@@ -35,23 +40,28 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
     secret: 'Bot token',
     placeholder: 'xoxb-',
   },
-  mcp_stdio: { label: 'MCP server (command)', hint: 'A tool server the sandbox starts', icon: <Plug />, secret: 'Environment as JSON' },
+  mcp_stdio: {
+    label: 'MCP server (command)',
+    hint: 'A tool server the sandbox starts. It gets no secret values, so use an HTTP server for one that needs a key',
+    icon: <Plug />,
+    secret: 'Environment as JSON',
+  },
   generic: {
     label: 'Environment secret',
-    hint: 'Variables for agents that hold this connection, or a secret set in a project environment',
+    hint: 'Values for a secret set in a project environment. Agents never get them',
     icon: <KeyRound />,
     secret: 'Environment as JSON',
   },
   doppler: {
     label: 'Doppler',
-    hint: 'Secret source: configs for previews and agent runs. The token stays in Factorix',
+    hint: 'Secret source: configs for previews. The token stays in Factorix',
     icon: <Vault />,
     secret: 'Service token, or a service account token to pick from several configs',
     placeholder: 'dp.st...',
   },
 }
 
-const usesJsonSecret = (kind: string) => kind === 'mcp_http' || kind === 'mcp_stdio' || kind === 'generic'
+const usesJsonSecret = (kind: string) => kind === 'mcp_http' || kind === 'generic'
 
 function ConnectionDialog({
   connection,
@@ -73,7 +83,6 @@ function ConnectionDialog({
   const [host, setHost] = useState('https://gitlab.com')
   const [botName, setBotName] = useState('')
   const [botEmail, setBotEmail] = useState('')
-  const [agentVisible, setAgentVisible] = useState(false)
   const [loading, setLoading] = useState(false)
   useEffect(() => {
     if (!open) return
@@ -86,7 +95,6 @@ function ConnectionDialog({
     setHost(String(connection?.config.host ?? 'https://gitlab.com'))
     setBotName(String(connection?.config.botName ?? ''))
     setBotEmail(String(connection?.config.botEmail ?? ''))
-    setAgentVisible(connection?.agentVisible ?? false)
   }, [open, connection])
 
   const submit = async (event: FormEvent) => {
@@ -103,7 +111,7 @@ function ConnectionDialog({
               : {}
       let secretValue: unknown
       if (secret) secretValue = usesJsonSecret(kind) ? JSON.parse(secret) : secret
-      const body = { name: name || KINDS[kind].label, config, secret: secretValue, agentVisible }
+      const body = { name: name || KINDS[kind].label, config, secret: secretValue }
       const { connection: saved } = connection
         ? await api.put<{ connection: ConnectionDto }>(`/api/connections/${connection.id}`, body)
         : await api.post<{ connection: ConnectionDto }>('/api/connections', { ...body, kind })
@@ -169,35 +177,29 @@ function ConnectionDialog({
             </Field>
           </div>
         ) : null}
-        <Field
-          label={meta.secret}
-          hint={connection?.hasSecret ? 'A secret is stored. Leave this blank to keep it.' : 'Encrypted at rest and never shown again.'}
-        >
-          {usesJsonSecret(kind) ? (
-            <Textarea
-              className="font-mono text-xs"
-              placeholder='{"API_KEY": "..."}'
-              value={secret}
-              onChange={(event) => setSecret(event.target.value)}
-            />
-          ) : (
-            <Input
-              type="password"
-              autoComplete="off"
-              placeholder={meta.placeholder}
-              required={!connection?.hasSecret}
-              value={secret}
-              onChange={(event) => setSecret(event.target.value)}
-            />
-          )}
-        </Field>
-        {kind === 'generic' ? (
-          <Toggle
-            checked={agentVisible}
-            onChange={setAgentVisible}
-            label="Let agents see these values"
-            hint="Agents can read and could leak them, so grant this on purpose."
-          />
+        {kind !== 'mcp_stdio' ? (
+          <Field
+            label={meta.secret}
+            hint={connection?.hasSecret ? 'A secret is stored. Leave this blank to keep it.' : 'Encrypted at rest and never shown again.'}
+          >
+            {usesJsonSecret(kind) ? (
+              <Textarea
+                className="font-mono text-xs"
+                placeholder='{"API_KEY": "..."}'
+                value={secret}
+                onChange={(event) => setSecret(event.target.value)}
+              />
+            ) : (
+              <Input
+                type="password"
+                autoComplete="off"
+                placeholder={meta.placeholder}
+                required={!connection?.hasSecret}
+                value={secret}
+                onChange={(event) => setSecret(event.target.value)}
+              />
+            )}
+          </Field>
         ) : null}
         <div className="flex justify-end">
           <Button type="submit" variant="primary" loading={loading}>
@@ -297,8 +299,7 @@ export default function ConnectionsPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 text-sm">
                     <span className="truncate">{connection.name}</span>
-                    {connection.agentVisible ? <Chip tone="warning">Visible to agents</Chip> : null}
-                    {!connection.hasSecret ? <Chip>No secret</Chip> : null}
+                    {!connection.hasSecret && connection.kind !== 'mcp_stdio' ? <Chip>No secret</Chip> : null}
                   </div>
                   <div className="truncate text-xs text-ink-2">
                     {meta.label}, {connection.config.botName ? `commits as ${String(connection.config.botName)}, ` : ''}updated{' '}

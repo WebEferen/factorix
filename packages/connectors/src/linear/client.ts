@@ -13,6 +13,7 @@ import type {
   TrackerStateType,
   TrackerTeam,
 } from '../tracker'
+import { linearMarkup } from './markup'
 
 const ISSUE_FIELDS = `
   id identifier title description url priority createdAt updatedAt archivedAt
@@ -186,7 +187,7 @@ export class LinearConnector implements TrackerConnector {
     }))
   }
 
-  /** Linear shows these under Resources on the issue. */
+  /** Linear shows these under Resources on the issue. An attachment that is an upload is a file, and the rest are links. */
   async listResources(issueId: string): Promise<TrackerResource[]> {
     const { issue } = await this.request<{
       issue: {
@@ -205,7 +206,13 @@ export class LinearConnector implements TrackerConnector {
         subtitle: null,
         content: document.content,
       })),
-      ...issue.attachments.nodes.map((link) => ({ kind: 'link' as const, title: link.title, url: link.url, subtitle: link.subtitle, content: null })),
+      ...issue.attachments.nodes.map((attachment) => ({
+        kind: linearMarkup.isMediaUrl(attachment.url) ? ('file' as const) : ('link' as const),
+        title: attachment.title,
+        url: attachment.url,
+        subtitle: attachment.subtitle,
+        content: null,
+      })),
     ]
   }
 

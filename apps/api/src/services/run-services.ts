@@ -1,10 +1,9 @@
 import type { EnvironmentInstanceRow, ProjectEnvironmentRow, ProjectRow, RunRow } from '@factorix/db'
 import { json } from '@factorix/db'
 import type { Environment, SandboxProvider, Workspace } from '@factorix/sandbox'
-import { type EnvironmentDefinition, maskSecrets, mergeEnv, startOrder } from '@factorix/schemas'
+import { type EnvironmentDefinition, mergeEnv, startOrder } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { environmentProxyEnv, revokeProxyGrant, waitUntilReady } from './environment-runtime'
-import { resolveSecretSets } from './environments'
 import { readySeconds, serviceSpec, templateValues } from './preview-spec'
 import { LIVE_STATES, newSlug } from './previews'
 
@@ -12,7 +11,7 @@ import { LIVE_STATES, newSlug } from './previews'
 export interface RunServices {
   /** The services' network, which the agent joins. Null when the run gets values but no services. */
   network: string | null
-  /** Values from agent-readable secret sets, then `agents.env`. */
+  /** `agents.env`, with its templates filled in. Never a secret value. */
   env: Record<string, string>
   /** Service names, which the agent reaches directly rather than through the egress proxy. */
   noProxy: string[]
@@ -26,8 +25,8 @@ type Log = (level: 'info' | 'warn' | 'error', message: string) => void
 const ENDED_RUN_STATES = ['succeeded', 'failed', 'cancelled', 'suspended']
 
 /**
- * Starts the image services `agents.services` lists on a network of the run's own, and resolves the values the agent may read.
- * Only sets marked "Agents can read these values" are fetched, for the agent and for the services alike, since the agent can reach both.
+ * Starts the image services `agents.services` lists on a network of the run's own. Agent runs never get secret values, and neither
+ * do these services, since the agent can reach them.
  */
 export async function startRunServices(
   deps: Deps,
@@ -39,14 +38,12 @@ export async function startRunServices(
   const definition = saved?.definition as EnvironmentDefinition | null | undefined
   if (!saved || !definition) return null
   const { agents } = definition
-  if (agents.services.length === 0 && agents.secrets.length === 0 && Object.keys(agents.env).length === 0) return null
+  if (agents.services.length === 0 && Object.keys(agents.env).length === 0) return null
 
   await stopRunServices(deps, run.id)
-  const wanted = new Set([...agents.secrets, ...agents.services.flatMap((name) => definition.services[name]?.secrets ?? [])])
-  const sets = saved.secretSets.filter((set) => set.agents && wanted.has(set.name))
-  for (const name of wanted) {
-    if (!sets.some((set) => set.name === name))
-      log('warn', `The secret set ${name} is not marked Agents can read these values, so this run goes without it.`)
+  for (const name of agents.services) {
+    const sets = definition.services[name]?.secrets ?? []
+    if (sets.length > 0) log('warn', `${name} starts without the secret sets ${sets.join(', ')}, since agent runs never get secret values.`)
   }
 
   const existing = await db<EnvironmentInstanceRow>('environment_instances').where({ runId: run.id, kind: 'run' }).first()
@@ -54,7 +51,7 @@ export async function startRunServices(
     state: 'starting',
     definition: json(definition),
     definitionVersion: saved.version,
-    secretSets: json(sets),
+    secretSets: json([]),
     services: json(Object.fromEntries(agents.services.map((name) => [name, { state: 'waiting' }]))),
     error: null,
     startedAt: db.fn.now(),
@@ -72,7 +69,6 @@ export async function startRunServices(
   const instance = row as EnvironmentInstanceRow
 
   try {
-    const secrets = await resolveSecretSets(deps, run.orgId, sets)
     const values = templateValues(definition, { url: '', host: '' }, input.repos)
     let environment: Environment | null = null
     if (agents.services.length > 0) {
@@ -91,8 +87,7 @@ export async function startRunServices(
         allow: await input.allow(),
         ttlSeconds: input.ttlSeconds,
       })
-      const context = { environment, values, secrets, platformEnv, dataGeneration: 1, labels }
-      const masks = [...secrets.values()].flatMap((entry) => Object.values(entry))
+      const context = { environment, values, secrets: new Map(), platformEnv, dataGeneration: 1, labels }
       for (const wave of startOrder(definition, agents.services)) {
         const controller = new AbortController()
         await Promise.all(
@@ -102,7 +97,7 @@ export async function startRunServices(
               await waitUntilReady(sandbox, containerId, { name, timeoutSeconds: readySeconds(definition, name), signal: controller.signal })
             } catch (error) {
               controller.abort()
-              throw new Error(`${(error as Error).message}${maskSecrets(await logTail(sandbox, containerId), masks)}`)
+              throw new Error(`${(error as Error).message}${await logTail(sandbox, containerId)}`)
             }
           }),
         )
@@ -118,16 +113,9 @@ export async function startRunServices(
       })
     return {
       network: environment?.network ?? null,
-      env: mergeEnv(
-        agents.secrets.map((name) => secrets.get(name) ?? {}),
-        agents.env,
-        values,
-      ),
+      env: mergeEnv([], agents.env, values),
       noProxy: agents.services,
-      note: noteFor(
-        definition,
-        sets.filter((set) => agents.secrets.includes(set.name)).map((set) => set.name),
-      ),
+      note: noteFor(definition),
     }
   } catch (error) {
     await stopRunServices(deps, run.id).catch(() => undefined)
@@ -138,7 +126,7 @@ export async function startRunServices(
   }
 }
 
-function noteFor(definition: EnvironmentDefinition, secretSets: string[]): string {
+function noteFor(definition: EnvironmentDefinition): string {
   const { agents } = definition
   const parts: string[] = []
   if (agents.services.length > 0) {
@@ -150,8 +138,6 @@ function noteFor(definition: EnvironmentDefinition, secretSets: string[]): strin
   }
   const keys = Object.keys(agents.env)
   if (keys.length > 0) parts.push(`The project set ${keys.join(', ')} in your environment for them.`)
-  if (secretSets.length > 0)
-    parts.push(`Values from the secret sets ${secretSets.join(', ')} are in your environment too. Never print or commit them.`)
   return parts.join(' ')
 }
 

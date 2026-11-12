@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ScmConnector } from '@factorix/connectors'
 import { PHASES } from '@factorix/core'
-import { type ConnectionRow, type IssueRow, json, type ProjectRow, type RunRow } from '@factorix/db'
+import { type IssueRow, json, type ProjectRow, type RunRow } from '@factorix/db'
 import {
   decodeEvent,
   type ErrorCode,
@@ -23,7 +23,7 @@ import { writeAudit } from '../lib/audit'
 import { orgChannel, proxyTokenKey, runCommandChannel, runProxyChannel } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
 import { emit } from '../lib/outbox'
-import { decryptConnection, resolveModelKey, scmConnectionFor, scmFor } from './connections'
+import { resolveModelKey, scmConnectionFor, scmFor } from './connections'
 import { restrictedHosts } from './egress'
 import { PREVIEW_DOMAIN } from './environment-runtime'
 import { definitionOf, getEnvironmentRow } from './environments'
@@ -31,10 +31,11 @@ import { EventBuffer } from './event-buffer'
 import { finalizePhase, StepFailed, type WorkRepo } from './finalize'
 import { releaseIssueLock } from './pipeline'
 import { answerPreviewTool } from './preview-tool'
+import { agentRedactor } from './redact'
 import { mergeRequestsOf, projectRepos } from './repos'
 import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
-import { buildRunSpec, readIssueResources, sessionToResume } from './spec'
+import { type AgentMcp, agentMcp, buildRunSpec, readIssueResources, sessionToResume } from './spec'
 import { ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
 
 export const LEASE_SECONDS = 60
@@ -112,6 +113,7 @@ class RunExecution {
   private forceStop: NodeJS.Timeout | null = null
   private runTimeout: NodeJS.Timeout | null = null
   private proxyToken: string | null = null
+  private mcp: AgentMcp | null = null
   private lostLease = false
   private suspended = false
   private timedOut = false
@@ -317,7 +319,7 @@ class RunExecution {
 
   /** Env for anything that runs repo or agent code. It holds the egress proxy token, never the git token. */
   private async containerEnv(): Promise<Record<string, string>> {
-    const { env, db } = this.deps
+    const { env } = this.deps
     const values: Record<string, string> = {
       FX_AGENT: this.agentHandle,
       FX_RUN: this.run.id,
@@ -326,33 +328,21 @@ class RunExecution {
       DISABLE_AUTOUPDATER: '1',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     }
-    const generic = (await db('connections')
-      .join('agent_connections', 'connections.id', 'agent_connections.connection_id')
-      .where({ 'agent_connections.agent_id': this.run.agentId, 'connections.kind': 'generic', 'connections.agent_visible': true })
-      .select('connections.*')) as ConnectionRow[]
-    for (const connection of generic) {
-      const secret = decryptConnection(this.deps, connection)
-      if (secret) Object.assign(values, (JSON.parse(secret) as { env?: Record<string, string> }).env ?? JSON.parse(secret))
-    }
+    if (!env.FACTORIX_PROXY_URL) return values
 
-    const anthropicKey = await resolveModelKey(this.deps, this.run.orgId, this.run.agentId, 'anthropic')
-    const openaiKey = await resolveModelKey(this.deps, this.run.orgId, this.run.agentId, 'openai')
-    if (!env.FACTORIX_PROXY_URL) {
-      if (anthropicKey) values.ANTHROPIC_API_KEY = anthropicKey
-      if (openaiKey) values.CODEX_API_KEY = openaiKey
-      return values
-    }
-
+    const proxy = new URL(env.FACTORIX_PROXY_URL)
     if (!this.proxyToken) {
       this.proxyToken = randomToken(24)
+      const anthropicKey = await resolveModelKey(this.deps, this.run.orgId, this.run.agentId, 'anthropic')
+      const openaiKey = await resolveModelKey(this.deps, this.run.orgId, this.run.agentId, 'openai')
+      this.mcp = await agentMcp(this.deps, { run: this.run, project: this.project, proxy: { origin: proxy.origin, token: this.proxyToken } })
       await this.deps.redis.set(
         proxyTokenKey(this.proxyToken),
-        JSON.stringify({ runId: this.run.id, allow: await this.allowlist(), anthropicKey, openaiKey }),
+        JSON.stringify({ runId: this.run.id, allow: await this.allowlist(), anthropicKey, openaiKey, mcp: this.mcp.grant }),
         'EX',
         (this.project?.runTimeoutMinutes ?? 90) * 60 + 3600,
       )
     }
-    const proxy = new URL(env.FACTORIX_PROXY_URL)
     const authed = `${proxy.protocol}//${this.proxyToken}:x@${proxy.host}`
     const noProxy = [proxy.hostname, 'localhost', '127.0.0.1', `.${PREVIEW_DOMAIN}`, ...(this.project?.networkBypass ?? []).map(noProxyHost)].join(
       ',',
@@ -378,22 +368,10 @@ class RunExecution {
     const policy = this.project?.networkPolicy ?? 'restricted'
     if (policy === 'open') return ['*']
     if (policy === 'none') return []
-    const mcpRows = (await this.deps
-      .db('connections')
-      .join('agent_connections', 'connections.id', 'agent_connections.connection_id')
-      .where({ 'agent_connections.agent_id': this.run.agentId, 'connections.kind': 'mcp_http' })
-      .select('connections.config')) as { config: { url?: string } }[]
-    const mcpHosts = mcpRows.flatMap((row) => {
-      try {
-        return row.config.url ? [new URL(row.config.url).hostname] : []
-      } catch {
-        return []
-      }
-    })
     const connectionIds = this.project
       ? [this.project.trackerConnectionId, this.project.scmConnectionId]
       : [this.run.trigger.scmConnectionId as string | undefined].filter((id) => id !== undefined)
-    return [...(await restrictedHosts(this.deps.db, this.run.orgId, this.project, connectionIds)), ...mcpHosts]
+    return restrictedHosts(this.deps.db, this.run.orgId, this.project, connectionIds)
   }
 
   private async ciFailures(): Promise<string[]> {
@@ -418,6 +396,8 @@ class RunExecution {
     const { db, sandbox } = this.deps
     if (this.run.runtime === 'scripted' && !(await readSettings(this.deps)).allowScriptedRuntime)
       throw new Error('The scripted runtime is disabled on this deployment')
+    if (this.run.runtime !== 'scripted' && !this.deps.env.FACTORIX_PROXY_URL)
+      throw new Error('Claude and Codex runs need the egress proxy (FACTORIX_PROXY_URL), which holds the model keys so the agent never sees them')
     const workspace = this.workspace as Workspace
     const checkout = await this.mirrorAndCheckout()
     if (checkout.head)
@@ -439,7 +419,7 @@ class RunExecution {
     const previewTool = await this.offersPreviewTool()
     if (previewTool)
       notes.push(
-        'This project can run the issue as a preview. preview_start runs your working copy, uncommitted files included, and preview_status, preview_logs, and preview_stop follow it. Use it to check your change running before you finish.',
+        'This project can run the issue as a preview. preview_start runs your working copy, uncommitted files included, and preview_status, preview_logs, and preview_stop follow it. Use it to check your change running before you finish. A preview you start runs without the project’s secret values.',
       )
     if (checkout.conflicts.length > 0)
       notes.push(
@@ -448,11 +428,16 @@ class RunExecution {
     if (checkout.setupFailures.length > 0)
       notes.push(`The setup command failed in ${checkout.setupFailures.join(', ')}. Some dependencies may be missing.`)
 
-    const resources = await readIssueResources(this.deps, { run: this.run, issue: this.issue, project: this.project }, (message) =>
-      this.log('warn', message),
-    )
+    const warn = (message: string) => this.log('warn', message)
+    const redact = await agentRedactor(this.deps, { orgId: this.run.orgId, projectId: this.project?.id ?? null }, warn)
+    const { resources, files } = await readIssueResources(this.deps, { run: this.run, issue: this.issue, project: this.project }, warn, redact)
+    const mcp = this.mcp ?? (await agentMcp(this.deps, { run: this.run, project: this.project, proxy: null }))
+    for (const warning of mcp.warnings) warn(warning)
     if (resources.length > 0)
-      this.log('info', `Gave the agent ${resources.length} attached ${resources.length === 1 ? 'resource' : 'resources'} from the tracker.`)
+      this.log(
+        'info',
+        `Gave the agent ${resources.length} attached ${resources.length === 1 ? 'resource' : 'resources'} from the tracker${files.length > 0 ? `, ${files.length} of them as files` : ''}.`,
+      )
 
     let resumeSessionRef = await sessionToResume(this.deps, this.run)
     if (this.run.sessionRef) {
@@ -479,6 +464,9 @@ class RunExecution {
       resumeSessionRef,
       previewTool,
       resources,
+      files,
+      redact,
+      mcpServers: mcp.servers,
       scripted: this.deps.scriptFor?.(this.run.phase, this.run.attempt),
     })
     resumeSessionRef = undefined

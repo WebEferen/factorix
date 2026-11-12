@@ -34,7 +34,7 @@ describe('project environments', () => {
 
   const sets = () => [
     { name: 'backend', connectionId: doppler, project: 'backend', config: 'dev', except: ['DOPPLER_PROJECT'] },
-    { name: 'local', connectionId: stored, project: 'ignored', config: 'ignored', only: ['NPM_TOKEN'], agents: true },
+    { name: 'local', connectionId: stored, project: 'ignored', config: 'ignored', only: ['NPM_TOKEN'] },
   ]
   const url = () => `/api/projects/${projectId}/environment`
 
@@ -87,12 +87,11 @@ describe('project environments', () => {
         name: 'backend',
         project: 'backend',
         config: 'dev',
-        agents: false,
         connectionName: 'Doppler',
         connectionKind: 'doppler',
       }),
       // An environment secret has nothing to pick inside it.
-      expect.objectContaining({ name: 'local', project: null, config: null, agents: true, connectionName: 'Registry', connectionKind: 'generic' }),
+      expect.objectContaining({ name: 'local', project: null, config: null, connectionName: 'Registry', connectionKind: 'generic' }),
     ])
     const row = await harness.deps.db('project_environments').where({ projectId }).first()
     expect(Object.keys(row.definition.services)).toEqual(['db', 'api'])
@@ -137,6 +136,11 @@ describe('project environments', () => {
       'This project has no repository named elsewhere.',
       'There is no secret set named local. Add it under Secret sets.',
     ])
+  })
+
+  it('has no way to let agents read a secret set', async () => {
+    const response = await admin.request('PUT', url(), { source: SOURCE, secretSets: [{ ...sets()[0], agents: true }] })
+    expect(response.status).toBe(422)
   })
 
   it('only accepts secret sources for sets', async () => {

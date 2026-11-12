@@ -5,6 +5,7 @@ import {
   type EnvironmentContext,
   environmentInput,
   filterSecrets,
+  importSecretSets,
   maskSecrets,
   matchConnections,
   mergeEnv,
@@ -140,12 +141,12 @@ describe('parseEnvironment', () => {
     ])
   })
 
-  it('lets agents read only secret sets marked for them', () => {
+  it('refuses secret sets for agents, which never get secret values', () => {
     const source = 'services:\n  db:\n    image: postgres:17\nagents:\n  secrets: [backend]\n'
-    expect(issuesOf(source, { ...context, agentSecretSets: [] })).toEqual([
-      { message: 'Turn on Agents can read these values for backend under Secret sets, or take it out of agents.secrets.', line: 5 },
-    ])
-    expect(issuesOf(source, { ...context, agentSecretSets: ['backend'] })).toEqual([])
+    expect(issuesOf(source)).toEqual([{ message: 'Agent runs never get secret values. Take out agents.secrets.', line: 5 }])
+    const empty = parseEnvironment(source.replace('[backend]', '[]'), context)
+    expect(empty.issues).toEqual([])
+    expect(empty.definition?.agents).toEqual({ services: [], env: {} })
   })
 
   it('validates without a context, for checks that do not know the project yet', () => {
@@ -205,7 +206,6 @@ describe('environment files', () => {
       config: 'dev',
       only: [],
       except: ['DOPPLER_PROJECT'],
-      agents: true,
     },
     {
       name: 'local',
@@ -216,7 +216,6 @@ describe('environment files', () => {
       config: null,
       only: ['NPM_TOKEN'],
       except: [],
-      agents: false,
     },
   ]
 
@@ -237,9 +236,17 @@ describe('environment files', () => {
         config: 'dev',
         only: [],
         except: ['DOPPLER_PROJECT'],
-        agents: true,
       },
-      { name: 'local', source: 'generic', connection: 'Registry', project: null, config: null, only: ['NPM_TOKEN'], except: [], agents: false },
+      { name: 'local', source: 'generic', connection: 'Registry', project: null, config: null, only: ['NPM_TOKEN'], except: [] },
+    ])
+  })
+
+  it('imports a file from when agents could read secret values, without that flag', () => {
+    const { file } = readEnvironmentFile(
+      'format: factorix/environment@1\ndefinition: ""\nsecretSets:\n  - { name: a, source: doppler, agents: true }\n',
+    )
+    expect(importSecretSets(file?.secretSets ?? [], { a: doppler.id })).toEqual([
+      { name: 'a', connectionId: doppler.id, project: null, config: null, only: [], except: [] },
     ])
   })
 

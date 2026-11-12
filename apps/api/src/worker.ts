@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   console.error('[worker] started')
   if (!env.FACTORIX_PROXY_URL)
     console.error(
-      '[worker] FACTORIX_PROXY_URL is not set: agent containers get real model keys and unrestricted egress. Use this for local development only.',
+      '[worker] FACTORIX_PROXY_URL is not set: Claude and Codex runs are refused and egress is unrestricted. Use this for local development only.',
     )
   const shutdown = async () => {
     await handle.close()

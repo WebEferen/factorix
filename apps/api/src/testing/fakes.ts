@@ -72,7 +72,7 @@ export class FakeWorld {
   ci: CiResult = { status: 'none', failedJobs: [] }
   ciByIid = new Map<number, CiResult>()
   refuseMerge = new Set<number>()
-  media = new Map<string, { contentType: string; body: string }>()
+  media = new Map<string, { contentType: string; body: string | Uint8Array<ArrayBuffer> }>()
   issuePagesRead = 0
   lastListQuery: { closedSince?: string; updatedAfter?: string } | null = null
   failIssueListing: string | null = null

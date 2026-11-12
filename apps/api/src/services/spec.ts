@@ -1,5 +1,5 @@
-import type { TrackerResource } from '@factorix/connectors'
-import { type OpenThread, PHASES, type PhaseContext, renderSystemPrompt, resolvePolicy } from '@factorix/core'
+import { TRACKER_SOURCES } from '@factorix/connectors'
+import { type OpenThread, PHASES, type PhaseContext, type PhaseResource, renderSystemPrompt, resolvePolicy } from '@factorix/core'
 import type { ApprovalRow, ConnectionRow, IssueInstructionRow, IssueRow, MrDiscussionRow, ProjectRow, RunRow } from '@factorix/db'
 import {
   BRIDGE_SOCKET,
@@ -7,12 +7,14 @@ import {
   type PermissionPolicy,
   type Phase,
   type ReasoningEffort,
+  type RunFile,
   type RunSpec,
   type RuntimeId,
   type ScriptedPlan,
 } from '@factorix/runtime'
 import type { AppDeps } from '../deps'
 import { decryptConnection, trackerConnectionFor, trackerFor } from './connections'
+import { copyFiles, uploadsIn } from './issue-files'
 import { mergeRequestsOf } from './repos'
 
 export interface SpecRepo {
@@ -134,24 +136,43 @@ function withFactorixTools(policy: PermissionPolicy): PermissionPolicy {
   return { ...policy, allow: [...policy.allow, 'mcp__factorix__*'] }
 }
 
-async function mcpServersFor(deps: Pick<AppDeps, 'db' | 'secrets'>, run: RunRow): Promise<Record<string, McpServerSpec>> {
+export interface AgentMcp {
+  servers: Record<string, McpServerSpec>
+  /** For the egress proxy's grant: each HTTP server's address and the headers it sends in the agent's place. */
+  grant: Record<string, { url: string; headers: Record<string, string> }>
+  warnings: string[]
+}
+
+/**
+ * The agent's MCP servers. An HTTP server is reached at the egress proxy's /mcp/<name>, which swaps the run token for the server's
+ * headers, so they never enter the container. A stdio server runs inside it, so it starts without its values.
+ */
+export async function agentMcp(
+  deps: Pick<AppDeps, 'db' | 'secrets'>,
+  input: { run: RunRow; project: ProjectRow | null; proxy: { origin: string; token: string } | null },
+): Promise<AgentMcp> {
   const rows = (await deps
     .db('connections')
     .join('agent_connections', 'connections.id', 'agent_connections.connection_id')
-    .where({ 'agent_connections.agent_id': run.agentId, 'agent_connections.role': 'mcp' })
+    .where({ 'agent_connections.agent_id': input.run.agentId, 'agent_connections.role': 'mcp' })
     .select('connections.*')) as ConnectionRow[]
-  const servers: Record<string, McpServerSpec> = {}
+  const mcp: AgentMcp = { servers: {}, grant: {}, warnings: [] }
   for (const row of rows) {
     const key = row.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-')
-    const secret = decryptConnection(deps, row)
-    const values = secret ? (JSON.parse(secret) as Record<string, string>) : {}
     if (row.kind === 'mcp_stdio') {
-      servers[key] = { type: 'stdio', command: String(row.config.command), args: (row.config.args as string[] | undefined) ?? [], env: values }
+      mcp.servers[key] = { type: 'stdio', command: String(row.config.command), args: (row.config.args as string[] | undefined) ?? [], env: {} }
+      if (row.secretCiphertext) mcp.warnings.push(`${row.name} starts without its environment values, since agents never get secret values.`)
     } else if (row.kind === 'mcp_http') {
-      servers[key] = { type: 'http', url: String(row.config.url), headers: values }
+      if (!input.proxy) mcp.warnings.push(`${row.name} is left out, since HTTP MCP servers are reached through the egress proxy and none is set up.`)
+      else if (input.project?.networkPolicy === 'none') mcp.warnings.push(`${row.name} is left out, since the project's network policy is None.`)
+      else {
+        const secret = decryptConnection(deps, row)
+        mcp.grant[key] = { url: String(row.config.url), headers: secret ? (JSON.parse(secret) as Record<string, string>) : {} }
+        mcp.servers[key] = { type: 'http', url: `${input.proxy.origin}/mcp/${key}`, headers: { Authorization: `Bearer ${input.proxy.token}` } }
+      }
     }
   }
-  return servers
+  return mcp
 }
 
 export async function buildPhaseContext(
@@ -209,20 +230,28 @@ export async function buildPhaseContext(
   return context
 }
 
-/** What people attached to the issue, read with the account this agent comments with. A tracker error leaves them out and never stops the run. */
+/**
+ * What people attached to the issue, plus uploads in its description, read with the account this agent comments with. Files are
+ * copied for the container, since the agent never holds the tracker's credentials. A tracker error leaves them out and never stops the run.
+ */
 export async function readIssueResources(
   deps: Pick<AppDeps, 'db' | 'secrets' | 'connectors'>,
   input: { run: RunRow; issue: IssueRow | null; project: ProjectRow | null },
   warn: (message: string) => void,
-): Promise<TrackerResource[]> {
+  redact: (text: string) => string = (text) => text,
+): Promise<{ resources: PhaseResource[]; files: RunFile[] }> {
   const { run, issue, project } = input
-  if (!issue || !project) return []
+  if (!issue || !project) return { resources: [], files: [] }
   try {
     const connection = await trackerConnectionFor(deps.db, run.orgId, project.trackerConnectionId, run.agentId)
-    return await trackerFor(deps, connection).listResources(issue.trackerIssueId)
+    const tracker = trackerFor(deps, connection)
+    const listed = await tracker.listResources(issue.trackerIssueId)
+    const markup = TRACKER_SOURCES[connection.kind as keyof typeof TRACKER_SOURCES]?.markup
+    const resources: PhaseResource[] = [...listed, ...uploadsIn(issue.description, markup, listed)].map((resource) => ({ ...resource }))
+    return { resources, files: await copyFiles(tracker, resources, redact, warn) }
   } catch (error) {
     warn(`Could not read the documents and links attached to ${issue.identifier}: ${(error as Error).message}`)
-    return []
+    return { resources: [], files: [] }
   }
 }
 
@@ -253,7 +282,12 @@ export interface SpecInput {
   resumeSessionRef?: string
   /** Adds the factorix MCP server, whose preview tools reach the worker through the runner. */
   previewTool?: boolean
-  resources?: TrackerResource[]
+  resources?: PhaseResource[]
+  files?: RunFile[]
+  /** Masks secret values in the prompt. Everything the agent reads from people and tools goes through it. */
+  redact?: (text: string) => string
+  /** From `agentMcp`. */
+  mcpServers?: Record<string, McpServerSpec>
   scripted?: ScriptedPlan
 }
 
@@ -264,7 +298,13 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
   const template = PHASES[phase]
   const context = await buildPhaseContext(deps, run, issue, input.repos, input.branch, input.ciFailures)
   if (input.resources?.length) context.resources = input.resources
+  if (context.issue?.description) {
+    // An upload in the description points at its copy, which the agent can open.
+    for (const resource of input.resources ?? [])
+      if (resource.kind === 'file' && resource.path) context.issue.description = context.issue.description.split(resource.url).join(resource.path)
+  }
   const notes = input.extraNotes.length > 0 ? `\n\n${input.extraNotes.join('\n\n')}` : ''
+  const redact = input.redact ?? ((text: string) => text)
   return {
     runId: run.id,
     attempt: run.attempt,
@@ -278,23 +318,26 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
       maxBudgetUsd: agent.maxBudgetUsd ?? undefined,
     },
     prompt: {
-      system: renderSystemPrompt({
-        agent: { handle: agent.handle, displayName: agent.displayName, archetype: agent.archetype, systemPrompt: agent.systemPrompt },
-        skills: agent.skills ?? [],
-        phase,
-        repoDocs: input.repoDocs,
-        project: project ? { name: project.name, repos: input.repos } : undefined,
-      }),
-      user: `${template.userPrompt(context)}${notes}`,
+      system: redact(
+        renderSystemPrompt({
+          agent: { handle: agent.handle, displayName: agent.displayName, archetype: agent.archetype, systemPrompt: agent.systemPrompt },
+          skills: agent.skills ?? [],
+          phase,
+          repoDocs: input.repoDocs,
+          project: project ? { name: project.name, repos: input.repos } : undefined,
+        }),
+      ),
+      user: redact(`${template.userPrompt(context)}${notes}`),
     },
     mcpServers: {
-      ...(await mcpServersFor(deps, run)),
+      ...input.mcpServers,
       ...(input.previewTool ? { factorix: FACTORIX_MCP_SERVER } : {}),
     },
     policy: input.previewTool ? withFactorixTools(resolvePolicy(agent.policy, phase)) : resolvePolicy(agent.policy, phase),
     resume: input.resumeSessionRef ? { sessionRef: input.resumeSessionRef } : undefined,
     outputSchema: template.outputSchema,
     startSeq: run.lastRunnerSeq,
+    files: input.files?.length ? input.files : undefined,
     scripted: run.runtime === 'scripted' ? (input.scripted ?? defaultScript(phase, run.id, input.repos)) : undefined,
   }
 }

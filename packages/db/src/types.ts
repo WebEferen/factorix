@@ -94,7 +94,6 @@ export interface ConnectionRow {
   secretCiphertext: Buffer | null
   secretNonce: Buffer | null
   keyVersion: number
-  agentVisible: boolean
   createdBy: string | null
   createdAt: Date
   updatedAt: Date
@@ -381,7 +380,6 @@ export interface ProjectEnvironmentRow {
     config: string | null
     only: string[]
     except: string[]
-    agents: boolean
   }[]
   version: number
   updatedBy: string | null

@@ -443,6 +443,29 @@ describe('factory end to end', () => {
     expect(events.filter((row) => row.payload.type === 'done')).toHaveLength(1)
   })
 
+  it('refuses a Claude run when no egress proxy holds the model key', async () => {
+    const archetypes = (await admin.ok('GET', '/api/archetypes')).archetypes as { id: string; name: string }[]
+    const { agent } = await admin.ok('POST', '/api/agents', {
+      handle: 'claude-1',
+      displayName: 'Claude One',
+      archetypeId: archetypes.find((archetype) => archetype.name === 'Engineer')?.id,
+      runtime: 'claude',
+      policy: { mode: 'full' },
+    })
+    const { run } = await admin.ok('POST', '/api/runs', { agentId: agent.id, prompt: 'Add a file', gitUrl: 'file:///remote/repo.git' })
+    const finished = await waitFor(
+      async () => {
+        const row = await harness.deps.db('runs').where({ id: run.id }).first()
+        return ['succeeded', 'failed'].includes(row.state) ? row : null
+      },
+      'the run to be refused',
+      60_000,
+    )
+    expect(finished.state).toBe('failed')
+    expect(finished.error.message).toContain('need the egress proxy')
+    expect(finished.containerId).toBeNull()
+  })
+
   it('streams an ad-hoc run over SSE, replays after a reconnect, and shows the diff', async () => {
     script = () => undefined
     const address = await harness.app.listen({ port: 0, host: '127.0.0.1' })

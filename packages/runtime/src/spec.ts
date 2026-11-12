@@ -38,6 +38,16 @@ export interface ScriptedPlan {
   fail?: { code: 'auth' | 'rate_limit' | 'model' | 'runtime_crash'; message: string }
 }
 
+/** Where the runner writes the files attached to the issue. Outside the repositories, so nothing commits them by accident. */
+export const ISSUE_FILES_DIR = '/workspace/.factorix/issue-files'
+
+export interface RunFile {
+  /** A plain file name, no folders. */
+  name: string
+  /** Base64. */
+  content: string
+}
+
 export interface RunSpec {
   runId: string
   attempt: number
@@ -52,5 +62,7 @@ export interface RunSpec {
   outputSchema?: JsonSchema
   /** Runner sequence numbers continue from here so a resumed container never reuses one. */
   startSeq: number
+  /** Written to ISSUE_FILES_DIR before the agent starts, replacing what an earlier run left there. */
+  files?: RunFile[]
   scripted?: ScriptedPlan
 }

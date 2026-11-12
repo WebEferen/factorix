@@ -57,14 +57,18 @@ export interface TrackerComment {
   createdAt: string
 }
 
-/** Something people attached to an issue: a tracker document with its text, or a link to another tool. */
+/** Something people attached to an issue: a tracker document with its text, a link to another tool, or an uploaded file. */
 export interface TrackerResource {
-  kind: 'document' | 'link'
+  kind: 'document' | 'link' | 'file'
   title: string
+  /** For a file, where `fetchMedia` reads its bytes with this connection's credentials. */
   url: string
   subtitle: string | null
-  /** A document's text in the source's dialect. Links have none. */
+  /** A document's text in the source's dialect. Links and files have none. */
   content: string | null
+  /** A file's type and size, when the source knows them before reading it. */
+  mimeType?: string | null
+  size?: number | null
 }
 
 export interface Page<T> {
@@ -124,7 +128,7 @@ export interface TrackerConnector {
   comment(issueId: string, body: string): Promise<{ id: string }>
   updateComment(commentId: string, body: string): Promise<void>
   registerWebhook(input: { teamId: string; url: string; secret: string }): Promise<{ id: string }>
-  /** Reads an upload that needs this connection's credentials. Callers check the host through the source's markup first. */
+  /** Reads an upload or a file resource with this connection's credentials. Callers check an upload's host through the source's markup first. */
   fetchMedia(url: string, options?: { range?: string }): Promise<TrackerMedia | null>
 }
 

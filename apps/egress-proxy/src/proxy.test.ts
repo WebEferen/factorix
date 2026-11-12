@@ -172,6 +172,39 @@ describe('egress proxy', () => {
     })
   })
 
+  describe('MCP route', () => {
+    beforeEach(() => {
+      grants.set('mcp', {
+        runId: 'run-3',
+        allow: [],
+        mcp: { linear: { url: `http://127.0.0.1:${upstreamPort}/mcp`, headers: { Authorization: 'Bearer real-mcp', 'X-Team': 'eng' } } },
+      })
+    })
+
+    it('relays calls with the connection’s headers in place of the run token, and streams the answer', async () => {
+      const response = await raw('/mcp/linear?debug=1', { authorization: 'Bearer mcp', 'mcp-session-id': 's1' }, '{"jsonrpc":"2.0"}')
+      expect(response.status).toBe(200)
+      expect(response.body).toBe('data: one\n\ndata: two\n\n')
+      expect(seen[0]?.url).toBe('/mcp?debug=1')
+      expect(seen[0]?.headers.authorization).toBe('Bearer real-mcp')
+      expect(seen[0]?.headers['x-team']).toBe('eng')
+      expect(seen[0]?.headers['mcp-session-id']).toBe('s1')
+      expect(JSON.stringify(seen[0]?.headers)).not.toContain('Bearer mcp"')
+    })
+
+    it('connects to the address it checked, so the name cannot resolve somewhere else afterwards', async () => {
+      grants.set('named', { runId: 'run-3', allow: [], mcp: { docs: { url: `http://mcp.invalid:${upstreamPort}/mcp`, headers: {} } } })
+      expect((await raw('/mcp/docs', { authorization: 'Bearer named' }, '{}')).status).toBe(200)
+      expect(seen[0]?.headers.host).toBe(`mcp.invalid:${upstreamPort}`)
+    })
+
+    it('refuses unknown tokens and servers the run does not have', async () => {
+      expect((await raw('/mcp/linear', { authorization: 'Bearer nope' }, '{}')).status).toBe(401)
+      expect((await raw('/mcp/github', { authorization: 'Bearer mcp' }, '{}')).status).toBe(404)
+      expect(seen).toHaveLength(0)
+    })
+  })
+
   describe('forward proxy', () => {
     it('requires proxy credentials', async () => {
       expect((await raw(`http://allowed.test:${upstreamPort}/`, {})).status).toBe(407)
@@ -257,6 +290,23 @@ describe('egress proxy', () => {
 
     beforeEach(() => {
       grants.set('listed', { runId: 'run-3', allow: ['postgres', 'db.test', 'corp.test', 'meta.test', 'zero.test', '10.9.0.3', 'cache'] })
+    })
+
+    it('refuses an MCP server that points at one of its services', async () => {
+      grants.set('inside', { runId: 'run-4', allow: [], mcp: { db: { url: 'http://postgres:5432/mcp', headers: {} } } })
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = httpRequest(
+          { host: '127.0.0.1', port: fencedPort, path: '/mcp/db', method: 'POST', headers: { authorization: 'Bearer inside' } },
+          (response) => {
+            response.resume()
+            resolve(response.statusCode ?? 0)
+          },
+        )
+        request.on('error', reject)
+        request.end('{}')
+      })
+      expect(status).toBe(403)
+      expect(denials[0]).toMatchObject({ runId: 'run-4', host: 'postgres', reason: 'is part of Factorix' })
     })
 
     it('refuses its own services even when an admin lists them', async () => {

@@ -6,6 +6,7 @@ import {
   BRIDGE_SOCKET,
   decodeCommand,
   encodeLine,
+  ISSUE_FILES_DIR,
   JOURNAL_FILE,
   type RunEvent,
   type RunnerIO,
@@ -14,6 +15,7 @@ import {
   type RuntimeModelCatalog,
 } from '@factorix/runtime'
 import { serveBridge } from './bridge'
+import { writeIssueFiles } from './files'
 import { runMcpServer } from './mcp'
 import { RunnerSession } from './session'
 
@@ -53,6 +55,11 @@ async function main(): Promise<void> {
     const journalDir = join(io.factorixDir, 'runs', spec.runId)
     mkdirSync(journalDir, { recursive: true })
     const journal = join(journalDir, JOURNAL_FILE)
+    try {
+      writeIssueFiles(spec.files ?? [], ISSUE_FILES_DIR)
+    } catch (error) {
+      console.error('the issue files were not written', error)
+    }
     const emit = (event: RunEvent) => {
       const line = encodeLine(event)
       if (event.seq !== 0) appendFileSync(journal, line)

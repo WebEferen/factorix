@@ -136,7 +136,7 @@ Compose sets `DATABASE_URL`, `REDIS_URL`, `PORT`, `HOST`, `FACTORIX_STEP_NETWORK
 Tracker text, repository contents, and agent output are all treated as untrusted.
 
 - **The git token never enters a container that runs agent or repo code.** Token steps work only on a separate bare mirror. The boundary is data in `packages/sandbox/src/profiles.ts`, and a Docker test plants a real `core.fsmonitor` attack against it.
-- **Model keys stay out of agent containers.** Each run gets a short-lived token, and the egress proxy swaps it for the real key.
+- **Model keys stay out of agent containers.** Each run gets a short-lived token, and the egress proxy swaps it for the real key. HTTP MCP servers work the same way, with the proxy adding their headers.
 - **Previews are walled off.** Each preview gets its own network, and its only ways in and out are the preview gateway and the egress proxy. Secret values are fetched at start and never stored, and a preview opens on its own host with a cookie that works nowhere else.
 - **Agents have one way out.** Their network is internal, and the proxy enforces a per-project allowlist: package registries, the hosts each connector declares, what the organization sets under Settings, Network (which can extend or replace those defaults), and whatever the project adds in its settings. Denied requests show up in the run log.
 - **Containers are locked down.** They run as non-root with all capabilities dropped, with memory, CPU, process, and time limits. Review and plan phases mount the code read-only.
@@ -166,6 +166,8 @@ yarn sandbox:build     # after changing packages/runner or docker/sandbox*
 yarn test:docker       # real containers, real git, needs the sandbox image
 yarn prepare-mr        # everything a merge request needs, short of Docker tests
 ```
+
+`yarn dev` starts no egress proxy, so it refuses Claude and Codex runs. Use the scripted runtime there, or Compose for real agents.
 
 | Path                  | What lives there                                              |
 | --------------------- | ------------------------------------------------------------- |

@@ -23,21 +23,7 @@ import { useConnections, useEnvironment, useMe, useProject, useSecretSourceConfi
 import { timeAgo } from '@/modules/lib/format'
 import { YamlEditor } from '@/modules/projects/yaml-editor'
 import { PageBody, PageHeader } from '@/modules/shell/page-header'
-import {
-  Button,
-  buttonStyles,
-  Card,
-  Chip,
-  Dialog,
-  DialogFooter,
-  ErrorState,
-  Field,
-  Input,
-  ListSkeleton,
-  SectionTitle,
-  Select,
-  Toggle,
-} from '@/modules/ui'
+import { Button, buttonStyles, Card, Chip, Dialog, DialogFooter, ErrorState, Field, Input, ListSkeleton, SectionTitle, Select } from '@/modules/ui'
 
 type SetDraft = SecretSetInput
 
@@ -109,7 +95,6 @@ function SecretSetDialog({
   const [config, setConfig] = useState<string | null>(set?.config ?? null)
   const [only, setOnly] = useState(set?.only.join(', ') ?? '')
   const [except, setExcept] = useState(set?.except.join(', ') ?? '')
-  const [agents, setAgents] = useState(set?.agents ?? false)
   const connection = sources.find((candidate) => candidate.id === connectionId)
   const scoped = connection?.kind === 'doppler'
   const projects = useSecretSourceProjects(scoped ? (connectionId ?? null) : null)
@@ -129,7 +114,6 @@ function SecretSetDialog({
       config: scoped ? config : null,
       only: keyList(only),
       except: keyList(except),
-      agents,
     })
     onOpenChange(false)
   }
@@ -202,12 +186,6 @@ function SecretSetDialog({
             <Input value={except} placeholder="STRIPE_SECRET" onChange={(event) => setExcept(event.target.value)} />
           </Field>
         </div>
-        <Toggle
-          checked={agents}
-          onChange={setAgents}
-          label="Agents can read these values"
-          hint="Agent runs get them as environment variables when agents.secrets names this set. Code in the run can read and could leak them, so use a config made for development."
-        />
       </div>
       <DialogFooter>
         <Button onClick={() => onOpenChange(false)}>Cancel</Button>
@@ -244,11 +222,7 @@ function ImportDialog({
         {file.secretSets.length === 0 ? <p className="text-sm text-ink-2">It has no secret sets.</p> : null}
         {file.secretSets.map((set) => {
           const options = sources.filter((connection) => connection.kind === set.source)
-          const reads = [
-            sourceLabel(set.source),
-            set.project ? `${set.project} / ${set.config ?? 'any config'}` : null,
-            set.agents ? 'agents can read it' : null,
-          ]
+          const reads = [sourceLabel(set.source), set.project ? `${set.project} / ${set.config ?? 'any config'}` : null]
           return (
             <Field key={set.name} label={`Secret set ${set.name}`} hint={reads.filter(Boolean).join(', ')}>
               {options.length === 0 ? (
@@ -336,7 +310,6 @@ function SecretSets({
                 <div className="flex items-center gap-2">
                   <KeyRound className="size-3.5 shrink-0 text-ink-3" />
                   <span className="min-w-0 truncate font-mono text-sm">{set.name}</span>
-                  {set.agents ? <Chip tone="warning">Agents read</Chip> : null}
                   <span className="flex-1" />
                   {admin ? (
                     <>
@@ -454,18 +427,13 @@ function EnvironmentForm({ environment, onSaved }: { environment: EnvironmentDto
   // Validation only needs names, and joined names stay equal across renders where fresh arrays would not.
   const repoNames = project?.project.repos.map((repo) => repo.name).join('\n')
   const setNames = sets.map((set) => set.name).join('\n')
-  const agentSetNames = sets
-    .filter((set) => set.agents)
-    .map((set) => set.name)
-    .join('\n')
   const parsed = useMemo(
     () =>
       parseEnvironment(deferred, {
         repos: repoNames === undefined ? undefined : repoNames.split('\n').filter(Boolean),
         secretSets: setNames.split('\n').filter(Boolean),
-        agentSecretSets: agentSetNames.split('\n').filter(Boolean),
       }),
-    [deferred, repoNames, setNames, agentSetNames],
+    [deferred, repoNames, setNames],
   )
   const changed = source !== environment.source || JSON.stringify(sets) !== JSON.stringify(environment.secretSets.map(toDraft))
 

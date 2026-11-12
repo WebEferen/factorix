@@ -108,9 +108,14 @@ export const environmentDefinition = z.strictObject({
     })
     .optional(),
   agents: z
-    .strictObject({ services: names, secrets: names, env: envMap })
+    .strictObject({
+      services: names,
+      // Still read, so a definition written before agents lost secret values says what to change.
+      secrets: z.array(z.unknown()).max(0, 'Agent runs never get secret values. Take out agents.secrets.').optional(),
+      env: envMap,
+    })
     .optional()
-    .transform((value) => value ?? { services: [], secrets: [], env: {} }),
+    .transform((value) => ({ services: value?.services ?? [], env: value?.env ?? {} })),
   notes: z.string().max(4000).optional(),
 })
 export type EnvironmentDefinition = z.output<typeof environmentDefinition>
@@ -126,8 +131,6 @@ export interface EnvironmentIssue {
 export interface EnvironmentContext {
   repos?: string[]
   secretSets?: string[]
-  /** Sets marked "Agents can read these values", the only ones agents.secrets may name. */
-  agentSecretSets?: string[]
 }
 
 const TEMPLATE = /\$(\$)?\{([^}]*)\}/g
@@ -243,11 +246,6 @@ export function checkEnvironment(definition: EnvironmentDefinition, context: Env
       }
     }
   })
-  definition.agents.secrets.forEach((set, index) => {
-    if (context.secretSets && !context.secretSets.includes(set)) add(['agents', 'secrets', index], `There is no secret set named ${set}.`)
-    else if (context.agentSecretSets && !context.agentSecretSets.includes(set))
-      add(['agents', 'secrets', index], `Turn on Agents can read these values for ${set} under Secret sets, or take it out of agents.secrets.`)
-  })
   for (const [key, value] of Object.entries(definition.agents.env)) {
     for (const reference of templateReferences(value)) {
       const problem = checkTemplate(reference, definition, context, running)
@@ -307,10 +305,10 @@ export function mergeEnv(sets: Record<string, string>[], own: Record<string, str
 }
 
 /** Replaces secret values in text shown to people. Short values are left alone, since they would mask ordinary words. */
-export function maskSecrets(text: string, secrets: Iterable<string>): string {
+export function maskSecrets(text: string, secrets: Iterable<string>, marker = '••••••'): string {
   let masked = text
   const sorted = [...new Set(secrets)].filter((value) => value.length >= 6).sort((a, b) => b.length - a.length)
-  for (const value of sorted) masked = masked.split(value).join('••••••')
+  for (const value of sorted) masked = masked.split(value).join(marker)
   return masked
 }
 
@@ -404,8 +402,6 @@ export const secretSetInput = z.strictObject({
   config: z.string().trim().min(1).max(200).nullable().default(null),
   only: z.array(envKey).max(1000).default([]),
   except: z.array(envKey).max(1000).default([]),
-  /** Agent runs may receive these values. Code in the run can read them, so this is off unless someone turns it on. */
-  agents: z.boolean().default(false),
 })
 export type SecretSetInput = z.infer<typeof secretSetInput>
 
@@ -453,7 +449,8 @@ const portableSecretSet = z.strictObject({
   config: z.string().trim().min(1).max(200).nullable().default(null),
   only: z.array(envKey).max(1000).default([]),
   except: z.array(envKey).max(1000).default([]),
-  agents: z.boolean().default(false),
+  /** Files exported while agents could read secret values carry this. Nothing reads it. */
+  agents: z.boolean().optional(),
 })
 export type PortableSecretSet = z.infer<typeof portableSecretSet>
 
@@ -480,7 +477,6 @@ export function writeEnvironmentFile(input: { project: string; source: string; s
       ...(set.config ? { config: set.config } : {}),
       ...(set.only.length > 0 ? { only: set.only } : {}),
       ...(set.except.length > 0 ? { except: set.except } : {}),
-      ...(set.agents ? { agents: true } : {}),
     })),
   })
   document.commentBefore = ` A Factorix environment, exported from ${input.project}. Import it on a project's Environment page.\n It holds no secret values. Each secret set names its source, and the import picks one of your connections for it.`
@@ -523,7 +519,7 @@ export function matchConnections(
 
 /** The sets to save after an import, each on the connection picked for it. A set left without one stays out. */
 export function importSecretSets(sets: PortableSecretSet[], chosen: Record<string, string | null>): SecretSetInput[] {
-  return sets.flatMap(({ source: _source, connection: _connection, ...set }) => {
+  return sets.flatMap(({ source: _source, connection: _connection, agents: _agents, ...set }) => {
     const connectionId = chosen[set.name]
     return connectionId ? [{ ...set, connectionId }] : []
   })
@@ -578,6 +574,8 @@ export interface PreviewDto {
   commits: { repo: string; ref: string; sha: string }[]
   /** Pushed code, or an agent's working copy that it asked for mid-run and has not pushed. */
   source: 'branch' | 'worktree' | null
+  /** An agent started it, so services that name secret sets run without them. */
+  withoutSecrets: boolean
   error: string | null
   startedBy: { id: string; name: string } | null
   startedAt: string | null
@@ -665,7 +663,6 @@ expose:
 # What agent runs get next to their own code.
 agents:
   services: [db, cache]
-  secrets: []
   env:
     DATABASE_URL: postgres://postgres:local@\${services.db.host}:5432/app
 
