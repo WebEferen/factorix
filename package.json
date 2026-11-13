@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "dev": "docker compose up -d --wait postgres redis && yarn migrate && concurrently -n api,worker,web \"yarn workspace @factorix/api dev\" \"yarn workspace @factorix/api dev:worker\" \"yarn workspace @factorix/web dev\"",
+    "start": "./install.sh",
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "yarn workspaces run typecheck",

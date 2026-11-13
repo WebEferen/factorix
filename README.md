@@ -157,7 +157,8 @@ Use Node 22 (`.nvmrc`) and Yarn 1. Docker must be running for integration and Do
 
 ```sh
 yarn install
-yarn dev               # Postgres, Redis, API, worker, web
+yarn start             # all of Factorix in Docker, as installed: builds every image, migrates, starts
+yarn dev               # Postgres, Redis, API, worker, web. No egress proxy, so scripted agents only
 yarn lint
 yarn typecheck
 yarn test:unit
@@ -167,7 +168,7 @@ yarn test:docker       # real containers, real git, needs the sandbox image
 yarn prepare-mr        # everything a merge request needs, short of Docker tests
 ```
 
-`yarn dev` starts no egress proxy, so it refuses Claude and Codex runs. Use the scripted runtime there, or Compose for real agents.
+`yarn dev` starts no egress proxy, so it refuses Claude and Codex runs. Use the scripted runtime there, or `yarn start` for real agents. `yarn start` runs `install.sh` from the checkout, so it also creates `.env` with a secret key the first time, and `docker compose down` stops it.
 
 | Path                  | What lives there                                              |
 | --------------------- | ------------------------------------------------------------- |

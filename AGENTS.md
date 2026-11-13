@@ -21,7 +21,8 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 Use Node 22 (`.nvmrc`) and Yarn 1. Docker must be running for integration and Docker tests.
 
 ```sh
-yarn dev               # Postgres, Redis, API, worker, web
+yarn start             # all of Factorix in Docker, as installed: builds every image, migrates, starts
+yarn dev               # Postgres, Redis, API, worker, web. No egress proxy, so scripted agents only
 yarn lint
 yarn typecheck
 yarn test:unit

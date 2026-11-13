@@ -397,7 +397,9 @@ class RunExecution {
     if (this.run.runtime === 'scripted' && !(await readSettings(this.deps)).allowScriptedRuntime)
       throw new Error('The scripted runtime is disabled on this deployment')
     if (this.run.runtime !== 'scripted' && !this.deps.env.FACTORIX_PROXY_URL)
-      throw new Error('Claude and Codex runs need the egress proxy (FACTORIX_PROXY_URL), which holds the model keys so the agent never sees them')
+      throw new Error(
+        'Claude and Codex runs need the egress proxy (FACTORIX_PROXY_URL), which holds the model keys so the agent never sees them. yarn dev runs without it: start all of Factorix with yarn start, or use the scripted runtime.',
+      )
     const workspace = this.workspace as Workspace
     const checkout = await this.mirrorAndCheckout()
     if (checkout.head)
