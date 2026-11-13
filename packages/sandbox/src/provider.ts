@@ -80,6 +80,8 @@ export interface Environment {
   key: string
   network: string
   sourceVolume: string
+  /** The runner whose machine it is on. Absent on the worker's own. */
+  runner?: string
 }
 
 export interface ServiceMount {

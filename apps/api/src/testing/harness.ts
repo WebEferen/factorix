@@ -77,6 +77,8 @@ export async function removeOwnSandboxes(harness: Harness, docker: ReturnType<ty
 
 export class ApiClient {
   cookie = ''
+  /** Sent as a bearer token in place of the cookie. */
+  token = ''
 
   constructor(private readonly app: FastifyInstance) {}
 
@@ -85,7 +87,8 @@ export class ApiClient {
     url: string,
     body?: unknown,
   ): Promise<{ status: number; body: T; cookies: { name: string; value: string; httpOnly?: boolean }[] }> {
-    const response = await this.app.inject({ method, url, payload: body as never, headers: this.cookie ? { cookie: this.cookie } : {} })
+    const headers = this.token ? { authorization: `Bearer ${this.token}` } : this.cookie ? { cookie: this.cookie } : {}
+    const response = await this.app.inject({ method, url, payload: body as never, headers })
     const session = response.cookies.find((cookie) => cookie.name === 'fx_session')
     if (session?.value) this.cookie = `fx_session=${session.value}`
     return {

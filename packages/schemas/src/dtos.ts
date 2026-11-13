@@ -1,5 +1,5 @@
 import type { PermissionPolicy, RunEvent, RuntimeCapabilities, RuntimeId, RuntimeModel, UsageSnapshot } from '@factorix/runtime'
-import type { ConnectionKind, IssueSort } from './inputs'
+import type { ApiTokenScope, ConnectionKind, IssueSort } from './inputs'
 
 export interface AccountDto {
   id: string
@@ -10,6 +10,27 @@ export interface AccountDto {
   email: string | null
   avatarUrl: string | null
   status: 'active' | 'disabled'
+  createdAt: string
+}
+
+export interface ApiTokenDto {
+  id: string
+  name: string
+  /** The start of the token, enough to tell two apart. The rest is shown once, when it is created. */
+  prefix: string
+  scopes: ApiTokenScope[]
+  expiresAt: string | null
+  lastUsedAt: string | null
+  createdAt: string
+}
+
+export interface RunnerDto {
+  id: string
+  name: string
+  prefix: string
+  online: boolean
+  lastSeenAt: string | null
+  projectCount: number
   createdAt: string
 }
 
@@ -125,6 +146,10 @@ export interface ProjectDto {
   networkPolicy: 'restricted' | 'open' | 'none'
   networkAllowlist: string[]
   networkBypass: string[]
+  /** 'summary' keeps a review to one note per merge request, with no threads on the diff. */
+  reviewComments: 'inline' | 'summary'
+  /** The runner its sandboxes start on, or null for the machine Factorix runs on. */
+  runnerId: string | null
   runTimeoutMinutes: number
   monthlyBudgetUsd: number | null
   defaultEngineerAgentId: string | null
@@ -240,6 +265,9 @@ export interface RunDto {
   error: { code?: string; message: string } | null
   lastSeq: number
   adHocPrompt?: string | null
+  adHocRef?: string | null
+  /** The branch an ad-hoc run pushed its commits to, when it was asked to and changed something. */
+  resultBranch?: string | null
   capabilities?: RuntimeCapabilities
   startedAt: string | null
   finishedAt: string | null
@@ -284,6 +312,8 @@ export interface IssueDetailDto extends IssueDto {
   instructions: { id: string; author: string | null; body: string; createdAt: string; consumed: boolean }[]
   timeline: AuditEntryDto[]
   project: ProjectDto
+  /** The branch its agents work on. It may not exist yet. */
+  workBranch: string
 }
 
 export interface AuditEntryDto {

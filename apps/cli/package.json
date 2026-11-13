@@ -1,0 +1,34 @@
+{
+  "name": "@moxxylabs/factorix",
+  "version": "0.1.0",
+  "description": "fx, the command line and MCP server for Factorix",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WebEferen/factorix.git",
+    "directory": "apps/cli"
+  },
+  "type": "module",
+  "bin": {
+    "fx": "./dist/fx.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/fx.mjs --banner:js='#!/usr/bin/env node' && chmod +x dist/fx.mjs",
+    "prepack": "yarn build",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@factorix/runtime": "0.1.0",
+    "@factorix/schemas": "0.1.0"
+  }
+}

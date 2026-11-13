@@ -7,7 +7,9 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 - `apps/api`: Fastify API (`src/server.ts`) and BullMQ worker (`src/worker.ts`). Both share `src/services`.
 - `apps/web`: Next.js App Router UI. Calls the API through rewrites, so everything is same-origin.
 - `apps/egress-proxy`: the only network path out of an agent or preview container. Swaps run tokens for real model keys and MCP server headers.
-- `apps/preview-gateway`: the only way into a preview. Swaps a one-time ticket for a cookie scoped to one preview host.
+- `apps/cli`: `fx`, a command line and stdio MCP server over the API, published to npm as `@moxxylabs/factorix`. It ships as one bundled file with no dependencies and authenticates with a personal API token.
+- `apps/remote-runner`: runs on another machine and serves a `DockerSandboxProvider` to the workers over the runner protocol. It only dials out.
+- `apps/preview-gateway`: the only way into a preview. Swaps a one-time ticket for a cookie scoped to one preview host. A preview on a runner is reached through a tunnel over the runner's link (`TunnelStream` in `packages/runtime`), never by a port on the runner.
 - `packages/core`: pure domain with no IO. State machines, the pipeline engine, phase templates, prompts.
 - `packages/runtime`: the contract between worker and runner. `RunSpec`, `RunEvent`, `RunCommand`.
 - `packages/runner`: runs inside the sandbox and hosts the SDKs. The only package that depends on them.
@@ -41,6 +43,8 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - An agent can have its own git and tracker account, linked in `agent_connections` under the roles `scm` and `tracker`. Resolve them with `scmConnectionFor` and `trackerConnectionFor`. Work done as the agent follows its account, and merges, webhooks, polling, and status changes stay on the project's. Those roles never reach a container: the same boundary applies to their tokens.
 - The API and worker never import an SDK. Only `packages/runner` does.
 - Tracker and agent text is untrusted. Render it through the `Markdown` component, never as HTML. The API converts each source's dialect to portable Markdown first, and only images and videos from the media proxy load inline.
+- An API token (`api_tokens`, sent as a bearer) reads as its account and changes only what its scopes allow. Tokens are refused by default: a route that is not a GET is open to a token only if it names a scope from `API_TOKEN_SCOPES` in its `config`, checked by `checkTokenScope`. Add a scope to a route only for something a leaked token may do. `requireSession`, which `requireAdmin` includes, stays on what no token may ever do.
+- The worker's sandbox is a `RoutingSandboxProvider`: a workspace and everything about its issue live on one machine, pinned in `workspace_runners` the first time it is made. Services take `deps.sandbox` and never pick a machine themselves. A container id from a runner carries its runner (`rn-<id>:`), so store ids as given.
 - `audit_log` is append-only, enforced by a database trigger. Write through `writeAudit`.
 - Publish domain events with `emit` inside the same transaction as the state change. The relay moves them to queues.
 - Query rows come back camelCase, and identifiers are snake-cased for you. Wrap JSONB writes in `json()`.
@@ -59,6 +63,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - New platform setting: add it to `PLATFORM_SETTINGS` in `packages/schemas/src/settings.ts`, its variable to `apps/api/src/env.ts`, `envSettings`, and `x-app-env` in `docker-compose.yml`, then read it through `readSettings`, never from `env`. The General page renders from the catalog. The environment is the default and a saved value overrides it. Nothing that can reach a credential goes in, which is why the sandbox image stays environment-only.
 - New secret source: implement `SecretSourceConnector` in `packages/connectors/src/secrets.ts`, add it to `SECRET_SOURCES`, return it from `realConnectors.secrets`, and add its kind to `CONNECTION_KINDS` with an entry on the connections page and to `SOURCE_KINDS` on the Environment page.
 - New tool for agents that needs the worker: add its op to `BRIDGE_OPS` in `packages/runtime`, the MCP tool to `packages/runner/src/mcp.ts`, and its answer beside `answerPreviewTool`, which the executor calls for each `request` event. It acts as the run's agent, on the agent's own issue.
+- New sandbox operation: add it to `SandboxProvider`, to `RemoteSandboxProvider` and the `handlers` in `serveSandbox` (`packages/sandbox/src/remote.ts`), and to `RoutingSandboxProvider`, routed by the workspace, environment, or container it names. An older runner answers an unknown method with an error that says to update it.
 - New notification channel: implement `NotificationConnector` in `packages/connectors`, register it in `realConnectors.notifier`, and add its kind to `NOTIFICATION_KINDS` and `CONNECTION_KINDS`, plus its entry on the connections page. The Send notification block offers every connection of those kinds.
 
 ## Conventions

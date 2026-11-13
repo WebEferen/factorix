@@ -26,14 +26,14 @@ export function previewRoutes(app: FastifyInstance, deps: AppDeps, fanout: Redis
     return { preview: await previewDto(deps, await load(account.orgId, (request.params as { id: string }).id)) }
   })
 
-  app.post('/api/issues/:id/preview/open', async (request) => {
+  app.post('/api/issues/:id/preview/open', { config: { scope: 'previews' } }, async (request) => {
     const { account } = requireAuth(request)
     const issue = await load(account.orgId, (request.params as { id: string }).id)
     const { path } = parseBody(previewOpenInput, request.body)
     return openPreview(deps, issue, account.id, path)
   })
 
-  app.post('/api/issues/:id/preview/:action', async (request, reply) => {
+  app.post('/api/issues/:id/preview/:action', { config: { scope: 'previews' } }, async (request, reply) => {
     const { account } = requireAuth(request)
     const params = request.params as { id: string; action: string }
     const action = ACTIONS.find((candidate) => candidate === params.action)

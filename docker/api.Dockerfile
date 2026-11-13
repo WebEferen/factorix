@@ -4,6 +4,7 @@ COPY package.json yarn.lock ./
 COPY apps/api/package.json apps/api/
 COPY apps/egress-proxy/package.json apps/egress-proxy/
 COPY apps/preview-gateway/package.json apps/preview-gateway/
+COPY apps/remote-runner/package.json apps/remote-runner/
 COPY packages/connectors/package.json packages/connectors/
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
@@ -19,6 +20,7 @@ COPY --from=deps /app ./
 COPY apps/api/src apps/api/src
 COPY apps/egress-proxy/src apps/egress-proxy/src
 COPY apps/preview-gateway/src apps/preview-gateway/src
+COPY apps/remote-runner/src apps/remote-runner/src
 COPY packages/connectors/src packages/connectors/src
 COPY packages/core/src packages/core/src
 COPY packages/db/src packages/db/src

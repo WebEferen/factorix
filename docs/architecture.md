@@ -107,6 +107,19 @@ A run holds a lease extended by a heartbeat. If a worker dies, the lease expires
 
 Domain events go through a transactional outbox, so a queue never disagrees with Postgres.
 
+## Runners
+
+A project can run its sandboxes on another machine. `SandboxProvider` is the seam: the worker holds a `RoutingSandboxProvider`, which sends each call to the local Docker provider or to a `RemoteSandboxProvider`, and nothing above it knows the difference.
+
+- **Where things live.** A workspace is pinned to a machine in `workspace_runners` the first time it is made, from the project's runner at that moment. Its steps, agent, and services follow the pin, so moving a project never strands an open issue's volumes. Containers are routed by their id, which carries the runner (`rn-<runner>:<docker id>`). Environments follow the issue or run they belong to.
+- **The connection.** The runner only dials out, with a token stored as a hash. Frames for it wait in a Redis list that its stream (`GET /api/runner/stream`, server-sent events) pops, so a short disconnect loses nothing, and each call carries a deadline so one nobody waits for any more is dropped. Frames from it are posted in order (`POST /api/runner/frames`) and published to the workers. No new port opens anywhere, and it works through any HTTP proxy.
+- **Presence.** The stream renews a key every few seconds. A call to an offline runner fails at once. If a runner goes away mid-run, pending calls fail and agent streams end, which the executor treats like a lost container: the run fails as retryable and the next attempt reattaches.
+- **Egress.** The runner's machine has its own egress proxy with the same code and rules. It has no Redis of ours, so it asks the runner process what a run token allows, and the runner asks Factorix (`POST /api/runner/grant`), keeping the answer for 30 seconds. Agents cannot reach the runner process: it is on a network they are not, and the proxy refuses its name. Runs are given the proxy address Factorix is configured with, so the runner's proxy has the same name and port.
+- **Trust.** Token steps run on the runner, so the git token and the project's secret values cross to that machine, and pass through Redis on the way. A runner is as trusted as the worker's own host. Its token opens only the runner endpoints.
+- **Cleanup.** The worker's sweep lists every online machine and applies the same rules. A runner lists only its own stack, reported under the worker's, so two installs sharing a Docker host never clean each other up.
+
+- **Previews.** The gateway stays beside Factorix and is still the only way in: tickets, cookies, and framing rules are unchanged. A route whose services are on a runner names it, and the gateway opens each connection as a tunnel over the runner's link: frames go out on the runner's queue and come back on a channel of their own (`runner:<id>:tun`), so the gateway never sees agent output. On the runner a `preview-tunnel` container joins each preview's network in the gateway's role and dials the service. It listens on nothing, holds no token and no Docker socket, talks only to the runner process, and connects only to preview service names. Each end may send one megabyte ahead of what the other has read, so a slow browser or app holds the sender instead of filling Redis.
+
 ## Runtime differences
 
 Claude and Codex differ, and `RuntimeCapabilities` records how. Codex has no per-tool approval, so rules that need it are refused when the agent is saved and the form hides the field. Codex reports tokens, so its cost shows as estimated. Mid-run messages queue for the next turn on runtimes that cannot take them live.

@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@factorix/runtime": "0.1.0",
     "ioredis": "5.11.1",
     "tsx": "4.23.15"
   }

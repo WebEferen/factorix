@@ -342,7 +342,14 @@ class PreviewRun {
     const secrets = await this.secrets()
     const platformEnv = await this.platformEnv(context.project)
     const joined = await this.deps.sandbox.joinEnvironment(environment, 'gateway', GATEWAY_ALIAS)
-    if (!joined) this.log.add('factorix', 'No preview gateway is running, so nobody can open this preview. Start the preview-gateway service.', true)
+    if (!joined)
+      this.log.add(
+        'factorix',
+        environment.runner
+          ? 'This runner has no preview tunnel, so nobody can open this preview. Update the runner with docker compose -f docker-compose.runner.yml up -d --build.'
+          : 'No preview gateway is running, so nobody can open this preview. Start the preview-gateway service.',
+        true,
+      )
     await this.writeRoute('starting')
     const address = previewAddress(this.deps.env.FACTORIX_PREVIEW_URL, this.row.slug)
     const serviceContext = {
@@ -473,6 +480,7 @@ class PreviewRun {
     const settings = await readSettings(this.deps)
     const target = (service: string, port?: number) => ({
       host: serviceContainerName(this.row.slug, service),
+      runner: this.environment?.runner,
       port: port ?? (this.definition.services[service]?.port as number),
     })
     const route = {

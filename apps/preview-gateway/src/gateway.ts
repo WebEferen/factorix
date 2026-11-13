@@ -1,11 +1,21 @@
 import { createHmac, timingSafeEqual } from 'node:crypto'
-import { createServer, request as httpRequest, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import {
+  Agent,
+  createServer,
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type Server,
+  type ServerResponse,
+} from 'node:http'
 import { connect } from 'node:net'
 import type { Duplex } from 'node:stream'
 
 export interface PreviewTarget {
   host: string
   port: number
+  /** Set when the service is on a runner's machine, which only `dial` can reach. */
+  runner?: string
 }
 
 export interface PreviewRoute {
@@ -29,6 +39,8 @@ export interface GatewayOptions {
   store: GatewayStore
   /** The address previews hang off, such as http://preview.localhost:4102. Each preview is a subdomain of it. */
   baseUrl: string
+  /** Opens a connection to a service on a runner's machine. Without it, previews on runners do not open. */
+  dial?: (runnerId: string, target: PreviewTarget) => Promise<Duplex>
   log?: (message: string) => void
   now?: () => number
 }
@@ -100,7 +112,7 @@ export function pickTarget(route: PreviewRoute, path: string): { target: Preview
   if (!best) return { target: route.upstream, path }
   const prefix = best.prefix.replace(/\/+$/, '')
   const rest = best.strip && prefix ? path.slice(prefix.length) : path
-  return { target: { host: best.host, port: best.port }, path: rest.startsWith('/') ? rest : `/${rest}` }
+  return { target: { host: best.host, port: best.port, runner: best.runner }, path: rest.startsWith('/') ? rest : `/${rest}` }
 }
 
 /** Framing is allowed from Factorix only, whatever the app itself says, so no other site can embed a signed-in preview. */
@@ -216,6 +228,11 @@ export function createGateway(options: GatewayOptions): Server {
     return { ok: true, slug, route }
   }
 
+  const dialRunner = (target: PreviewTarget): Promise<Duplex> => {
+    if (!options.dial) throw new Error('this gateway cannot reach runners')
+    return options.dial(target.runner as string, target)
+  }
+
   const forward = async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? '/', 'http://gateway')
     if (url.pathname === `${OWN_PREFIX}health`) {
@@ -245,19 +262,33 @@ export function createGateway(options: GatewayOptions): Server {
     headers['x-forwarded-host'] = request.headers.host ?? ''
     headers['x-forwarded-proto'] = (request.headers['x-forwarded-proto'] as string | undefined) ?? 'http'
     headers['x-forwarded-for'] = request.socket.remoteAddress ?? ''
-    const outbound = httpRequest({ host: target.host, port: target.port, method: request.method, path, headers }, (upstream) => {
-      response.writeHead(upstream.statusCode ?? 502, frameHeaders(upstream.headers, route.frameAncestors))
-      upstream.pipe(response)
-    })
-    outbound.on('error', (error) => {
-      log(`upstream ${target.host}:${target.port} failed: ${error.message}`)
-      if (response.headersSent) return void response.destroy()
+    const notAnswering = () =>
       respond(
         response,
         502,
         page('The app is not answering', 'It may still be starting or have stopped. This page reloads by itself.', true),
         frameOnly(route),
       )
+    let agent: Agent | undefined
+    if (target.runner) {
+      let tunnel: Duplex
+      try {
+        tunnel = await dialRunner(target)
+      } catch (error) {
+        log(`runner ${target.runner} could not be reached: ${(error as Error).message}`)
+        return notAnswering()
+      }
+      agent = new Agent({ keepAlive: false })
+      agent.createConnection = () => tunnel
+    }
+    const outbound = httpRequest({ host: target.host, port: target.port, method: request.method, path, headers, agent }, (upstream) => {
+      response.writeHead(upstream.statusCode ?? 502, frameHeaders(upstream.headers, route.frameAncestors))
+      upstream.pipe(response)
+    })
+    outbound.on('error', (error) => {
+      log(`upstream ${target.host}:${target.port} failed: ${error.message}`)
+      if (response.headersSent) return void response.destroy()
+      notAnswering()
     })
     request.pipe(outbound)
     response.on('close', () => outbound.destroy())
@@ -278,12 +309,24 @@ export function createGateway(options: GatewayOptions): Server {
         if (kept) lines.push(`${name}: ${kept}`)
       } else lines.push(`${name}: ${value}`)
     }
-    const upstream = connect({ host: target.host, port: target.port }, () => {
+    const begin = (upstream: Duplex) => {
       upstream.write(`${lines.join('\r\n')}\r\n\r\n`)
       if (head.length > 0) upstream.write(head)
       upstream.pipe(client)
       client.pipe(upstream)
-    })
+    }
+    let upstream: Duplex
+    if (target.runner) {
+      try {
+        upstream = await dialRunner(target)
+      } catch {
+        return refuse('502 Bad Gateway')
+      }
+      begin(upstream)
+    } else {
+      const socket = connect({ host: target.host, port: target.port }, () => begin(socket))
+      upstream = socket
+    }
     upstream.on('error', () => refuse('502 Bad Gateway'))
     client.on('close', () => upstream.destroy())
     upstream.on('close', () => client.destroy())

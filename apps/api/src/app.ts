@@ -1,7 +1,7 @@
 import cookie from '@fastify/cookie'
 import Fastify, { type FastifyInstance } from 'fastify'
 import type { AppDeps } from './deps'
-import { loadSession, requireAuth, SESSION_COOKIE } from './lib/auth'
+import { API_TOKEN_PREFIX, checkTokenScope, loadApiToken, loadSession, requireAuth, SESSION_COOKIE } from './lib/auth'
 import { orgChannel } from './lib/channels'
 import { HttpError } from './lib/errors'
 import { authRoutes } from './routes/auth'
@@ -11,6 +11,7 @@ import { environmentRoutes } from './routes/environments'
 import { issueRoutes } from './routes/issues'
 import { previewRoutes } from './routes/previews'
 import { projectRoutes } from './routes/projects'
+import { runnerRoutes } from './routes/runners'
 import { runRoutes } from './routes/runs'
 import { settingsRoutes } from './routes/settings'
 import { webhookRoutes } from './routes/webhooks'
@@ -27,9 +28,15 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
   app.decorateRequest('auth', null)
 
   app.addHook('onRequest', async (request) => {
+    const bearer = /^Bearer (\S+)$/.exec(request.headers.authorization ?? '')?.[1]
+    if (bearer?.startsWith(API_TOKEN_PREFIX)) {
+      request.auth = await loadApiToken(deps.db, bearer)
+      return
+    }
     const token = request.cookies[SESSION_COOKIE]
     request.auth = token ? await loadSession(deps.db, token, async () => (await readSettings(deps)).sessionDays) : null
   })
+  app.addHook('onRequest', async (request) => checkTokenScope(request))
 
   // SameSite=Lax already blocks cross-site POSTs in browsers. This also refuses them from anything that sends Origin.
   app.addHook('onRequest', async (request) => {
@@ -75,6 +82,7 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
   issueRoutes(app, deps)
   previewRoutes(app, deps, fanout)
   runRoutes(app, deps, fanout)
+  runnerRoutes(app, deps)
   settingsRoutes(app, deps)
   webhookRoutes(app, deps)
   workflowRoutes(app, deps)

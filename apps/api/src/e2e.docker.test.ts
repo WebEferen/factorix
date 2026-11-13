@@ -516,6 +516,32 @@ describe('factory end to end', () => {
     expect(diff).toContain('ADHOC.md')
   })
 
+  it('pushes what a run with no ticket committed to a branch of its own, only when asked to', async () => {
+    script = () => undefined
+    const { agents } = await admin.ok('GET', '/api/agents')
+    const engineer = agents.find((agent: { handle: string }) => agent.handle === 'engineer-1')
+    const finish = async (push?: boolean) => {
+      const { run } = await admin.ok('POST', '/api/runs', { agentId: engineer.id, prompt: 'Add a file', gitUrl: 'file:///remote/repo.git', push })
+      return waitFor(
+        async () => {
+          const current = (await admin.ok('GET', `/api/runs/${run.id}`)).run
+          return ['succeeded', 'failed', 'cancelled'].includes(current.state) ? current : null
+        },
+        'the ad-hoc run to end',
+        120_000,
+      )
+    }
+
+    const pushed = await finish(true)
+    expect(pushed).toMatchObject({ state: 'succeeded', resultBranch: `factorix/adhoc-${pushed.id.slice(0, 8)}` })
+    expect(await remoteGit(`show ${pushed.resultBranch}:ADHOC.md`)).toContain('scripted')
+    expect(await remoteGit('log --format=%s main')).not.toContain('ADHOC')
+
+    const kept = await finish()
+    expect(kept).toMatchObject({ state: 'succeeded', hasDiff: true, resultBranch: null })
+    await expect(remoteGit(`rev-parse --verify refs/heads/factorix/adhoc-${kept.id.slice(0, 8)}`)).rejects.toThrow()
+  })
+
   describe('with several repositories', () => {
     const FIRST = { scmRepoId: '42', scmRepoPath: 'g/r', scmCloneUrl: 'file:///remote/repo.git', defaultBranch: 'main' }
     const SECOND = { scmRepoId: '43', scmRepoPath: 'g/s', scmCloneUrl: 'file:///remote/second.git', defaultBranch: 'main' }

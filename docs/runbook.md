@@ -87,6 +87,27 @@ Failed containers stay for an hour, and cleanup runs every 15 minutes. Settings,
 
 Previews and the services of agent runs use `label=factorix.kind=env`, and `label=factorix.env=<id>` picks one. The worker finds the gateway and the egress proxy by their `factorix.role` label, and cleanup removes only objects labelled with its own stack. Both use `FACTORIX_STACK`, so two stacks on one Docker host need different stack names.
 
+## Runners
+
+A runner takes a project's sandboxes off the main machine. Add it under Settings, Runners, then on the other machine, from a checkout:
+
+```sh
+docker compose -f docker-compose.runner.yml --profile build-only build
+FACTORIX_URL=https://factorix.example.com FACTORIX_RUNNER_TOKEN=fxr_... FACTORIX_STORE_SECRET=$(openssl rand -hex 24) \
+  docker compose -f docker-compose.runner.yml up -d --build
+```
+
+Put the three values in a `.env` beside the file to keep them across restarts. `FACTORIX_STORE_SECRET` is local to the runner: it lets its egress proxy, and nothing else, ask what a run token allows.
+
+- The runner needs to reach `FACTORIX_URL` over HTTPS. Nothing connects to it.
+- Its proxy must answer at the address in `FACTORIX_PROXY_URL` on the main machine, which is `http://egress-proxy:8080` in both compose files.
+- It uses the same sandbox image name as the main machine. Rebuild it on both after changing `packages/runner` or `docker/sandbox*`.
+- Upgrade runners together with Factorix. An older runner refuses calls it does not know with a message that says to update it.
+- One process per token. A second one takes the connection over and the first reconnects, so they would fight.
+- Previews of its projects run there and open through the gateway on the main machine. A runner started before previews were supported needs `up -d --build` again, which adds its `preview-tunnel` service. Without that service a preview starts and its log says nobody can open it.
+- `docker compose -f docker-compose.runner.yml logs runner` shows whether it is connected. Settings, Runners shows the same from the other side.
+- Removing a runner sends its projects back to the main machine. Working copies it held are lost, and pushed work is not.
+
 ## Rotate secrets
 
 Tokens: edit the connection under Settings. New runs use the new value.

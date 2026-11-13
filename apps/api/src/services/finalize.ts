@@ -1,5 +1,5 @@
 import type { ScmConnector } from '@factorix/connectors'
-import { type AddressOutput, formatScmBody, type ImplementOutput, type ReviewOutput, type TaskOutput } from '@factorix/core'
+import { type AddressOutput, formatScmBody, type ImplementOutput, type ReviewOutput, reviewNote, type TaskOutput } from '@factorix/core'
 import type { Db, IssueRow, ProjectRow, RunRow } from '@factorix/db'
 import type { RunEventBody, RunOutcome } from '@factorix/runtime'
 import type { SandboxProvider, StepResult, Workspace } from '@factorix/sandbox'
@@ -286,9 +286,12 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
   if (!first) throw new Error('A review needs an open merge request')
   if (!output?.verdict) throw new Error('The reviewer finished without a structured verdict')
 
+  const summaryOnly = context.project?.reviewComments === 'summary'
+  const targetOf = (comment: ReviewOutput['comments'][number]): LinkedMergeRequest =>
+    mergeRequests.find((mr) => mr.repo.name === comment.repo) ?? first
   const details = new Map<string, Awaited<ReturnType<ScmConnector['getMergeRequest']>>>()
-  for (const comment of output.comments ?? []) {
-    const target: LinkedMergeRequest = mergeRequests.find((mr) => mr.repo.name === comment.repo) ?? first
+  for (const comment of summaryOnly ? [] : (output.comments ?? [])) {
+    const target = targetOf(comment)
     const body = formatScmBody(`**${comment.severity}:** ${comment.body}`, run.id, agentHandle)
     try {
       if (comment.repo && target.repo.name !== comment.repo && mergeRequests.length > 1) throw new Error(`no merge request in ${comment.repo}`)
@@ -321,7 +324,7 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
       mr.repo.scmRepoId,
       mr.mrIid,
       formatScmBody(
-        `**Review verdict: ${output.verdict === 'approve' ? 'approve' : 'changes requested'}**\n\n${output.summary}`,
+        reviewNote(output, summaryOnly ? (output.comments ?? []).filter((comment) => targetOf(comment).id === mr.id) : []),
         run.id,
         agentHandle,
       ),
@@ -365,6 +368,10 @@ export async function finalizePhase(context: FinalizeContext): Promise<FinalizeR
 
   if (run.phase === 'ad_hoc') {
     for (const repo of context.repos) {
+      if (run.adHoc?.push) {
+        await pushWork(context, repo)
+        continue
+      }
       const bundled = await step(context, repo, 'bundle')
       if (bundled.exitCode !== 0) throw new StepFailed('bundle', bundled)
     }

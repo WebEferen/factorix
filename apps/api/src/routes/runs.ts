@@ -44,7 +44,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
     return { runs: (await builder).map(runDto) }
   })
 
-  app.post('/api/runs', async (request) => {
+  app.post('/api/runs', { config: { scope: 'runs' } }, async (request) => {
     const { account } = requireAuth(request)
     const input = parseBody(adHocRunInput, request.body)
     const agent = await db('agents')
@@ -63,7 +63,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
           agentId: agent.accountId,
           agentSnapshot: json(snapshot) as never,
           phase: 'ad_hoc',
-          adHoc: json({ gitUrl: input.gitUrl, prompt: input.prompt, ref: input.ref }) as never,
+          adHoc: json({ gitUrl: input.gitUrl, prompt: input.prompt, ref: input.ref, push: input.push }) as never,
           trigger: json({ scmConnectionId: input.scmConnectionId }) as never,
           createdBy: account.id,
           runtime: agent.runtime,
@@ -77,7 +77,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
         action: 'run.created',
         targetType: 'run',
         targetId: row?.id,
-        metadata: { phase: 'ad_hoc', agent: agent.handle },
+        metadata: { phase: 'ad_hoc', agent: agent.handle, push: input.push },
       })
       await emit(trx, account.orgId, { type: 'run.enqueue', runId: (row as RunRow).id })
       await emit(trx, account.orgId, { type: 'notify', kind: 'run', id: (row as RunRow).id })
@@ -141,7 +141,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
     replayed = true
   })
 
-  app.post('/api/runs/:id/cancel', async (request) => {
+  app.post('/api/runs/:id/cancel', { config: { scope: 'runs' } }, async (request) => {
     const { account } = requireAuth(request)
     const run = await loadRun(account.orgId, (request.params as { id: string }).id)
     const input = parseBody(cancelRunInput, request.body)
@@ -163,7 +163,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
     return { ok: true }
   })
 
-  app.post('/api/runs/:id/messages', async (request) => {
+  app.post('/api/runs/:id/messages', { config: { scope: 'runs' } }, async (request) => {
     const { account } = requireAuth(request)
     const run = await loadRun(account.orgId, (request.params as { id: string }).id)
     if (!['preparing', 'running', 'waiting_approval'].includes(run.state)) throw conflict('This run is not accepting messages right now')
@@ -206,7 +206,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
     return { approvals: (await builder).map(approvalDto) }
   })
 
-  app.post('/api/approvals/:id/decide', async (request) => {
+  app.post('/api/approvals/:id/decide', { config: { scope: 'approvals' } }, async (request) => {
     const { account } = requireAuth(request)
     const { id } = request.params as { id: string }
     await decideApproval(deps, account.orgId, id, account.id, parseBody(decideApprovalInput, request.body))

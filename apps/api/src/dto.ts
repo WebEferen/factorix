@@ -3,6 +3,7 @@ import type { RunState } from '@factorix/core'
 import { TERMINAL_RUN_STATES } from '@factorix/core'
 import type {
   AccountRow,
+  ApiTokenRow,
   ApprovalRow,
   ArchetypeRow,
   ConnectionRow,
@@ -18,6 +19,7 @@ import type {
 } from '@factorix/db'
 import type {
   AccountDto,
+  ApiTokenDto,
   ApprovalDto,
   ArchetypeDto,
   AuditEntryDto,
@@ -35,6 +37,7 @@ import type {
   WorkflowRunDto,
 } from '@factorix/schemas'
 import { isTriggerBlock } from '@factorix/schemas'
+import { adHocBranch } from './services/workspace'
 
 const iso = (value: Date | string | null | undefined): string | null => (value ? new Date(value).toISOString() : null)
 
@@ -48,6 +51,18 @@ export function accountDto(row: AccountRow): AccountDto {
     email: row.email,
     avatarUrl: row.avatarUrl,
     status: row.status,
+    createdAt: new Date(row.createdAt).toISOString(),
+  }
+}
+
+export function apiTokenDto(row: ApiTokenRow): ApiTokenDto {
+  return {
+    id: row.id,
+    name: row.name,
+    prefix: row.prefix,
+    scopes: row.scopes as ApiTokenDto['scopes'],
+    expiresAt: iso(row.expiresAt),
+    lastUsedAt: iso(row.lastUsedAt),
     createdAt: new Date(row.createdAt).toISOString(),
   }
 }
@@ -123,6 +138,8 @@ export function projectDto(row: ProjectRow, repos: ProjectRepoRow[], extra: Part
     networkPolicy: row.networkPolicy,
     networkAllowlist: row.networkAllowlist,
     networkBypass: row.networkBypass,
+    reviewComments: row.reviewComments,
+    runnerId: row.runnerId,
     runTimeoutMinutes: row.runTimeoutMinutes,
     monthlyBudgetUsd: row.monthlyBudgetUsd,
     defaultEngineerAgentId: row.defaultEngineerAgentId,
@@ -210,6 +227,8 @@ export function runDto(row: RunRow & { issueIdentifier?: string | null; issueTit
     error: row.error,
     lastSeq: row.lastSeq,
     adHocPrompt: row.adHoc?.prompt ?? null,
+    adHocRef: row.adHoc?.ref ?? null,
+    resultBranch: row.adHoc?.push && row.diff ? adHocBranch(row.id) : null,
     startedAt: iso(row.startedAt),
     finishedAt: iso(row.finishedAt),
     createdAt: new Date(row.createdAt).toISOString(),

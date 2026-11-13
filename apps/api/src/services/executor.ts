@@ -36,7 +36,7 @@ import { mergeRequestsOf, projectRepos } from './repos'
 import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
 import { type AgentMcp, agentMcp, buildRunSpec, readIssueResources, sessionToResume } from './spec'
-import { ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
+import { adHocBranch, ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
 
 export const LEASE_SECONDS = 60
 const HEARTBEAT_MS = 20_000
@@ -206,7 +206,7 @@ class RunExecution {
       this.run.workspaceId = row.id
     }
 
-    const branch = this.issue ? resolveBranch(this.issue) : `factorix/adhoc-${this.run.id.slice(0, 8)}`
+    const branch = this.issue ? resolveBranch(this.issue) : adHocBranch(this.run.id)
     if (this.issue && !this.issue.branchName) {
       await db('issues').where({ id: this.issue.id }).update({ branchName: branch })
       this.issue.branchName = branch

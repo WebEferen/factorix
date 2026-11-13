@@ -22,6 +22,7 @@
     "test:integration": "vitest run --project integration",
     "test:docker": "vitest run --project docker",
     "migrate": "yarn workspace @factorix/db migrate",
+    "cli:build": "yarn workspace @moxxylabs/factorix build",
     "sandbox:build": "docker build -f docker/sandbox.Dockerfile -t factorix/sandbox-base:dev .",
     "prepare-mr": "yarn lint && yarn typecheck && yarn test:unit && yarn test:integration"
   },

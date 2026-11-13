@@ -18,6 +18,39 @@ export type SetupInput = z.infer<typeof setupInput>
 export const loginInput = z.object({ email: z.email(), password: z.string().min(1).max(200) })
 export type LoginInput = z.infer<typeof loginInput>
 
+/**
+ * What an API token may change. Every token can read what its account can, and nothing here reaches an admin action.
+ * A request that changes something and names no scope is refused for every token.
+ */
+export const API_TOKEN_SCOPES = [
+  { id: 'runs', label: 'Runs', description: 'Start runs, message them, and cancel them.' },
+  { id: 'issues', label: 'Issues', description: 'Assign issues to agents, leave instructions, retry and cancel them.' },
+  { id: 'approvals', label: 'Approvals', description: 'Approve and reject what waits for a decision, merges included.' },
+  {
+    id: 'previews',
+    label: 'Previews',
+    description: 'Start, stop, and open previews. An open preview is the running app, with the secrets its project gives it.',
+  },
+] as const
+export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number]['id']
+const SCOPE_IDS = API_TOKEN_SCOPES.map((scope) => scope.id) as [ApiTokenScope, ...ApiTokenScope[]]
+export const DEFAULT_API_TOKEN_SCOPES: ApiTokenScope[] = ['runs', 'issues', 'approvals']
+
+export const createApiTokenInput = z.object({
+  name: z.string().trim().min(1).max(80),
+  scopes: z
+    .array(z.enum(SCOPE_IDS))
+    .max(SCOPE_IDS.length)
+    .default(DEFAULT_API_TOKEN_SCOPES)
+    .transform((scopes) => [...new Set(scopes)]),
+  /** Left out, the token lasts until it is revoked. */
+  expiresInDays: z.number().int().min(1).max(365).optional(),
+})
+export type CreateApiTokenInput = z.infer<typeof createApiTokenInput>
+
+export const createRunnerInput = z.object({ name: z.string().trim().min(1).max(80) })
+export type CreateRunnerInput = z.infer<typeof createRunnerInput>
+
 export const createMemberInput = z.object({
   name: z.string().min(1).max(120),
   email: z.email(),
@@ -148,6 +181,8 @@ export const projectInput = z.object({
   networkPolicy: z.enum(['restricted', 'open', 'none']).default('restricted'),
   networkAllowlist: z.array(egressHost).default([]),
   networkBypass: z.array(egressHost).max(100).default([]),
+  reviewComments: z.enum(['inline', 'summary']).default('inline'),
+  runnerId: z.uuid().nullable().default(null),
   runTimeoutMinutes: z.number().int().min(1).max(1440).default(90),
   monthlyBudgetUsd: z.number().positive().nullable().default(null),
   defaultEngineerAgentId: z.uuid().nullable().default(null),
@@ -217,6 +252,8 @@ export const adHocRunInput = z.object({
   prompt: z.string().min(1).max(100_000),
   gitUrl: z.string().min(1).max(1000),
   ref: z.string().max(200).optional(),
+  /** Pushes what the run commits to a branch of its own, so it can be fetched. Left out, the run pushes nothing. */
+  push: z.boolean().optional(),
   scmConnectionId: z.uuid().optional(),
 })
 export type AdHocRunInput = z.infer<typeof adHocRunInput>

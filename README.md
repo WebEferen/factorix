@@ -93,6 +93,66 @@ GitLab may refuse a bot's approval of a merge request the same account opened, a
 | Human merges | The agent implements and the reviewer reviews. A person merges.                                  |
 | Full auto    | Once the reviewer approves and CI is green on every merge request, the factory merges by itself. |
 
+A review normally opens one thread per finding on the diff. Under Project settings, Review comments, choose One summary to get a single note per merge request that lists the findings instead.
+
+### Work from a terminal
+
+`fx` hands work to agents and follows it without the browser:
+
+```sh
+npm install -g @moxxylabs/factorix
+```
+
+From a checkout, `yarn cli:build` writes the same file to `apps/cli/dist/fx.mjs`.
+
+Create a token under Settings, API tokens, then:
+
+```sh
+fx login --url https://factorix.example.com --token fxp_...
+fx assign INS-123 engineer-1      # start the pipeline on an issue
+fx logs INS-123 -f                # follow its current run
+fx inbox                          # what waits for you
+fx approve INS-123 -m "go ahead"
+fx run "why is the billing test flaky?" -f   # a task with no ticket, on this checkout's origin
+fx handoff "finish the retry logic" -f       # the same, starting from this checkout as it is now
+fx handoff INS-123 "finish the retry logic"  # the same on an issue: its branch, its pipeline
+fx pull 0a1b2c3d                  # fetch what the agent pushed into this checkout (a run or an issue)
+fx preview INS-123                # start the issue's preview if needed and open it
+```
+
+A run started with `fx run` works from what is pushed and pushes nothing, so `fx diff` shows its result. `fx help` lists the rest.
+
+`fx handoff` sends what you have not pushed: local commits, uncommitted changes, and new files that are not ignored. They are pushed to origin with your own git access, and your checkout is not touched. `--dry-run` lists what would go. With an issue (`fx handoff INS-123 "finish the retry logic"`) they go to the issue's branch, the prompt becomes an instruction, and its pipeline starts from them. That needs an issue nobody is working on, and a branch on origin that has nothing your checkout lacks. Without an issue they go to a `factorix/handoff-*` branch, and the run pushes its commits to a `factorix/adhoc-*` branch of its own.
+
+`fx pull` fetches what the agent pushed and applies the difference since the handoff to your working tree, so large and binary files come back too. If you changed the same files meanwhile it merges and stages. For a run it then removes both branches from origin, unless `--keep` is given. A run with no ticket always works on the machine Factorix is installed on, even when its repository belongs to a project on a runner.
+
+A token can read what its owner can. What it may change is chosen when it is made: runs, issues, approvals, and previews, the last one off unless you tick it. `fx preview` needs it.
+
+`fx mcp` is the same thing as an MCP server over stdio, so a local coding agent can hand work to Factorix and check on it:
+
+```sh
+claude mcp add factorix -- fx mcp
+```
+
+A token acts as the person who made it. It cannot do admin actions or create tokens, and revoking it takes effect at once.
+
+### Run agents on another machine
+
+A runner is a second machine that runs a project's sandboxes, so the one Factorix is installed on can stay small. It needs Docker and a way out to Factorix. Nothing has to reach it.
+
+1. Under Settings, Runners, add a runner. The token is shown once.
+2. On that machine, from a checkout of Factorix:
+
+   ```sh
+   docker compose -f docker-compose.runner.yml --profile build-only build
+   FACTORIX_URL=https://factorix.example.com FACTORIX_RUNNER_TOKEN=fxr_... FACTORIX_STORE_SECRET=$(openssl rand -hex 24) \
+     docker compose -f docker-compose.runner.yml up -d --build
+   ```
+
+3. Under the project's settings, set Runs on to the runner.
+
+Issues that already have a working copy finish where it is, and new ones start on the runner. While a runner is offline its runs fail and can be retried. Previews run on the runner too and open the same way, with their traffic carried over the runner's own connection. The [runbook](docs/runbook.md) has the details.
+
 ## Configuration
 
 The environment sets the defaults, and admins can override most of them under Settings, General without a restart. Use the default on that page clears an override.
@@ -142,6 +202,8 @@ Tracker text, repository contents, and agent output are all treated as untrusted
 - **Containers are locked down.** They run as non-root with all capabilities dropped, with memory, CPU, process, and time limits. Review and plan phases mount the code read-only.
 - **Untrusted text cannot phone home.** It renders as Markdown with raw HTML dropped, and a content security policy only loads images and video through the same-origin media proxy.
 - **Secrets are encrypted at rest** with AES-256-GCM, and webhooks are verified and deduplicated.
+- **A runner is part of the trusted base.** It runs the same step containers, so the git token and the secrets of its projects reach that machine, and its egress proxy enforces the same allowlist. It dials out with its own token and cannot use the rest of the API. Previews on it are reached only through the gateway beside Factorix, with the same sign-in.
+- **API tokens are stored as hashes and limited by scopes.** A token is shown once and can read what its owner can. It changes only what its scopes name (runs, issues, approvals, previews), and anything else that changes state, admin actions and tokens included, needs a browser session.
 
 More detail is in [docs/architecture.md](docs/architecture.md).
 
@@ -175,6 +237,8 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 | `apps/api`            | Fastify API and BullMQ worker                                 |
 | `apps/web`            | Next.js App Router UI                                         |
 | `apps/egress-proxy`   | The only network path out of an agent container               |
+| `apps/cli`            | `fx`, the command line and MCP server                         |
+| `apps/remote-runner`  | Runs sandboxes on another machine for Factorix                |
 | `packages/core`       | Pure domain: state machines, pipeline engine, phases, prompts |
 | `packages/runtime`    | The contract between worker and runner                        |
 | `packages/runner`     | Runs in the sandbox and hosts the SDKs                        |

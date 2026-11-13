@@ -71,6 +71,75 @@ describe('API', () => {
       expect(JSON.stringify(await admin.ok('GET', '/api/members'))).not.toMatch(/passwordHash|argon2/)
     })
 
+    it('lets an API token act as its account, short of admin actions and other tokens', async () => {
+      const created = await admin.ok('POST', '/api/tokens', { name: 'laptop' })
+      expect(created.secret).toMatch(/^fxp_/)
+      expect(created.token.prefix).toBe(created.secret.slice(0, 8))
+      expect(JSON.stringify(await admin.ok('GET', '/api/tokens'))).not.toContain(created.secret)
+
+      const cli = new ApiClient(harness.app)
+      cli.token = created.secret
+      expect((await cli.ok('GET', '/api/auth/me')).account.handle).toBe('ada')
+      expect((await cli.ok('GET', '/api/tokens')).tokens[0].lastUsedAt).not.toBeNull()
+      expect((await cli.request('POST', '/api/tokens', { name: 'second' })).status).toBe(403)
+      expect((await cli.request('DELETE', `/api/tokens/${created.token.id}`)).status).toBe(403)
+      expect((await cli.request('POST', '/api/connections', { kind: 'linear', name: 'x', secret: 'y' })).status).toBe(403)
+
+      const wrong = new ApiClient(harness.app)
+      wrong.cookie = admin.cookie
+      wrong.token = 'fxp_not-a-real-token'
+      expect((await wrong.request('GET', '/api/auth/me')).status).toBe(401)
+
+      const expired = await admin.ok('POST', '/api/tokens', { name: 'short', expiresInDays: 1 })
+      await harness.deps
+        .db('api_tokens')
+        .where({ id: expired.token.id })
+        .update({ expiresAt: new Date(Date.now() - 1000) })
+      cli.token = expired.secret
+      expect((await cli.request('GET', '/api/auth/me')).status).toBe(401)
+
+      expect((await admin.request('DELETE', `/api/tokens/${created.token.id}`)).status).toBe(200)
+      cli.token = created.secret
+      expect((await cli.request('GET', '/api/auth/me')).status).toBe(401)
+    })
+
+    it('lets a token change only what its scopes name, and nothing a route does not open to tokens', async () => {
+      const NOBODY = '00000000-0000-4000-8000-000000000000'
+      const withScopes = async (scopes?: string[]) => {
+        const created = await admin.ok('POST', '/api/tokens', { name: `scoped ${scopes?.join(' ') ?? 'default'}`, scopes })
+        const client = new ApiClient(harness.app)
+        client.token = created.secret
+        return { client, token: created.token }
+      }
+      const code = async (client: ApiClient, method: 'POST' | 'PUT', url: string, body: unknown = {}) => {
+        const response = await client.request(method, url, body)
+        return `${response.status} ${response.body?.error?.code ?? ''}`.trim()
+      }
+
+      const standard = await withScopes()
+      expect(standard.token.scopes).toEqual(['runs', 'issues', 'approvals'])
+      expect(await code(standard.client, 'POST', '/api/runs')).toBe('422 validation_failed')
+      expect(await code(standard.client, 'POST', `/api/issues/${NOBODY}/instructions`, { body: 'x' })).toBe('404 not_found')
+      expect(await code(standard.client, 'POST', `/api/issues/${NOBODY}/preview/open`)).toBe('403 scope_required')
+      expect(await code(standard.client, 'POST', `/api/issues/${NOBODY}/preview/start`)).toBe('403 scope_required')
+      expect(await code(standard.client, 'POST', '/api/agents')).toBe('403 session_required')
+      expect(await code(standard.client, 'POST', '/api/auth/logout')).toBe('403 session_required')
+
+      const previews = await withScopes(['previews', 'previews'])
+      expect(previews.token.scopes).toEqual(['previews'])
+      expect(await code(previews.client, 'POST', `/api/issues/${NOBODY}/preview/open`)).toBe('404 not_found')
+      expect(await code(previews.client, 'POST', '/api/runs')).toBe('403 scope_required')
+      expect(await code(previews.client, 'POST', `/api/approvals/${NOBODY}/decide`, { decision: 'approved' })).toBe('403 scope_required')
+
+      const reader = await withScopes([])
+      expect(reader.token.scopes).toEqual([])
+      expect((await reader.client.ok('GET', '/api/agents')).agents.length).toBeGreaterThan(0)
+      expect(await code(reader.client, 'POST', '/api/runs')).toBe('403 scope_required')
+
+      expect((await admin.request('POST', '/api/tokens', { name: 'bad', scopes: ['admin'] })).status).toBe(422)
+      expect((await admin.request('POST', `/api/issues/${NOBODY}/preview/open`, {})).status).toBe(404)
+    })
+
     it('limits admin actions to admins', async () => {
       await admin.ok('POST', '/api/members', { name: 'Bo', email: 'bo@example.com', password: 'long enough password', role: 'member' })
       const member = new ApiClient(harness.app)

@@ -1,15 +1,18 @@
 import { randomBytes } from 'node:crypto'
 import { Redis } from 'ioredis'
 import { createGateway, type PreviewRoute } from './gateway'
+import { createRunnerDialer } from './runners'
 
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:56379', { maxRetriesPerRequest: 3 })
 const port = Number(process.env.PORT ?? 4102)
 const baseUrl = process.env.FACTORIX_PREVIEW_URL ?? 'http://preview.localhost:4102'
 const SEEN_EVERY_MS = 30_000
 const lastSeen = new Map<string, number>()
+const runners = createRunnerDialer(redis)
 
 const server = createGateway({
   baseUrl,
+  dial: runners.dial,
   store: {
     async route(slug) {
       const raw = await redis.get(`preview:route:${slug}`)
@@ -38,6 +41,7 @@ server.listen(port, '0.0.0.0', () => console.error(`[preview-gateway] listening 
 
 const shutdown = () => {
   server.close()
+  runners.close()
   redis.disconnect()
   process.exit(0)
 }

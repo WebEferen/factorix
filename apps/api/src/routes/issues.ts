@@ -27,6 +27,7 @@ import { getConnection, trackerFor } from '../services/connections'
 import { issueTextFormatters } from '../services/markup'
 import { advanceIssue } from '../services/pipeline'
 import { projectRepos } from '../services/repos'
+import { resolveBranch } from '../services/workspace'
 
 const ISSUE_COLUMNS = ['issues.*', 'projects.name as project_name', 'accounts.handle as assigned_agent_handle']
 const SAFE_INLINE_MEDIA = /^(image\/(png|jpeg|gif|webp|avif)|video\/(mp4|webm|quicktime|ogg))$/
@@ -307,6 +308,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
         ...issueDto(row),
         description: row.description ? format.tracker(row.description) : null,
         project: projectDto(projectRow, repos),
+        workBranch: resolveBranch(row),
         runs: runs.map(runDto),
         approvals: (approvals as ApprovalRow[]).map(approvalDto),
         discussions: discussions.map((discussion) => ({
@@ -334,7 +336,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
     }
   })
 
-  app.post('/api/issues/:id/assign', async (request) => {
+  app.post('/api/issues/:id/assign', { config: { scope: 'issues' } }, async (request) => {
     const { account } = requireAuth(request)
     const issue = await load(account.orgId, (request.params as { id: string }).id)
     const input = parseBody(assignIssueInput, request.body)
@@ -342,7 +344,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { issue: issueDto((await load(account.orgId, issue.id)) as IssueRow) }
   })
 
-  app.post('/api/issues/:id/retry', async (request) => {
+  app.post('/api/issues/:id/retry', { config: { scope: 'issues' } }, async (request) => {
     const { account } = requireAuth(request)
     const issue = await load(account.orgId, (request.params as { id: string }).id)
     if (isTrackerClosed(issue)) throw conflict(CLOSED_MESSAGE)
@@ -360,7 +362,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { issue: issueDto(await load(account.orgId, issue.id)) }
   })
 
-  app.post('/api/issues/:id/cancel', async (request) => {
+  app.post('/api/issues/:id/cancel', { config: { scope: 'issues' } }, async (request) => {
     const { account } = requireAuth(request)
     const issue = await load(account.orgId, (request.params as { id: string }).id)
     await writeAudit(db, {
@@ -376,7 +378,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { issue: issueDto(await load(account.orgId, issue.id)) }
   })
 
-  app.post('/api/issues/:id/instructions', async (request) => {
+  app.post('/api/issues/:id/instructions', { config: { scope: 'issues' } }, async (request) => {
     const { account } = requireAuth(request)
     const issue = await load(account.orgId, (request.params as { id: string }).id)
     const { body } = (request.body ?? {}) as { body?: string }

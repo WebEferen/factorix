@@ -1,13 +1,25 @@
-import type { AccountRow, OrganizationRow } from '@factorix/db'
-import { createMemberInput, loginInput, setupInput } from '@factorix/schemas'
+import type { AccountRow, ApiTokenRow, OrganizationRow } from '@factorix/db'
+import { createApiTokenInput, createMemberInput, loginInput, setupInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
-import { accountDto } from '../dto'
+import { accountDto, apiTokenDto } from '../dto'
 import { writeAudit } from '../lib/audit'
-import { createSession, hashPassword, passwordProvider, requireAdmin, requireAuth, SESSION_COOKIE, setSessionCookie } from '../lib/auth'
-import { conflict, HttpError, isUniqueViolation, parseBody } from '../lib/errors'
+import {
+  createApiToken,
+  createSession,
+  hashPassword,
+  passwordProvider,
+  requireAdmin,
+  requireAuth,
+  requireSession,
+  SESSION_COOKIE,
+  setSessionCookie,
+} from '../lib/auth'
+import { conflict, HttpError, isUniqueViolation, notFound, parseBody } from '../lib/errors'
 import { readSettings } from '../services/settings'
 import { bootstrapOrg, isSetUp } from '../services/setup'
+
+const MAX_TOKENS_PER_ACCOUNT = 20
 
 export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { db } = deps
@@ -53,7 +65,7 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
   })
 
   app.post('/api/auth/logout', async (request, reply) => {
-    if (request.auth) await db('auth_sessions').where({ id: request.auth.sessionId }).delete()
+    if (request.auth?.sessionId) await db('auth_sessions').where({ id: request.auth.sessionId }).delete()
     reply.clearCookie(SESSION_COOKIE, { path: '/' })
     return { ok: true }
   })
@@ -62,6 +74,49 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { account } = requireAuth(request)
     const org = await db<OrganizationRow>('organizations').where({ id: account.orgId }).first()
     return { account: accountDto(account), org: { id: org?.id, name: org?.name, slug: org?.slug } }
+  })
+
+  app.get('/api/tokens', async (request) => {
+    const { account } = requireAuth(request)
+    const rows = await db<ApiTokenRow>('api_tokens').where({ accountId: account.id }).orderBy('created_at', 'desc')
+    return { tokens: rows.map(apiTokenDto) }
+  })
+
+  app.post('/api/tokens', async (request) => {
+    const { account } = requireSession(request)
+    const input = parseBody(createApiTokenInput, request.body)
+    const [{ count }] = (await db('api_tokens').where({ accountId: account.id }).count('* as count')) as [{ count: string }]
+    if (Number(count) >= MAX_TOKENS_PER_ACCOUNT) throw conflict(`You already have ${MAX_TOKENS_PER_ACCOUNT} tokens. Revoke one first.`)
+    const { row, secret } = await createApiToken(db, account, input)
+    await writeAudit(db, {
+      orgId: account.orgId,
+      actorAccountId: account.id,
+      actorKind: 'human',
+      action: 'token.created',
+      targetType: 'api_token',
+      targetId: row.id,
+      metadata: { name: row.name, scopes: row.scopes, expiresAt: row.expiresAt },
+    })
+    return { token: apiTokenDto(row), secret }
+  })
+
+  app.delete('/api/tokens/:id', async (request) => {
+    const { account } = requireSession(request)
+    const [row] = await db<ApiTokenRow>('api_tokens')
+      .where({ id: (request.params as { id: string }).id, accountId: account.id })
+      .delete()
+      .returning('*')
+    if (!row) throw notFound('Token')
+    await writeAudit(db, {
+      orgId: account.orgId,
+      actorAccountId: account.id,
+      actorKind: 'human',
+      action: 'token.revoked',
+      targetType: 'api_token',
+      targetId: row.id,
+      metadata: { name: row.name },
+    })
+    return { ok: true }
   })
 
   app.get('/api/members', async (request) => {

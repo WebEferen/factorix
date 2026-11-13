@@ -1,7 +1,7 @@
 import { gitlabWebhookCodec, linearWebhookCodec } from '@factorix/connectors'
 import type { PipelineEvent, TrackerStateKey } from '@factorix/core'
 import { createDb } from '@factorix/db'
-import { DockerSandboxProvider } from '@factorix/sandbox'
+import { DockerSandboxProvider, RoutingSandboxProvider } from '@factorix/sandbox'
 import { type Job, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import { type AppDeps, realConnectors } from './deps'
@@ -13,6 +13,7 @@ import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from 
 import { advanceIssue } from './services/pipeline'
 import { runPreviewAction, stopAllPumps, sweepPreviews } from './services/preview-runner'
 import { relayDomainEvents } from './services/relay'
+import { RunnerLinks } from './services/runner-link'
 import { refreshRuntimeModels } from './services/runtime-models'
 import { checkCi, handleScmEvent, mergeIssue, revertIssue, settleCi } from './services/scm-inbound'
 import { readSettings } from './services/settings'
@@ -216,12 +217,16 @@ async function main(): Promise<void> {
   const db = createDb(env.DATABASE_URL, { max: 20 })
   const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null })
   const queues = createQueues(redis)
-  const sandbox = new DockerSandboxProvider({
-    image: env.FACTORIX_SANDBOX_IMAGE,
-    stepNetwork: env.FACTORIX_STEP_NETWORK,
-    agentNetwork: env.FACTORIX_AGENT_NETWORK,
-    stack: env.FACTORIX_STACK,
-  })
+  const runners = new RunnerLinks({ db, redis, stack: env.FACTORIX_STACK })
+  const sandbox = new RoutingSandboxProvider(
+    new DockerSandboxProvider({
+      image: env.FACTORIX_SANDBOX_IMAGE,
+      stepNetwork: env.FACTORIX_STEP_NETWORK,
+      agentNetwork: env.FACTORIX_AGENT_NETWORK,
+      stack: env.FACTORIX_STACK,
+    }),
+    runners.routes(),
+  )
   const deps = { db, redis, env, secrets: createSecretBox(env.FACTORIX_SECRET_KEY), connectors: realConnectors, queues, sandbox }
   const handle = startWorkers(deps)
   console.error('[worker] started')
@@ -231,6 +236,7 @@ async function main(): Promise<void> {
     )
   const shutdown = async () => {
     await handle.close()
+    runners.close()
     await queues.close()
     await db.destroy()
     redis.disconnect()

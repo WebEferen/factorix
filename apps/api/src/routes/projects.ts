@@ -68,6 +68,10 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     })
   }
 
+  const checkRunner = async (orgId: string, runnerId: string | null | undefined) => {
+    if (runnerId && !(await db('runners').where({ id: runnerId, orgId }).first())) throw notFound('Runner')
+  }
+
   app.get('/api/projects', async (request) => {
     const { account } = requireAuth(request)
     return { projects: await withStats(await db<ProjectRow>('projects').where({ orgId: account.orgId }).orderBy('name'), account.id) }
@@ -84,6 +88,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { repos, ...input } = parseBody(projectInput, request.body)
     await getConnection(db, account.orgId, input.trackerConnectionId)
     await getConnection(db, account.orgId, input.scmConnectionId)
+    await checkRunner(account.orgId, input.runnerId)
     const pipeline = await db<PipelineRow>('pipelines')
       .where({ orgId: account.orgId, name: BUILTIN_PIPELINE_NAME })
       .orderBy('version', 'desc')
@@ -129,6 +134,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { id } = request.params as { id: string }
     const existing = await getProject(deps, account.orgId, id)
     const { repos, ...input } = parseBody(projectUpdateInput, request.body)
+    await checkRunner(account.orgId, input.runnerId)
     const patch: Record<string, unknown> = { ...input, updatedAt: db.fn.now() }
     if (input.stateMap) patch.stateMap = json(input.stateMap)
     if (input.trigger) patch.trigger = json(input.trigger)

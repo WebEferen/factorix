@@ -24,6 +24,9 @@ export async function ensureWorkspaceRow(db: Db, run: RunRow, volume: string, mi
   return row as WorkspaceRow
 }
 
+/** Where an ad-hoc run commits, and what it pushes when asked to. */
+export const adHocBranch = (runId: string) => `factorix/adhoc-${runId.slice(0, 8)}`
+
 export function resolveBranch(issue: Pick<IssueRow, 'branchName' | 'identifier' | 'title'>): string {
   return issue.branchName ?? branchNameFor(issue.identifier, issue.title)
 }

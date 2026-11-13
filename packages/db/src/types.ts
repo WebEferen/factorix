@@ -39,6 +39,19 @@ export interface AuthSessionRow {
   lastSeenAt: Date
 }
 
+export interface ApiTokenRow {
+  id: string
+  orgId: string
+  accountId: string
+  name: string
+  tokenHash: string
+  prefix: string
+  scopes: string[]
+  expiresAt: Date | null
+  lastUsedAt: Date | null
+  createdAt: Date
+}
+
 export interface ArchetypeRow {
   id: string
   orgId: string
@@ -66,6 +79,17 @@ export interface AgentRow {
   capabilitiesSnapshot: RuntimeCapabilities
   version: number
   updatedAt: Date
+}
+
+export interface RunnerRow {
+  id: string
+  orgId: string
+  name: string
+  tokenHash: string
+  prefix: string
+  lastSeenAt: Date | null
+  createdBy: string | null
+  createdAt: Date
 }
 
 export interface SkillRow {
@@ -152,6 +176,8 @@ export interface ProjectRow {
   networkPolicy: 'restricted' | 'open' | 'none'
   networkAllowlist: string[]
   networkBypass: string[]
+  reviewComments: 'inline' | 'summary'
+  runnerId: string | null
   limits: { memoryMb?: number; cpus?: number }
   runTimeoutMinutes: number
   monthlyBudgetUsd: number | null
@@ -217,6 +243,7 @@ export interface AdHocSpec {
   gitUrl: string
   prompt: string
   ref?: string
+  push?: boolean
 }
 
 export interface RunRow {

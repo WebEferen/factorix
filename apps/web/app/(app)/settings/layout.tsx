@@ -10,7 +10,9 @@ const SECTIONS = [
   { href: '/settings/general', label: 'General' },
   { href: '/settings/connections', label: 'Connections' },
   { href: '/settings/network', label: 'Network' },
+  { href: '/settings/runners', label: 'Runners' },
   { href: '/settings/members', label: 'Members' },
+  { href: '/settings/tokens', label: 'API tokens' },
   { href: '/settings/audit', label: 'Audit log' },
   { href: '/settings/spend', label: 'Spend' },
 ]

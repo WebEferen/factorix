@@ -1,0 +1,72 @@
+# A runner: a second machine that runs sandboxes for Factorix. It needs Docker and a way out to Factorix, and nothing has to reach it.
+#
+#   FACTORIX_URL=https://factorix.example.com FACTORIX_RUNNER_TOKEN=fxr_... FACTORIX_STORE_SECRET=$(openssl rand -hex 24) \
+#     docker compose -f docker-compose.runner.yml up -d --build
+name: factorix-runner
+
+services:
+  runner:
+    build: { context: ., dockerfile: docker/api.Dockerfile }
+    image: factorix/api:dev
+    command: [node_modules/.bin/tsx, apps/remote-runner/src/index.ts]
+    user: root
+    environment:
+      FACTORIX_URL: ${FACTORIX_URL:?Set FACTORIX_URL to the address of Factorix}
+      FACTORIX_RUNNER_TOKEN: ${FACTORIX_RUNNER_TOKEN:?Set FACTORIX_RUNNER_TOKEN to the token from Settings, Runners}
+      FACTORIX_STORE_SECRET: ${FACTORIX_STORE_SECRET:?Set FACTORIX_STORE_SECRET to a random value (openssl rand -hex 24)}
+      FACTORIX_SANDBOX_IMAGE: ${FACTORIX_SANDBOX_IMAGE:-factorix/sandbox-base:dev}
+      FACTORIX_STEP_NETWORK: fxr-egress
+      FACTORIX_AGENT_NETWORK: fxr-agents
+      FACTORIX_STACK: factorix-runner
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    networks: [fxr-control]
+
+  # The only way out for agents on this machine. It asks the runner what each run token allows, and the runner asks Factorix.
+  # The name and port must match FACTORIX_PROXY_URL on the Factorix side, because runs are given that address.
+  egress-proxy:
+    image: factorix/api:dev
+    pull_policy: never
+    command: [node_modules/.bin/tsx, apps/egress-proxy/src/index.ts]
+    environment:
+      FACTORIX_STORE_URL: http://runner:8090
+      FACTORIX_STORE_SECRET: ${FACTORIX_STORE_SECRET:?Set FACTORIX_STORE_SECRET to a random value (openssl rand -hex 24)}
+      FACTORIX_PROXY_PROTECTED_HOSTS: runner
+      PORT: 8080
+    depends_on:
+      runner: { condition: service_started }
+    labels:
+      factorix.role: egress
+      factorix.stack: factorix-runner
+    restart: unless-stopped
+    networks: [fxr-control, fxr-agents, fxr-egress]
+
+  # The runner's end of the preview gateway. It joins each preview's network, so it has no token and no Docker, and listens on nothing.
+  preview-tunnel:
+    image: factorix/api:dev
+    pull_policy: never
+    command: [node_modules/.bin/tsx, apps/remote-runner/src/preview-tunnel.ts]
+    environment:
+      FACTORIX_STORE_URL: http://runner:8090
+      FACTORIX_STORE_SECRET: ${FACTORIX_STORE_SECRET:?Set FACTORIX_STORE_SECRET to a random value (openssl rand -hex 24)}
+    depends_on:
+      runner: { condition: service_started }
+    labels:
+      factorix.role: gateway
+      factorix.stack: factorix-runner
+    restart: unless-stopped
+    networks: [fxr-control]
+
+  sandbox-image:
+    build: { context: ., dockerfile: docker/sandbox.Dockerfile }
+    image: ${FACTORIX_SANDBOX_IMAGE:-factorix/sandbox-base:dev}
+    profiles: [build-only]
+
+networks:
+  fxr-control:
+  fxr-agents:
+    name: fxr-agents
+    internal: true
+  fxr-egress:
+    name: fxr-egress

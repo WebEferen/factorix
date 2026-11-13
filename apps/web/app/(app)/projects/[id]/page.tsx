@@ -1,14 +1,14 @@
 'use client'
 
-import type { ProjectDto } from '@factorix/schemas'
+import type { ProjectDto, RunnerDto } from '@factorix/schemas'
 import { AlertTriangle, Container, Loader2, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import Link from 'next/link'
 import { Suspense, use, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { useSWRConfig } from 'swr'
+import useSWR, { useSWRConfig } from 'swr'
 import { ISSUE_PAGE_SIZE, IssuePager, IssueToolbar, useIssueQuery } from '@/modules/issues/issue-filters'
 import { IssueBoard, IssueList } from '@/modules/issues/issue-list'
-import { api } from '@/modules/lib/api'
+import { api, fetcher } from '@/modules/lib/api'
 import { useAgents, useConnections, useIssues, useProject } from '@/modules/lib/data'
 import { AutonomyPicker, pickedFromProject, RepoCommands, RepoPicker, reposForApi, SandboxFields, WebhookSetup } from '@/modules/projects/forms'
 import { PageBody, PageHeader } from '@/modules/shell/page-header'
@@ -34,6 +34,7 @@ import { IssuesArt, NoMatchArt } from '@/modules/ui/empty-art'
 type View = 'list' | 'board'
 const VIEW_KEY = 'fx-project-view'
 const DEFAULT_AGENT = 'first'
+const THIS_MACHINE = 'local'
 
 function ProjectSettings({
   project,
@@ -52,6 +53,9 @@ function ProjectSettings({
   const [autonomy, setAutonomy] = useState(project.autonomy)
   const [engineer, setEngineer] = useState(project.defaultEngineerAgentId ?? DEFAULT_AGENT)
   const [reviewer, setReviewer] = useState(project.defaultReviewerAgentId ?? DEFAULT_AGENT)
+  const [reviewComments, setReviewComments] = useState<string>(project.reviewComments)
+  const { data: runners } = useSWR<{ runners: RunnerDto[] }>(open ? '/api/runners' : null, fetcher as never)
+  const [runner, setRunner] = useState(project.runnerId ?? THIS_MACHINE)
   const [repos, setRepos] = useState(() => pickedFromProject(project.repos))
   const [sandbox, setSandbox] = useState({
     networkPolicy: project.networkPolicy as string,
@@ -73,6 +77,8 @@ function ProjectSettings({
         autonomy,
         defaultEngineerAgentId: engineer === DEFAULT_AGENT ? null : engineer,
         defaultReviewerAgentId: reviewer === DEFAULT_AGENT ? null : reviewer,
+        reviewComments,
+        runnerId: runner === THIS_MACHINE ? null : runner,
         repos: reposForApi(repos),
         networkPolicy: sandbox.networkPolicy,
         networkAllowlist: sandbox.networkAllowlist
@@ -120,6 +126,28 @@ function ProjectSettings({
                 <Select value={reviewer} onChange={setReviewer} options={options('reviewer')} />
               </Field>
             </div>
+            <Field label="Review comments">
+              <Select
+                value={reviewComments}
+                onChange={setReviewComments}
+                options={[
+                  { value: 'inline', label: 'On the diff', hint: 'One thread per finding, plus the verdict' },
+                  { value: 'summary', label: 'One summary', hint: 'A single note per merge request that lists the findings' },
+                ]}
+              />
+            </Field>
+            {runners?.runners.length ? (
+              <Field label="Runs on" hint="Issues that already have a working copy stay where it is. Previews do not open from a runner yet.">
+                <Select
+                  value={runner}
+                  onChange={setRunner}
+                  options={[
+                    { value: THIS_MACHINE, label: 'This machine', hint: 'Where Factorix is installed' },
+                    ...runners.runners.map((item) => ({ value: item.id, label: item.name, hint: item.online ? 'Online' : 'Offline' })),
+                  ]}
+                />
+              </Field>
+            ) : null}
             <SandboxFields
               value={sandbox}
               onChange={(patch) => setSandbox({ ...sandbox, ...patch })}
