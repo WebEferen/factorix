@@ -756,6 +756,67 @@ describe('factory end to end', () => {
     expect(await firstMrIid(row.id)).toBeGreaterThan(0)
   })
 
+  it('asks an agent from a workflow with read-only repositories, posts the answer, and leaves the ticket alone', async () => {
+    script = (phase) =>
+      phase === 'prompt'
+        ? {
+            steps: [{ say: 'Looking.' }, { exec: 'touch NOT_ALLOWED 2>&1; echo "touch exited $?"' }],
+            structuredOutput: { summary: 'Nothing **blocks** this.' },
+          }
+        : undefined
+    const { connection: slack } = await admin.ok('POST', '/api/connections', { kind: 'slack', name: 'Slack for answers', secret: 'xoxb-secret' })
+    const { agents } = await admin.ok('GET', '/api/agents')
+    const engineer = agents.find((agent: { handle: string }) => agent.handle === 'engineer-1')
+    const position = { x: 0, y: 0 }
+    const { workflow } = await admin.ok('POST', '/api/workflows', {
+      name: 'Ask before building',
+      definition: {
+        nodes: [
+          { id: 'start', type: 'trigger.manual', position, config: {} },
+          { id: 'ask', type: 'agent.prompt', position, config: { agentId: engineer.id, prompt: 'Is {{issue.identifier}} safe?', post: 'comment' } },
+          { id: 'tell', type: 'notify.send', position, config: { connectionId: slack.id, channel: 'C7', message: '{{steps.ask.text}}' } },
+        ],
+        edges: [
+          { id: 'a', source: 'start', sourceHandle: 'next', target: 'ask' },
+          { id: 'b', source: 'ask', sourceHandle: 'next', target: 'tell' },
+        ],
+      },
+    })
+    await admin.ok('POST', `/api/workflows/${workflow.id}/publish`)
+    const tracker = harness.world.addIssue({ title: 'Asked about by a workflow' })
+    await sendLinearWebhook(harness.app, linear.id, linear.webhookSecret, issuePayload(tracker, 'create'))
+    const row = await waitFor(() => harness.deps.db('issues').where({ trackerIssueId: tracker.id }).first(), 'the issue mirror row')
+    const branchesBefore = await remoteGit('branch --list')
+
+    const { started } = await admin.ok('POST', `/api/workflows/${workflow.id}/runs`, { issueIds: [row.id] })
+    const finished = await waitFor(
+      async () => {
+        const { run } = await admin.ok('GET', `/api/workflow-runs/${started[0]}`)
+        return run.status === 'running' ? null : run
+      },
+      'the workflow run to finish',
+      180_000,
+    )
+    expect(finished.status, JSON.stringify(finished.steps)).toBe('succeeded')
+
+    const run = await harness.deps.db('runs').where({ issueId: row.id }).first()
+    expect(run).toMatchObject({ phase: 'prompt', state: 'succeeded' })
+    const events = await harness.deps.db('run_events').where({ runId: run.id, type: 'tool.result' })
+    expect(events.map((event: { payload: { output?: string } }) => event.payload.output).join('\n')).toContain('Read-only file system')
+    expect(finished.steps.find((step: { nodeId: string }) => step.nodeId === 'ask').output).toMatchObject({
+      runId: run.id,
+      text: 'Nothing **blocks** this.',
+    })
+    expect(harness.world.notifications.at(-1)).toMatchObject({ channelId: 'C7', markdown: 'Nothing \\*\\*blocks\\*\\* this.' })
+    await waitFor(
+      async () => harness.world.comments.find((comment) => comment.issueId === tracker.id && comment.body.includes('Nothing **blocks** this.')),
+      'the answer on the ticket',
+    )
+    expect(await issueOf(row.id)).toMatchObject({ factoryState: 'untracked', lockedByRunId: null })
+    expect(await remoteGit('branch --list')).toBe(branchesBefore)
+    expect(await harness.deps.db('issue_merge_requests').where({ issueId: row.id })).toEqual([])
+  })
+
   it('lets a researcher report on a ticket with read-only repositories, then hands it to an engineer', async () => {
     await setAutonomy('human_merge')
     const { archetype } = await admin.ok('POST', '/api/archetypes', { name: 'Researcher', role: 'other', systemPrompt: 'Dig into the ticket.' })

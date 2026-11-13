@@ -28,6 +28,7 @@ import {
   Hourglass,
   Loader2,
   MessageSquare,
+  MessageSquareText,
   Play,
   Send,
   Split,
@@ -49,6 +50,7 @@ export const BLOCK_ICONS: Record<BlockType, ReactNode> = {
   'logic.wait': <Timer />,
   'logic.wait_for': <Hourglass />,
   'agent.run': <Bot />,
+  'agent.prompt': <MessageSquareText />,
   'tracker.comment': <MessageSquare />,
   'tracker.set_status': <CircleDot />,
   'tracker.label': <Tags />,
@@ -105,6 +107,8 @@ export function summarizeBlock(type: string, config: Record<string, unknown>, na
       return fieldLabel('event')
     case 'agent.run':
       return names.agents.get(clip(config.agentId)) ?? "Project's default engineer"
+    case 'agent.prompt':
+      return clip(config.prompt) || 'No prompt yet'
     case 'tracker.comment':
       return clip(config.body) || 'No comment yet'
     case 'tracker.set_status':

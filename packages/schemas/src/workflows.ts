@@ -16,6 +16,8 @@ export type BlockFieldKind =
   | 'number'
   | 'select'
   | 'agent'
+  | 'skills'
+  | 'model'
   | 'project'
   | 'status'
   | 'label'
@@ -45,8 +47,8 @@ export interface BlockSpec {
   description: string
   fields: BlockField[]
   outputs: BlockOutput[]
-  /** What the block hands to later blocks, listed as variables. */
-  provides?: { key: string; label: string }[]
+  /** What the block hands to later blocks, listed as variables. `when` limits one to certain values of a field. */
+  provides?: { key: string; label: string; when?: { key: string; in: string[] } }[]
 }
 
 const NEXT: BlockOutput = { id: 'next', label: 'Next' }
@@ -75,6 +77,10 @@ export const WORKFLOW_BLOCKS = {
     description: 'Starts when a ticket moves to another status.',
     fields: [{ key: 'to', label: 'New status', kind: 'status', hint: STATUS_FIELD_HINT }],
     outputs: [NEXT],
+    provides: [
+      { key: 'from', label: 'Old status' },
+      { key: 'to', label: 'New status' },
+    ],
   },
   'trigger.label_added': {
     category: 'trigger',
@@ -82,6 +88,7 @@ export const WORKFLOW_BLOCKS = {
     description: 'Starts when a ticket gets a label.',
     fields: [{ key: 'label', label: 'Label', kind: 'label', hint: 'Leave empty for any label.' }],
     outputs: [NEXT],
+    provides: [{ key: 'label', label: 'Label' }],
   },
   'trigger.agent_finished': {
     category: 'trigger',
@@ -101,6 +108,7 @@ export const WORKFLOW_BLOCKS = {
       },
     ],
     outputs: [NEXT],
+    provides: [{ key: 'result', label: 'Result' }],
   },
   'trigger.merge_request': {
     category: 'trigger',
@@ -121,6 +129,10 @@ export const WORKFLOW_BLOCKS = {
       },
     ],
     outputs: [NEXT],
+    provides: [
+      { key: 'event', label: 'What happened' },
+      { key: 'url', label: 'Merge request link' },
+    ],
   },
   'logic.condition': {
     category: 'logic',
@@ -190,6 +202,17 @@ export const WORKFLOW_BLOCKS = {
       { key: 'timeoutHours', label: 'Give up after (hours)', kind: 'number', required: true, initial: 72, min: 1, max: 2160 },
     ],
     outputs: [NEXT, { id: 'timeout', label: 'Timed out' }],
+    provides: [
+      {
+        key: 'url',
+        label: 'Merge request link',
+        when: { key: 'event', in: ['merge_request.opened', 'merge_request.merged', 'merge_request.closed'] },
+      },
+      { key: 'from', label: 'Old status', when: { key: 'event', in: ['status.changed'] } },
+      { key: 'to', label: 'New status', when: { key: 'event', in: ['status.changed'] } },
+      { key: 'label', label: 'Label', when: { key: 'event', in: ['label.added'] } },
+      { key: 'result', label: 'Result', when: { key: 'event', in: ['agent.finished'] } },
+    ],
   },
   'agent.run': {
     category: 'agent',
@@ -198,6 +221,40 @@ export const WORKFLOW_BLOCKS = {
     fields: [{ key: 'agentId', label: 'Agent', kind: 'agent', hint: "Leave empty for the project's default engineer." }],
     outputs: [{ id: 'next', label: 'Finished' }, FAILED],
     provides: [{ key: 'result', label: 'Result' }],
+  },
+  'agent.prompt': {
+    category: 'agent',
+    title: 'Ask agent',
+    description: 'Gives an agent a prompt about the ticket and continues with its answer. The agent reads the code and changes nothing.',
+    fields: [
+      { key: 'agentId', label: 'Agent', kind: 'agent', hint: "Leave empty for the ticket's agent, or the project's default engineer." },
+      {
+        key: 'prompt',
+        label: 'Prompt',
+        kind: 'longTemplate',
+        required: true,
+        placeholder: 'Review the merge request of {{issue.identifier}} for security problems.',
+      },
+      { key: 'skillIds', label: 'Skills', kind: 'skills', hint: "Added to the agent's own for this run." },
+      { key: 'model', label: 'Model', kind: 'model', hint: "Leave empty for the agent's own." },
+      {
+        key: 'post',
+        label: 'Answer',
+        kind: 'select',
+        initial: 'comment',
+        required: true,
+        options: [
+          { value: 'comment', label: 'Post it on the ticket' },
+          { value: 'none', label: 'Only pass it to later blocks' },
+        ],
+      },
+    ],
+    outputs: [{ id: 'next', label: 'Answered' }, FAILED],
+    provides: [
+      { key: 'text', label: 'Answer' },
+      { key: 'url', label: 'Run link' },
+      { key: 'runId', label: 'Run ID' },
+    ],
   },
   'tracker.comment': {
     category: 'tracker',
@@ -334,8 +391,12 @@ export const NOTIFICATION_KINDS = ['slack'] as const
 export const WORKFLOW_VARIABLES = [
   { path: 'issue.identifier', label: 'Ticket ID' },
   { path: 'issue.title', label: 'Ticket title' },
+  { path: 'issue.description', label: 'Ticket description' },
   { path: 'issue.url', label: 'Ticket link' },
   { path: 'issue.status', label: 'Status' },
+  { path: 'issue.state', label: 'State in Factorix' },
+  { path: 'issue.agent', label: 'Agent on the ticket' },
+  { path: 'issue.branch', label: 'Branch' },
   { path: 'issue.priority', label: 'Priority' },
   { path: 'issue.labels', label: 'Labels' },
   { path: 'issue.author', label: 'Author' },
@@ -344,7 +405,23 @@ export const WORKFLOW_VARIABLES = [
   { path: 'project.name', label: 'Project' },
   { path: 'workflow.name', label: 'Workflow' },
   { path: 'run.url', label: 'Run link' },
+  { path: 'trigger.kind', label: 'What started the run' },
 ] as const
+
+/** The `{{` being typed just before the caret, if there is one, with what follows it so far. */
+export function openPlaceholder(text: string, caret: number): { start: number; query: string } | null {
+  const match = /\{\{\s*([\w.-]*)$/.exec(text.slice(0, caret))
+  return match ? { start: match.index, query: match[1] ?? '' } : null
+}
+
+/** Puts a variable where the open `{{` is, and says where the caret goes after it. */
+export function completePlaceholder(text: string, caret: number, path: string): { text: string; caret: number } {
+  const open = openPlaceholder(text, caret)
+  const start = open?.start ?? caret
+  const token = `{{${path}}}`
+  const rest = text.slice(caret).replace(/^[\w.-]*(\s*\}\})?/, '')
+  return { text: `${text.slice(0, start)}${token}${rest}`, caret: start + token.length }
+}
 
 const NODE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/
 

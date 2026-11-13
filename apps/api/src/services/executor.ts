@@ -36,6 +36,7 @@ import { mergeRequestsOf, projectRepos } from './repos'
 import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
 import { type AgentMcp, agentMcp, buildRunSpec, readIssueResources, sessionToResume } from './spec'
+import { settlePromptStep } from './workflows'
 import { adHocBranch, ensureWorkspaceRow, resolveBranch, workspaceKey } from './workspace'
 
 export const LEASE_SECONDS = 60
@@ -869,6 +870,10 @@ class RunExecution {
       }
     })
     this.run.state = input.state
+    const asked = this.run.trigger as { workflowRunId?: string; nodeId?: string }
+    // The workflow sweep settles the step if this is lost.
+    if (asked.workflowRunId && asked.nodeId)
+      await settlePromptStep(db, { id: asked.workflowRunId, orgId: this.run.orgId }, asked.nodeId).catch(() => undefined)
     // The cleanup sweep retries anything left behind here.
     await stopRunServices(this.deps, this.run.id).catch(() => undefined)
   }

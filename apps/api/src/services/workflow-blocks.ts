@@ -1,11 +1,12 @@
 import { TRACKER_SOURCES } from '@factorix/connectors'
 import { type ConditionRule, escapeMarkdown, evaluateRules, renderTemplate } from '@factorix/core'
-import type { IssueRow, ProjectRow, WorkflowRunRow } from '@factorix/db'
+import { type AccountRow, type AgentRow, type IssueRow, json, type ProjectRow, type RunRow, type SkillRow, type WorkflowRunRow } from '@factorix/db'
 import type { BlockType } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { isTrackerClosed } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { emit } from '../lib/outbox'
+import { buildAgentSnapshot } from './agents'
 import { assignIssue, CLOSED_MESSAGE, STARTABLE } from './assign'
 import { getConnection, notifierFor, trackerFor } from './connections'
 import { recordEcho } from './echo'
@@ -21,6 +22,7 @@ const UNIT_MS: Record<string, number> = { minutes: 60_000, hours: 3_600_000, day
 export interface BlockContext {
   deps: Pick<AppDeps, 'db' | 'secrets' | 'connectors' | 'env'>
   run: WorkflowRunRow
+  nodeId: string
   issue: IssueRow
   project: ProjectRow
   config: Record<string, unknown>
@@ -28,7 +30,9 @@ export interface BlockContext {
   values: Record<string, unknown>
 }
 
-export type BlockResult = { status: 'done'; handle?: string; output?: Record<string, unknown> } | { status: 'wait'; wakeAt?: Date }
+export type BlockResult =
+  | { status: 'done'; handle?: string; output?: Record<string, unknown> }
+  | { status: 'wait'; wakeAt?: Date; output?: Record<string, unknown> }
 
 type ActionBlock = Exclude<BlockType, `trigger.${string}`>
 
@@ -63,6 +67,7 @@ export async function templateValues(
 ) {
   const steps = await deps.db('workflow_steps').where({ runId: run.id }).whereNotNull('output').select('nodeId', 'output')
   const mergeRequests = (await mergeRequestsOf(deps.db, issue.id)).map((mr) => mr.mrUrl)
+  const agent = issue.assignedAgentId ? await deps.db('accounts').where({ id: issue.assignedAgentId }).first('handle') : null
   return {
     issue: {
       identifier: issue.identifier,
@@ -70,6 +75,9 @@ export async function templateValues(
       description: issue.description,
       url: issue.trackerUrl,
       status: issue.trackerStateName,
+      state: issue.factoryState,
+      agent: agent?.handle ?? null,
+      branch: issue.branchName,
       priority: priorityLabel(issue.priority),
       labels: issue.labels.map((label) => label.name),
       author: issue.authorName,
@@ -108,6 +116,67 @@ export const BLOCK_HANDLERS: Record<ActionBlock, (context: BlockContext, agentHa
     else if (STARTABLE.includes(issue.factoryState)) await advanceIssue(deps.db, issue.id, { type: 'start' })
     if (issue.factoryState === 'awaiting_merge') return { status: 'done', handle: 'next', output: { result: 'succeeded' } }
     return { status: 'wait' }
+  },
+
+  'agent.prompt': async (context) => {
+    const { deps, run, nodeId, issue, project, config } = context
+    const { db } = deps
+    const prompt = text(context, 'prompt').trim()
+    if (!prompt) throw new Error('The prompt came out empty.')
+    const agentId = optional(config.agentId) ?? issue.assignedAgentId ?? project.defaultEngineerAgentId
+    const agent = agentId
+      ? ((await db('agents')
+          .join('accounts', 'agents.account_id', 'accounts.id')
+          .where({ 'agents.account_id': agentId, 'agents.org_id': issue.orgId })
+          .select('agents.*', 'accounts.handle', 'accounts.display_name', 'accounts.status')
+          .first()) as (AgentRow & AccountRow) | undefined)
+      : undefined
+    if (!agent) throw new Error('There is no agent to ask. Pick one in the block.')
+    if (agent.status !== 'active') throw new Error(`${agent.handle} is disabled.`)
+
+    const snapshot = await buildAgentSnapshot(db, agent)
+    const skillIds = Array.isArray(config.skillIds) ? [...new Set(config.skillIds.map(String))] : []
+    if (skillIds.length > 0) {
+      const extra = await db<SkillRow>('skills').where({ orgId: issue.orgId }).whereIn('id', skillIds).select('name', 'markdown')
+      if (extra.length !== skillIds.length) throw new Error('One of the skills in this block no longer exists.')
+      const own = snapshot.skills as { name: string; markdown: string }[]
+      snapshot.skills = [...own, ...extra.filter((skill) => !own.some((item) => item.name === skill.name))]
+    }
+    const model = optional(config.model) ?? agent.model
+    snapshot.model = model
+
+    const url = `${(await readSettings(deps)).publicUrl}/runs/`
+    const started = await db.transaction(async (trx) => {
+      const [row] = await trx<RunRow>('runs')
+        .insert({
+          orgId: issue.orgId,
+          issueId: issue.id,
+          projectId: project.id,
+          agentId: agent.accountId,
+          agentSnapshot: json(snapshot) as never,
+          phase: 'prompt',
+          trigger: json({ workflowRunId: run.id, nodeId, prompt, post: config.post !== 'none' }) as never,
+          runtime: agent.runtime,
+          model,
+        })
+        .returning('*')
+      if (!row) throw new Error('Run insert returned nothing')
+      const locked = await trx('issues').where({ id: issue.id }).whereNull('lockedByRunId').update({ lockedByRunId: row.id })
+      // Another run has the ticket's workspace. releaseIssueLock starts this one when it finishes.
+      if (locked > 0) await emit(trx, issue.orgId, { type: 'run.enqueue', runId: row.id })
+      await writeAudit(trx, {
+        orgId: issue.orgId,
+        actorAccountId: agent.accountId,
+        actorKind: 'agent',
+        action: 'run.created',
+        targetType: 'run',
+        targetId: row.id,
+        metadata: { phase: 'prompt', issue: issue.identifier, via: 'workflow', workflowId: run.workflowId, workflowRunId: run.id },
+      })
+      await emit(trx, issue.orgId, { type: 'notify', kind: 'run', id: row.id, projectId: project.id })
+      return row
+    })
+    return { status: 'wait', output: { runId: started.id, url: `${url}${started.id}` } }
   },
 
   'tracker.comment': async (context) => {

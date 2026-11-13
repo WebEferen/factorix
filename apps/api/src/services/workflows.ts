@@ -1,11 +1,12 @@
 import { RetryLaterError } from '@factorix/connectors'
 import { FAILED_HANDLE, planWorkflow, type StepState, triggerMatches, type WorkflowEvent, waitMatches } from '@factorix/core'
-import { type Db, type IssueRow, json, type ProjectRow, type WorkflowRow, type WorkflowRunRow, type WorkflowStepRow } from '@factorix/db'
+import { type Db, type IssueRow, json, type ProjectRow, type RunRow, type WorkflowRow, type WorkflowRunRow, type WorkflowStepRow } from '@factorix/db'
 import { isTriggerBlock } from '@factorix/schemas'
 import type { Knex } from 'knex'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
 import { emit } from '../lib/outbox'
+import { requestRunCancel } from './pipeline'
 import { BLOCK_HANDLERS, type BlockContext, templateValues } from './workflow-blocks'
 
 /** Every limit here exists because a workflow can spend money and create tickets with no person watching. */
@@ -175,6 +176,7 @@ export async function executeWorkflowStep(deps: Deps, runId: string, nodeId: str
     const context: BlockContext = {
       deps,
       run,
+      nodeId,
       issue,
       project,
       config: node.config,
@@ -184,8 +186,9 @@ export async function executeWorkflowStep(deps: Deps, runId: string, nodeId: str
     if (result.status === 'wait') {
       await db('workflow_steps')
         .where({ runId, nodeId, status: 'running' })
-        .update({ status: 'waiting', wakeAt: result.wakeAt ?? null, updatedAt: db.fn.now() })
+        .update({ status: 'waiting', wakeAt: result.wakeAt ?? null, output: result.output ? json(result.output) : null, updatedAt: db.fn.now() })
       if (node.type === 'agent.run') await settleWaitingAgent(deps, run, nodeId)
+      if (node.type === 'agent.prompt') await settlePromptStep(db, run, nodeId)
       return
     }
     await settleStep(db, run, nodeId, ['running'], { status: 'succeeded', handle: result.handle ?? 'next', output: result.output })
@@ -215,6 +218,23 @@ async function settleWaitingAgent(deps: Pick<AppDeps, 'db'>, run: Pick<WorkflowR
     handle,
     output: { result },
     error: status === 'failed' ? `The agent ended as ${result}.` : undefined,
+  })
+}
+
+/** Continues a prompt block once its run has ended. Safe to call at any time, from the run's end, right after the wait starts, and the sweep. */
+export async function settlePromptStep(db: Db, run: Pick<WorkflowRunRow, 'id' | 'orgId'>, nodeId: string): Promise<void> {
+  const step = await db<WorkflowStepRow>('workflow_steps').where({ runId: run.id, nodeId, status: 'waiting' }).first()
+  const runId = step?.output?.runId
+  if (typeof runId !== 'string') return
+  const asked = await db<RunRow>('runs').where({ id: runId }).first()
+  if (asked && !['succeeded', 'failed', 'cancelled'].includes(asked.state)) return
+  const answered = asked?.state === 'succeeded'
+  const text = (asked?.structuredOutput as { summary?: string } | null)?.summary ?? asked?.summary ?? ''
+  await settleStep(db, run, nodeId, ['waiting'], {
+    status: answered ? 'succeeded' : 'failed',
+    handle: answered ? 'next' : FAILED_HANDLE,
+    output: { ...step?.output, text },
+    error: answered ? undefined : (asked?.error?.message ?? `The agent's run ended as ${asked?.state ?? 'missing'}.`),
   })
 }
 
@@ -302,6 +322,11 @@ export async function sweepWorkflows(deps: Pick<AppDeps, 'db' | 'queues'>): Prom
     .select(...columns)) as StepOfRun[]
   for (const step of agents) await settleWaitingAgent(deps, { id: step.id, orgId: step.orgId, issueId: step.issueId }, step.nodeId)
 
+  const prompts = (await active()
+    .where({ 'workflow_steps.status': 'waiting', 'workflow_steps.block': 'agent.prompt' })
+    .select(...columns)) as StepOfRun[]
+  for (const step of prompts) await settlePromptStep(db, step, step.nodeId)
+
   const lost = (await active()
     .where({ 'workflow_steps.status': 'queued' })
     .where('workflow_steps.updated_at', '<', new Date(Date.now() - STALE_QUEUED_MS))
@@ -326,6 +351,12 @@ type StepOfRun = { id: string; orgId: string; issueId: string; nodeId: string; b
 export async function cancelWorkflowRun(db: Db, run: WorkflowRunRow, accountId: string): Promise<void> {
   await db.transaction(async (trx) => {
     const locked = await trx<WorkflowRunRow>('workflow_runs').where({ id: run.id, status: 'running' }).forUpdate().first()
-    if (locked) await finishRun(trx, locked, 'cancelled', null, accountId)
+    if (!locked) return
+    const asking = await trx<WorkflowStepRow>('workflow_steps').where({ runId: run.id, block: 'agent.prompt', status: 'waiting' })
+    for (const step of asking) {
+      const runId = step.output?.runId
+      if (typeof runId === 'string') await requestRunCancel(trx, runId, 'The workflow run was cancelled', { by: accountId })
+    }
+    await finishRun(trx, locked, 'cancelled', null, accountId)
   })
 }

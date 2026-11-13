@@ -68,6 +68,8 @@ Admins build workflows on a canvas from a catalog of blocks in `packages/schemas
 
 Steps run from a queue. A step is claimed by moving it from `queued` to `running`, and a step found stuck in `running` is failed and not retried, because it may already have posted. A connector that asks to slow down raises `RetryLaterError`, which puts the step back on the queue without counting as a failure. Timers live in `workflow_steps.wake_at`, and a sweep every 15 seconds resumes them, so a wait survives restarts. The sweep also catches agent results and queue jobs that went missing.
 
+Two blocks involve an agent. Run agent hands the ticket to the pipeline and waits for it to settle. Ask agent starts one run in the `prompt` phase with the block's own prompt, extra skills, and model: the repositories are mounted read-only on the ticket's branch, the ticket's pipeline state does not change, and the answer becomes the step's output. That run takes the ticket's lock like any other, so it waits its turn behind a pipeline run, and cancelling the workflow run cancels it.
+
 These guard against runaway flows:
 
 - Connections cannot form a loop, and validation rejects one at publish.

@@ -5,7 +5,9 @@ import {
   blockSpec,
   CONDITION_FIELDS,
   CONDITION_OPERATORS,
+  completePlaceholder,
   NOTIFICATION_KINDS,
+  openPlaceholder,
   WORKFLOW_VARIABLES,
   type WorkflowDefinition,
   type WorkflowIssue,
@@ -13,10 +15,10 @@ import {
 } from '@factorix/schemas'
 import { Braces, CircleAlert, Plus, Trash2, X } from 'lucide-react'
 import Link from 'next/link'
-import { type ReactNode, type RefObject, useId, useMemo, useRef } from 'react'
-import { useAgents, useConnections, useIssueFilterSpecs, useNotificationChannels, useProjects } from '../lib/data'
+import { type KeyboardEvent, type ReactNode, type RefObject, useId, useMemo, useRef, useState } from 'react'
+import { useAgents, useConnections, useIssueFilterSpecs, useNotificationChannels, useProjects, useRuntimes, useSkills } from '../lib/data'
 import { cn } from '../lib/format'
-import { Button, Field, Input, Menu, MenuContent, MenuItem, MenuTrigger, type Option, Select, Textarea } from '../ui'
+import { Button, Field, Input, Menu, MenuContent, MenuItem, MenuTrigger, type Option, Select, Textarea, Toggle } from '../ui'
 import { BLOCK_ICONS, CATEGORY_TONES } from './blocks'
 
 const NONE = '__none__'
@@ -83,7 +85,9 @@ function upstreamVariables(nodeId: string, definition: WorkflowDefinition): Vari
     .filter((node) => seen.has(node.id))
     .flatMap((node) => {
       const spec = blockSpec(node.type)
-      return (spec?.provides ?? []).map((item) => ({ path: `steps.${node.id}.${item.key}`, label: `${spec?.title}: ${item.label}` }))
+      return (spec?.provides ?? [])
+        .filter((item) => !item.when || item.when.in.includes(String(node.config[item.when.key] ?? '')))
+        .map((item) => ({ path: `steps.${node.id}.${item.key}`, label: `${spec?.title}: ${item.label}` }))
     })
 }
 
@@ -136,9 +140,61 @@ function TemplateField({
       element?.setSelectionRange(start + token.length, start + token.length)
     })
   }
-  const control = { id, value, placeholder: field.placeholder, onChange: (event: { target: { value: string } }) => onChange(event.target.value) }
+  const [caret, setCaret] = useState<number | null>(null)
+  const [active, setActive] = useState(0)
+  const listId = useId()
+  const open = caret === null ? null : openPlaceholder(value, caret)
+  const query = open?.query.toLowerCase() ?? ''
+  const matches = open
+    ? variables.filter((variable) => variable.path.toLowerCase().includes(query) || variable.label.toLowerCase().includes(query))
+    : []
+  const highlighted = Math.min(active, matches.length - 1)
+  const complete = (path: string) => {
+    const next = completePlaceholder(value, caret ?? value.length, path)
+    onChange(next.text)
+    setCaret(null)
+    requestAnimationFrame(() => {
+      ref.current?.focus()
+      ref.current?.setSelectionRange(next.caret, next.caret)
+    })
+  }
+  const track = (event: { currentTarget: { selectionStart: number | null } }) => setCaret(event.currentTarget.selectionStart)
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (matches.length === 0) return
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActive((highlighted + (event.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length)
+    } else if (event.key === 'Enter' || event.key === 'Tab') {
+      event.preventDefault()
+      complete((matches[highlighted] as Variable).path)
+    } else if (event.key === 'Escape') {
+      event.stopPropagation()
+      setCaret(null)
+    }
+  }
+  const control = {
+    id,
+    value,
+    placeholder: field.placeholder,
+    role: 'combobox',
+    'aria-expanded': matches.length > 0,
+    'aria-controls': listId,
+    'aria-autocomplete': 'list' as const,
+    'aria-activedescendant': matches.length > 0 ? `${listId}-${highlighted}` : undefined,
+    onChange: (event: { target: { value: string }; currentTarget: { selectionStart: number | null } }) => {
+      onChange(event.target.value)
+      setActive(0)
+      track(event)
+    },
+    onKeyDown,
+    onKeyUp: (event: KeyboardEvent<HTMLInputElement & HTMLTextAreaElement>) => {
+      if (!['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'].includes(event.key)) track(event)
+    },
+    onClick: track,
+    onBlur: () => setCaret(null),
+  }
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="relative flex flex-col gap-1.5">
       <div className="flex items-center justify-between gap-2">
         <label htmlFor={id} className="text-sm text-ink">
           {field.label}
@@ -150,6 +206,33 @@ function TemplateField({
       ) : (
         <Input ref={ref as RefObject<HTMLInputElement>} {...control} />
       )}
+      {matches.length > 0 ? (
+        <div
+          id={listId}
+          role="listbox"
+          className="scroll-thin absolute top-full right-0 left-0 z-50 mt-1 max-h-64 overflow-y-auto rounded-lg border border-divider bg-surface p-1 shadow-overlay"
+        >
+          {matches.map((variable, index) => (
+            <div
+              key={variable.path}
+              id={`${listId}-${index}`}
+              role="option"
+              tabIndex={-1}
+              aria-selected={index === highlighted}
+              ref={index === highlighted ? (element) => element?.scrollIntoView({ block: 'nearest' }) : undefined}
+              onMouseDown={(event) => {
+                event.preventDefault()
+                complete(variable.path)
+              }}
+              onMouseEnter={() => setActive(index)}
+              className={cn('flex cursor-default flex-col rounded-sm px-2 py-1.5', index === highlighted && 'bg-soft')}
+            >
+              <span className="truncate text-sm">{variable.label}</span>
+              <span className="truncate font-mono text-xs text-ink-2">{variable.path}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {field.hint ? <span className="text-xs text-ink-2">{field.hint}</span> : null}
     </div>
   )
@@ -272,6 +355,8 @@ function ConfigField({
   const { data: agents } = useAgents()
   const { data: projects } = useProjects()
   const { data: connections } = useConnections()
+  const { data: skills } = useSkills()
+  const { data: runtimes } = useRuntimes()
   const { statuses, labels } = useTrackerOptions(projectId)
   const raw = node.config[field.key]
   const value = raw === undefined || raw === null ? '' : String(raw)
@@ -334,6 +419,62 @@ function ConfigField({
           />
         </Field>
       )
+    case 'skills': {
+      const picked = Array.isArray(raw) ? raw.map(String) : []
+      const known = skills?.skills ?? []
+      return (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm text-ink">{field.label}</span>
+          {known.map((skill) => (
+            <Toggle
+              key={skill.id}
+              checked={picked.includes(skill.id)}
+              onChange={(on) => set(on ? [...picked, skill.id] : picked.filter((id) => id !== skill.id))}
+              label={skill.name}
+            />
+          ))}
+          <span className="text-xs text-ink-2">
+            {known.length === 0 ? (
+              <>
+                None yet. Write one under{' '}
+                <Link href="/skills" className="text-link hover:underline">
+                  Skills
+                </Link>
+                .
+              </>
+            ) : (
+              field.hint
+            )}
+          </span>
+        </div>
+      )
+    }
+    case 'model': {
+      const agent = (agents?.agents ?? []).find((item) => item.id === String(node.config.agentId ?? ''))
+      const models = runtimes?.runtimes.find((runtime) => runtime.id === agent?.runtime)?.models ?? []
+      if (models.length === 0)
+        return (
+          <Field label={field.label} hint={agent ? field.hint : "Leave empty for the agent's own. Pick an agent to choose from its models."}>
+            <Input value={value} placeholder="Agent's own" onChange={(event) => set(event.target.value || undefined)} />
+          </Field>
+        )
+      return (
+        <Field label={field.label} hint={field.hint}>
+          <Select
+            value={value || NONE}
+            options={keepCurrent(
+              withNone(
+                models.map((model) => ({ value: model.id, label: model.label, hint: model.description ?? undefined })),
+                false,
+                "Agent's own",
+              ),
+              value,
+            )}
+            onChange={pick}
+          />
+        </Field>
+      )
+    }
     case 'project':
       return (
         <Field label={field.label} hint={field.hint}>

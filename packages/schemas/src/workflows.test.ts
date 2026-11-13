@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { initialBlockConfig, validateWorkflow, type WorkflowDefinition, workflowDefinition } from './workflows'
+import { completePlaceholder, initialBlockConfig, openPlaceholder, validateWorkflow, type WorkflowDefinition, workflowDefinition } from './workflows'
 
 const block = (id: string, type: string, config: Record<string, unknown> = {}) =>
   ({ id, type, position: { x: 0, y: 0 }, config: { ...initialBlockConfig(type), ...config } }) as WorkflowDefinition['nodes'][number]
@@ -76,5 +76,21 @@ describe('workflowDefinition', () => {
     expect(
       workflowDefinition.safeParse({ nodes: [{ id: '../a', type: 'trigger.manual', position: { x: 0, y: 0 }, config: {} }], edges: [] }).success,
     ).toBe(false)
+  })
+})
+
+describe('completing a variable', () => {
+  it('sees the placeholder being typed before the caret, and nothing once it is closed', () => {
+    expect(openPlaceholder('Hi {{', 5)).toEqual({ start: 3, query: '' })
+    expect(openPlaceholder('Hi {{ steps.ask-1.te', 20)).toEqual({ start: 3, query: 'steps.ask-1.te' })
+    expect(openPlaceholder('Hi {{issue.title}} there', 24)).toBeNull()
+    expect(openPlaceholder('Hi {{issue.title}} there', 12)).toEqual({ start: 3, query: 'issue.t' })
+    expect(openPlaceholder('Hi {', 4)).toBeNull()
+  })
+
+  it('replaces what was typed, keeps the rest, and does not double the closing braces', () => {
+    expect(completePlaceholder('Hi {{st there', 7, 'steps.ask-1.text')).toEqual({ text: 'Hi {{steps.ask-1.text}} there', caret: 23 })
+    expect(completePlaceholder('Hi {{iss}} there', 8, 'issue.title')).toEqual({ text: 'Hi {{issue.title}} there', caret: 18 })
+    expect(completePlaceholder('Hi {{issue.title}}', 9, 'issue.url')).toEqual({ text: 'Hi {{issue.url}}', caret: 16 })
   })
 })

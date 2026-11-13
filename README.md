@@ -27,7 +27,7 @@ flowchart LR
 - **Cleans up after itself.** Package caches go when a run ends and a workspace goes when its issue finishes, so disk use follows open work.
 - **Closes the loop.** An engineer agent implements, a reviewer agent reviews, and review comments go back to the engineer. Plans and merges can wait for a person.
 - **Previews every change.** A project describes how to run its code, with services, install and seed steps, and secrets from Doppler or Factorix. Anyone can start a preview of an issue and use the running app inside Factorix, and agents can preview their own working copy before they finish. See [docs/environments.md](docs/environments.md).
-- **Automates with workflows.** Build flows from blocks on a canvas: branch, wait for events, hand work to agents, create tickets, and post to Slack. Run them on tickets by hand or let ticket events start them.
+- **Automates with workflows.** Build flows from blocks on a canvas: branch, wait for events, hand work to agents, ask an agent a question with its own prompt, skills, and model, create tickets, and post to Slack. Run them on tickets by hand or let ticket events start them.
 - **Keeps a record.** Runs stream live with full tool calls, spend is tracked per agent and project, and the audit log is append-only at the database level.
 
 ## Quick start

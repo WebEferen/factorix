@@ -545,6 +545,95 @@ describe('workflows', () => {
       expect(run.steps.find((step: { nodeId: string }) => step.nodeId === 'a').error).toContain('closed')
     })
 
+    const askFlow = (config: Record<string, unknown>) => ({
+      nodes: [
+        block('t', 'trigger.manual'),
+        block('p', 'agent.prompt', { agentId, ...config }),
+        block('ok', 'notify.send', slack('Answer: {{steps.p.text}}')),
+        block('bad', 'notify.send', slack('No answer')),
+      ],
+      edges: [link('t', 'p'), link('p', 'ok'), link('p', 'bad', 'failed')],
+    })
+
+    async function asked(config: Record<string, unknown>) {
+      const issue = await ticket()
+      const run = await runOn(await publish(askFlow(config)), issue.id)
+      expect(statusOf(run).p).toBe('waiting')
+      const step = run.steps.find((item: { nodeId: string }) => item.nodeId === 'p')
+      const row = await db()('runs').where({ id: step.output.runId }).first()
+      return { run, issue, row, step }
+    }
+
+    it('asks an agent with the block’s prompt, skills, and model, outside the pipeline', async () => {
+      const { skill } = await admin.ok('POST', '/api/skills', { slug: 'security-review', name: 'Security review', markdown: 'Look for injection.' })
+      const { issue, row, step } = await asked({ prompt: 'Review {{issue.identifier}} for security.', skillIds: [skill.id], model: 'claude-other' })
+      expect(row).toMatchObject({ phase: 'prompt', state: 'queued', issueId: issue.id, agentId, model: 'claude-other', pipelineStep: null })
+      expect(row.trigger).toMatchObject({ nodeId: 'p', prompt: `Review ${issue.identifier} for security.`, post: true })
+      expect(row.agentSnapshot.model).toBe('claude-other')
+      expect(row.agentSnapshot.skills.map((item: { name: string }) => item.name)).toContain('Security review')
+      expect(step.output.url).toContain(`/runs/${row.id}`)
+      const ticketRow = await db()('issues').where({ id: issue.id }).first()
+      expect(ticketRow).toMatchObject({ factoryState: 'untracked', lockedByRunId: row.id, assignedAgentId: null })
+    })
+
+    it('continues with the answer when the run succeeds', async () => {
+      const { run, row } = await asked({ prompt: 'Is it safe?', post: 'none' })
+      expect(row.trigger.post).toBe(false)
+      await sweepWorkflows(harness.deps)
+      expect(statusOf(await refresh(run.id)).p).toBe('waiting')
+      await db()('runs')
+        .where({ id: row.id })
+        .update({ state: 'succeeded', structuredOutput: JSON.stringify({ summary: 'Safe to merge' }) })
+      await sweepWorkflows(harness.deps)
+      await drain()
+      const after = await refresh(run.id)
+      expect(statusOf(after)).toMatchObject({ p: 'succeeded', ok: 'succeeded', bad: 'skipped' })
+      expect(world().notifications.at(-1)?.markdown).toBe('Answer: Safe to merge')
+    })
+
+    it('takes the failure output when the run fails', async () => {
+      const { run, row } = await asked({ prompt: 'Is it safe?' })
+      await db()('runs')
+        .where({ id: row.id })
+        .update({ state: 'failed', error: JSON.stringify({ message: 'Out of budget' }) })
+      await sweepWorkflows(harness.deps)
+      await drain()
+      const after = await refresh(run.id)
+      expect(statusOf(after)).toMatchObject({ p: 'failed', ok: 'skipped', bad: 'succeeded' })
+      expect(after.steps.find((item: { nodeId: string }) => item.nodeId === 'p').error).toBe('Out of budget')
+    })
+
+    it('queues behind a run that has the ticket, and stops its run when the workflow run is cancelled', async () => {
+      const issue = await ticket()
+      const [holder] = await db()('runs')
+        .insert({
+          orgId: (await db()('issues').where({ id: issue.id }).first()).orgId,
+          issueId: issue.id,
+          agentId,
+          agentSnapshot: '{}',
+          phase: 'implement',
+          runtime: 'claude',
+        })
+        .returning('id')
+      await db()('issues').where({ id: issue.id }).update({ lockedByRunId: holder.id })
+      const run = await runOn(await publish(askFlow({ prompt: 'Wait your turn.' })), issue.id)
+      const runId = run.steps.find((item: { nodeId: string }) => item.nodeId === 'p').output.runId
+      expect((await db()('issues').where({ id: issue.id }).first()).lockedByRunId).toBe(holder.id)
+
+      await admin.ok('POST', `/api/workflow-runs/${run.id}/cancel`)
+      expect((await db()('runs').where({ id: runId }).first()).state).toBe('cancelled')
+      expect((await refresh(run.id)).status).toBe('cancelled')
+    })
+
+    it('fails with a clear reason when a skill is gone or no agent can be found', async () => {
+      const issue = await ticket()
+      const gone = await runOn(await publish(askFlow({ prompt: 'Hi', skillIds: ['00000000-0000-4000-8000-000000000000'] })), issue.id)
+      expect(gone.steps.find((item: { nodeId: string }) => item.nodeId === 'p').error).toContain('skills')
+      const other = await ticket()
+      const nobody = await runOn(await publish(askFlow({ prompt: 'Hi', agentId: undefined })), other.id)
+      expect(nobody.steps.find((item: { nodeId: string }) => item.nodeId === 'p').error).toContain('no agent')
+    })
+
     it('starts a workflow when an agent finishes', async () => {
       await retireWorkflows()
       const id = await publish(

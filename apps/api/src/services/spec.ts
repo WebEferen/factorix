@@ -101,6 +101,8 @@ export function defaultScript(phase: Phase, runId: string, repos: SpecRepo[]): S
         steps: [{ say: 'Looking into the ticket.' }, { exec: `git -C ${first} log -1 --oneline` }],
         structuredOutput: { summary: 'Nothing here needs attention.' },
       }
+    case 'prompt':
+      return { steps: [{ say: 'Answering the workflow.' }], structuredOutput: { summary: 'Scripted answer.' } }
     case 'ad_hoc':
       return { steps: [{ say: 'Running the ad-hoc task.' }, { exec: 'ls -la' }, { writeFile: { path: 'ADHOC.md', content: 'scripted\n' } }] }
   }
@@ -192,7 +194,7 @@ export async function buildPhaseContext(
       checkCommands: repo.checkCommands,
     })),
     branch,
-    adHocPrompt: run.adHoc?.prompt,
+    adHocPrompt: run.adHoc?.prompt ?? (typeof run.trigger.prompt === 'string' ? run.trigger.prompt : undefined),
     ciFailures,
   }
   if (!issue) return context
@@ -258,7 +260,7 @@ export async function readIssueResources(
 /** A reviewer gets a fresh session on purpose. A retry does too, because a broken session may be why the last attempt failed. */
 export async function sessionToResume(deps: Pick<AppDeps, 'db'>, run: RunRow): Promise<string | undefined> {
   if (run.sessionRef) return run.sessionRef
-  if (!run.issueId || run.attempt > 1 || run.phase === 'review' || run.phase === 'plan') return undefined
+  if (!run.issueId || run.attempt > 1 || ['review', 'plan', 'prompt'].includes(run.phase)) return undefined
   const previous = await deps
     .db<RunRow>('runs')
     .where({ issueId: run.issueId, agentId: run.agentId, runtime: run.runtime })

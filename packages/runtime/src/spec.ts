@@ -1,5 +1,5 @@
 export type RuntimeId = 'claude' | 'codex' | 'scripted'
-export type Phase = 'plan' | 'implement' | 'review' | 'address_review' | 'ad_hoc' | 'task'
+export type Phase = 'plan' | 'implement' | 'review' | 'address_review' | 'ad_hoc' | 'task' | 'prompt'
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type JsonSchema = Record<string, unknown>
 

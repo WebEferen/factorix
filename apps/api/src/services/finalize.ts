@@ -362,6 +362,14 @@ async function finalizeTask({ db, run, issue, agentHandle, structuredOutput }: F
   return { result: 'completed' }
 }
 
+async function finalizePrompt({ db, run, issue, agentHandle, structuredOutput }: FinalizeContext): Promise<FinalizeResult> {
+  const answer = (structuredOutput as TaskOutput | undefined)?.summary
+  if (!answer) throw new Error('The agent finished without an answer')
+  if (issue && run.trigger.post)
+    await emit(db, run.orgId, { type: 'tracker.comment', issueId: issue.id, template: 'task_report', runId: run.id, agentHandle, body: answer })
+  return { result: 'completed' }
+}
+
 export async function finalizePhase(context: FinalizeContext): Promise<FinalizeResult> {
   const { run, outcome } = context
   const stoppedEarly = outcome !== 'completed'
@@ -399,5 +407,6 @@ export async function finalizePhase(context: FinalizeContext): Promise<FinalizeR
   if (stoppedEarly) return { result: 'failed' }
   if (run.phase === 'review') return finalizeReview(context)
   if (run.phase === 'task') return finalizeTask(context)
+  if (run.phase === 'prompt') return finalizePrompt(context)
   return { result: 'completed' }
 }
