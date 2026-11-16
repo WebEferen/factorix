@@ -231,6 +231,7 @@ describe('API', () => {
     let linearId: string
     let gitlabId: string
     let linearSecret: string
+    let foreignLinearId: string
     let gitlabSecret: string
     let projectId: string
 
@@ -329,6 +330,18 @@ describe('API', () => {
       expect(connection.hasSecret).toBe(true)
     })
 
+    it("refuses to point a project at another organization's connection", async () => {
+      const { db } = harness.deps
+      const [org] = await db('organizations').insert({ name: 'Other', slug: 'other' }).returning('id')
+      const [foreign] = await db('connections')
+        .insert({ orgId: org.id, kind: 'linear', name: 'Theirs', config: JSON.stringify({ webhookSecret: 'their-secret' }) })
+        .returning('id')
+      foreignLinearId = foreign.id
+      expect((await admin.request('PUT', `/api/projects/${projectId}`, { trackerConnectionId: foreignLinearId })).status).toBe(404)
+      expect((await admin.request('PUT', `/api/projects/${projectId}`, { scmConnectionId: foreignLinearId })).status).toBe(404)
+      expect(await db('projects').where({ id: projectId }).first()).toMatchObject({ trackerConnectionId: linearId, scmConnectionId: gitlabId })
+    })
+
     it('registers webhooks on both systems', async () => {
       const { results } = await admin.ok('POST', `/api/projects/${projectId}/webhooks`)
       expect(results.map((result: { registered: boolean }) => result.registered)).toEqual([true, true])
@@ -363,6 +376,14 @@ describe('API', () => {
         expect(duplicate.json()).toEqual({ ok: true, duplicate: true })
         expect(await harness.deps.db('webhook_deliveries').where({ deliveryId: 'd1' })).toHaveLength(1)
         expect(await harness.deps.queues.trackerInbound.getJobCounts('waiting')).toEqual({ waiting: 1 })
+      })
+
+      it('keeps a delivery id that another connection has already used', async () => {
+        const payload = issuePayload(harness.world.addIssue({ title: 'Same id, other organization' }), 'create')
+        const response = await sendLinearWebhook(harness.app, foreignLinearId, 'their-secret', payload, 'd1')
+        expect(response.json()).toEqual({ ok: true, duplicate: false })
+        const [row] = await harness.deps.db('webhook_deliveries').where({ deliveryId: 'd1', connectionId: foreignLinearId })
+        await harness.deps.queues.trackerInbound.remove(`linear-${row.id}`)
       })
 
       it('verifies GitLab webhooks with the shared token', async () => {

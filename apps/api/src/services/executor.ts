@@ -339,7 +339,7 @@ class RunExecution {
       this.mcp = await agentMcp(this.deps, { run: this.run, project: this.project, proxy: { origin: proxy.origin, token: this.proxyToken } })
       await this.deps.redis.set(
         proxyTokenKey(this.proxyToken),
-        JSON.stringify({ runId: this.run.id, allow: await this.allowlist(), anthropicKey, openaiKey, mcp: this.mcp.grant }),
+        JSON.stringify({ orgId: this.run.orgId, runId: this.run.id, allow: await this.allowlist(), anthropicKey, openaiKey, mcp: this.mcp.grant }),
         'EX',
         (this.project?.runTimeoutMinutes ?? 90) * 60 + 3600,
       )

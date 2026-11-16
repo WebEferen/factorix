@@ -12,6 +12,8 @@ export interface McpGrant {
 }
 
 export interface ProxyGrant {
+  /** The organization the grant was made for. A runner is only told about grants of its own. */
+  orgId?: string
   runId?: string
   /** Where denials are published. Without one they go to the run's own channel. */
   channel?: string

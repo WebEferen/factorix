@@ -161,7 +161,8 @@ describe('runners', () => {
   })
 
   it('tell the runner what a run token allows, and pass its refusals to the run', async () => {
-    const grant = { runId: '11111111-2222-4333-8444-555555555555', allow: ['registry.npmjs.org'], anthropicKey: 'sk-real' }
+    const { orgId } = await harness.deps.db('runners').where({ id: runnerId }).first()
+    const grant = { orgId, runId: '11111111-2222-4333-8444-555555555555', allow: ['registry.npmjs.org'], anthropicKey: 'sk-real' }
     await harness.deps.redis.set(proxyTokenKey('tok-1'), JSON.stringify(grant), 'EX', 60)
     expect(await (await asRunner('/api/runner/grant', { token: 'tok-1' })).json()).toEqual({ grant })
     expect(await (await asRunner('/api/runner/grant', { token: 'unknown' })).json()).toEqual({ grant: null })
@@ -172,6 +173,14 @@ describe('runners', () => {
     await subscriber.subscribe(runProxyChannel(grant.runId))
     await asRunner('/api/runner/denied', { token: 'tok-1', host: 'evil.example', reason: 'not on the allowlist' })
     await expect.poll(() => heard).toEqual([JSON.stringify({ host: 'evil.example', reason: 'not on the allowlist' })])
+
+    const theirs = { ...grant, orgId: '99999999-2222-4333-8444-555555555555' }
+    await harness.deps.redis.set(proxyTokenKey('tok-theirs'), JSON.stringify(theirs), 'EX', 60)
+    await harness.deps.redis.set(proxyTokenKey('tok-old'), JSON.stringify({ ...grant, orgId: undefined }), 'EX', 60)
+    expect(await (await asRunner('/api/runner/grant', { token: 'tok-theirs' })).json()).toEqual({ grant: null })
+    expect(await (await asRunner('/api/runner/grant', { token: 'tok-old' })).json()).toEqual({ grant: null })
+    await asRunner('/api/runner/denied', { token: 'tok-theirs', host: 'other.example', reason: 'not on the allowlist' })
+    expect(heard).toHaveLength(1)
     subscriber.disconnect()
   })
 

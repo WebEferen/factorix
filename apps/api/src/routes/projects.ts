@@ -134,6 +134,8 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { id } = request.params as { id: string }
     const existing = await getProject(deps, account.orgId, id)
     const { repos, ...input } = parseBody(projectUpdateInput, request.body)
+    if (input.trackerConnectionId) await getConnection(db, account.orgId, input.trackerConnectionId)
+    if (input.scmConnectionId) await getConnection(db, account.orgId, input.scmConnectionId)
     await checkRunner(account.orgId, input.runnerId)
     const patch: Record<string, unknown> = { ...input, updatedAt: db.fn.now() }
     if (input.stateMap) patch.stateMap = json(input.stateMap)

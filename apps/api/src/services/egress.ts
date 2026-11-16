@@ -10,7 +10,7 @@ export async function restrictedHosts(
   project: Pick<ProjectRow, 'networkAllowlist'> | null,
   connectionIds: string[],
 ): Promise<string[]> {
-  const connections = await db<ConnectionRow>('connections').whereIn('id', connectionIds).select('kind', 'config')
+  const connections = await db<ConnectionRow>('connections').where({ orgId }).whereIn('id', connectionIds).select('kind', 'config')
   const org = (await db<OrganizationRow>('organizations').where({ id: orgId }).first()) as OrganizationRow
   const groups = egressGroups(
     networkSettingsDto(org),

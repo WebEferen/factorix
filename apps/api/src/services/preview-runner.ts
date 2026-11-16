@@ -467,7 +467,7 @@ class PreviewRun {
       environment: this.environment as Environment,
       services: Object.keys(this.definition.services),
       bypass: project.networkBypass,
-      grant: { channel: previewKeys.proxyChannel(this.row.slug) },
+      grant: { orgId: this.row.orgId, channel: previewKeys.proxyChannel(this.row.slug) },
       allow,
       ttlSeconds: ttl,
     })

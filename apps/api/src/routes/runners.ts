@@ -161,19 +161,24 @@ export function runnerRoutes(app: FastifyInstance, deps: AppDeps): void {
   })
 
   /** The runner's egress proxy has no Redis of ours, so it asks here what a run token allows. */
-  app.post('/api/runner/grant', async (request) => {
-    await requireRunner(request)
-    const { token } = (request.body ?? {}) as { token?: string }
+  /** A grant holds model keys and MCP headers, so a runner only ever reads those of its own organization. */
+  const grantFor = async (runner: RunnerRow, token: unknown): Promise<{ orgId?: string; runId?: string; channel?: string } | null> => {
     const raw = typeof token === 'string' && token ? await redis.get(proxyTokenKey(token)) : null
-    return { grant: raw ? JSON.parse(raw) : null }
+    const grant = raw ? (JSON.parse(raw) as { orgId?: string }) : null
+    return grant && grant.orgId === runner.orgId ? grant : null
+  }
+
+  app.post('/api/runner/grant', async (request) => {
+    const runner = await requireRunner(request)
+    const { token } = (request.body ?? {}) as { token?: string }
+    return { grant: await grantFor(runner, token) }
   })
 
   app.post('/api/runner/denied', async (request) => {
-    await requireRunner(request)
+    const runner = await requireRunner(request)
     const { token, host, reason } = (request.body ?? {}) as { token?: string; host?: string; reason?: string }
-    const raw = typeof token === 'string' && token ? await redis.get(proxyTokenKey(token)) : null
-    if (!raw) return { ok: true }
-    const grant = JSON.parse(raw) as { runId?: string; channel?: string }
+    const grant = await grantFor(runner, token)
+    if (!grant) return { ok: true }
     const channel = grant.channel ?? (grant.runId ? runProxyChannel(grant.runId) : null)
     if (channel) await redis.publish(channel, JSON.stringify({ host: String(host ?? ''), reason: String(reason ?? '') }))
     return { ok: true }

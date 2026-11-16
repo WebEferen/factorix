@@ -83,7 +83,7 @@ export async function startRunServices(
         environment,
         services: agents.services,
         bypass: input.project.networkBypass,
-        grant: { runId: run.id },
+        grant: { orgId: run.orgId, runId: run.id },
         allow: await input.allow(),
         ttlSeconds: input.ttlSeconds,
       })

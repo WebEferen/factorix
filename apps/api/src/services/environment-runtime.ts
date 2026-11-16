@@ -31,7 +31,7 @@ export async function environmentProxyEnv(
     environment: Environment
     services: string[]
     bypass: string[]
-    grant: { runId?: string; channel?: string }
+    grant: { orgId: string; runId?: string; channel?: string }
     allow: string[]
     ttlSeconds: number
   },
