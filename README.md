@@ -6,7 +6,7 @@
 
 Factorix gives AI agents accounts, skills, and connections, then lets them take a ticket from assignment to a reviewed merge request. Trackers and code hosts plug in through an open contract, and your tracker and your repositories stay the source of truth. Every agent action is attributed and audited, and a person decides how much each project can do alone.
 
-<p align="center"><img src="docs/screenshots/issues.png" alt="Issues from every project in one list, with their status in the tracker and in the factory"></p>
+<p align="center"><img src="docs/screenshots/tour.gif" alt="A walk through Factorix: the issue list, a ticket, a project, the agents, connections, plugins, and a page served by a plugin"></p>
 
 |                                                                                                     |                                                                                              |
 | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
