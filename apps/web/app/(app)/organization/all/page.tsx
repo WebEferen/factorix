@@ -40,7 +40,7 @@ export default function OrganizationsPage() {
     <div className="mx-auto max-w-4xl p-4 sm:p-6">
       <div className="mb-4 flex items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-semibold">Organizations</h1>
+          <h1 className="text-xl font-semibold">All organizations</h1>
           <p className="text-sm text-ink-2">
             Each organization has its own projects, agents, connections, and members, and none can see another's. You become the admin of one you
             create.

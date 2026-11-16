@@ -117,4 +117,46 @@ describe('organizations', () => {
     expect(await resolveModelKey(deps, betaId, await agentIn(betaId), 'anthropic')).toBeUndefined()
     expect(await resolveModelKey(deps, betaId, await agentIn(betaId), 'openai')).toBeUndefined()
   })
+
+  it('let an admin change what a member may do, and never their own role', async () => {
+    await ada.ok('POST', '/api/auth/switch', { orgId: acmeId })
+    const boInAcme = (await ada.ok('GET', '/api/members')).members.find((member: { email: string }) => member.email === BO.email)
+    const me = (await ada.ok('GET', '/api/auth/me')).account
+    await bo.ok('POST', '/api/auth/switch', { orgId: acmeId })
+    expect((await bo.request('PUT', `/api/members/${me.id}`, { role: 'member' })).status).toBe(403)
+    expect((await bo.request('POST', '/api/connections', { kind: 'openai', name: 'Mine', secret: 'sk' })).status).toBe(403)
+
+    expect((await ada.ok('PUT', `/api/members/${boInAcme.id}`, { role: 'admin' })).member.role).toBe('admin')
+    expect((await bo.request('POST', '/api/connections', { kind: 'openai', name: 'Mine', secret: 'sk' })).status).toBe(200)
+    expect((await ada.request('PUT', `/api/members/${me.id}`, { role: 'member' })).status).toBe(400)
+    expect((await ada.request('DELETE', `/api/members/${me.id}`)).status).toBe(400)
+  })
+
+  it('take a member out of one organization and leave their other one alone', async () => {
+    const boInAcme = (await ada.ok('GET', '/api/members')).members.find((member: { email: string }) => member.email === BO.email)
+    const { secret } = await bo.ok('POST', '/api/tokens', { name: 'cli' })
+    const token = new ApiClient(harness.app)
+    token.token = secret
+    expect((await token.request('GET', '/api/auth/me')).status).toBe(200)
+
+    expect((await ada.request('DELETE', `/api/members/${boInAcme.id}`)).status).toBe(200)
+    expect((await ada.ok('GET', '/api/members')).members.map((member: { email: string }) => member.email)).toEqual([SETUP.email])
+    expect((await bo.request('GET', '/api/auth/me')).status).toBe(401)
+    expect((await token.request('GET', '/api/auth/me')).status).toBe(401)
+    expect((await ada.request('PUT', `/api/members/${boInAcme.id}`, { role: 'member' })).status).toBe(404)
+
+    await bo.ok('POST', '/api/auth/login', { email: BO.email, password: BO.password })
+    const me = await bo.ok('GET', '/api/auth/me')
+    expect(me.org.id).toBe(betaId)
+    expect(me.orgs.map((org: { id: string }) => org.id)).toEqual([betaId])
+    expect((await bo.request('POST', '/api/auth/switch', { orgId: acmeId })).status).toBe(404)
+  })
+
+  it('bring a removed member back as the account they had', async () => {
+    const back = await ada.ok('POST', '/api/members', { name: 'Bo', email: BO.email, role: 'member' })
+    expect(back).toMatchObject({ existing: true, member: { role: 'member', status: 'active' } })
+    expect((await bo.ok('GET', '/api/auth/me')).orgs).toHaveLength(2)
+    const audit = (await ada.ok('GET', '/api/audit')).entries ?? []
+    expect(JSON.stringify(audit)).toContain('member.removed')
+  })
 })

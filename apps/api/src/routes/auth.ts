@@ -1,5 +1,5 @@
 import type { AccountRow, ApiTokenRow, OrganizationRow, UserRow } from '@factorix/db'
-import { createApiTokenInput, createMemberInput, createOrgInput, loginInput, setupInput, switchOrgInput } from '@factorix/schemas'
+import { createApiTokenInput, createMemberInput, createOrgInput, loginInput, setupInput, switchOrgInput, updateMemberInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { accountDto, apiTokenDto } from '../dto'
@@ -179,7 +179,7 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
 
   app.get('/api/members', async (request) => {
     const { account } = requireAuth(request)
-    const rows = await db<AccountRow>('accounts').where({ orgId: account.orgId, kind: 'human' }).orderBy('created_at')
+    const rows = await db<AccountRow>('accounts').where({ orgId: account.orgId, kind: 'human', status: 'active' }).orderBy('created_at')
     return { members: rows.map(accountDto) }
   })
 
@@ -194,7 +194,12 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
       const { row, existing } = await db.transaction(async (trx) => {
         const user =
           known ?? ((await trx<UserRow>('users').insert({ email: input.email, passwordHash, displayName: input.name }).returning('*'))[0] as UserRow)
-        const row = await addMember(trx, account.orgId, user, input.role)
+        // Someone removed earlier comes back as the same account, so what they did before stays theirs.
+        const [back] = await trx<AccountRow>('accounts')
+          .where({ orgId: account.orgId, userId: user.id, status: 'disabled' })
+          .update({ status: 'active', role: input.role, updatedAt: trx.fn.now() })
+          .returning('*')
+        const row = back ?? (await addMember(trx, account.orgId, user, input.role))
         await writeAudit(trx, {
           orgId: account.orgId,
           actorAccountId: account.id,
@@ -211,5 +216,59 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
       if (isUniqueViolation(error)) throw conflict('Someone with that email is already a member')
       throw error
     }
+  })
+
+  /** The member an admin is about to change. Nobody changes themselves, so an organization cannot lose its last admin this way. */
+  const otherMember = async (request: Parameters<typeof requireAdmin>[0]) => {
+    const { account } = requireAdmin(request)
+    const { id } = request.params as { id: string }
+    const member = /^[0-9a-f-]{36}$/.test(id)
+      ? await db<AccountRow>('accounts').where({ id, orgId: account.orgId, kind: 'human', status: 'active' }).first()
+      : undefined
+    if (!member) throw notFound('Member')
+    if (member.id === account.id) throw badRequest('Ask another admin to change your own membership')
+    return { account, member }
+  }
+
+  app.put('/api/members/:id', async (request) => {
+    const { account, member } = await otherMember(request)
+    const { role } = parseBody(updateMemberInput, request.body)
+    const [row] = await db.transaction(async (trx) => {
+      await writeAudit(trx, {
+        orgId: account.orgId,
+        actorAccountId: account.id,
+        actorKind: 'human',
+        action: 'member.updated',
+        targetType: 'account',
+        targetId: member.id,
+        metadata: { email: member.email, from: member.role, to: role },
+      })
+      return trx<AccountRow>('accounts').where({ id: member.id }).update({ role, updatedAt: trx.fn.now() }).returning('*')
+    })
+    return { member: accountDto(row as AccountRow) }
+  })
+
+  /**
+   * Takes someone out of this organization. Their account stays, disabled, because runs and the audit log name it.
+   * Their sessions here and their API tokens end now, and they keep signing in to any other organization they are in.
+   */
+  app.delete('/api/members/:id', async (request) => {
+    const { account, member } = await otherMember(request)
+    await db.transaction(async (trx) => {
+      await trx('accounts').where({ id: member.id }).update({ status: 'disabled', updatedAt: trx.fn.now() })
+      await trx('auth_sessions').where({ accountId: member.id }).delete()
+      await trx('api_tokens').where({ accountId: member.id }).delete()
+      await trx('users').where({ lastAccountId: member.id }).update({ lastAccountId: null })
+      await writeAudit(trx, {
+        orgId: account.orgId,
+        actorAccountId: account.id,
+        actorKind: 'human',
+        action: 'member.removed',
+        targetType: 'account',
+        targetId: member.id,
+        metadata: { email: member.email, role: member.role },
+      })
+    })
+    return { ok: true }
   })
 }

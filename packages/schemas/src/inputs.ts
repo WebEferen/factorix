@@ -65,6 +65,8 @@ export const createMemberInput = z.object({
 })
 export type CreateMemberInput = z.infer<typeof createMemberInput>
 
+export const updateMemberInput = z.object({ role: z.enum(['admin', 'member']) })
+
 export const permissionPolicyInput = z.object({
   mode: z.enum(['read_only', 'edit', 'full']),
   allow: z.array(z.string()).default([]),

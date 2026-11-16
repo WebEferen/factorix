@@ -19,6 +19,7 @@ import {
   Shapes,
   Sparkles,
   Sun,
+  Users,
   Workflow,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -154,16 +155,20 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
                 {org.id === me.org.id ? <Check /> : null}
               </MenuItem>
             ))}
+            <MenuSeparator />
+            <MenuItem asChild>
+              <Link href="/organization/members" onClick={onNavigate}>
+                <Users />
+                Members
+              </Link>
+            </MenuItem>
             {me.installationAdmin ? (
-              <>
-                <MenuSeparator />
-                <MenuItem asChild>
-                  <Link href="/settings/organizations" onClick={onNavigate}>
-                    <Building2 />
-                    Organizations
-                  </Link>
-                </MenuItem>
-              </>
+              <MenuItem asChild>
+                <Link href="/organization/all" onClick={onNavigate}>
+                  <Building2 />
+                  All organizations
+                </Link>
+              </MenuItem>
             ) : null}
           </MenuContent>
         </Menu>
