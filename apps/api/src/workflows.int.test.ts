@@ -384,6 +384,109 @@ describe('workflows', () => {
     })
   })
 
+  describe('on a schedule', () => {
+    const HOUR = 3_600_000
+    const nightly = (issue: string, config: Record<string, unknown> = {}) => ({
+      nodes: [block('t', 'trigger.schedule', { issue, ...config }), block('c', 'tracker.comment', { body: 'Nightly for {{trigger.scheduledFor}}' })],
+      edges: [link('t', 'c')],
+    })
+    const schedule = (workflowId: string) => db()('workflow_schedules').where({ workflowId }).first()
+    const runsOf = (workflowId: string) => db()('workflow_runs').where({ workflowId }).orderBy('created_at')
+    const makeDue = (workflowId: string) =>
+      db()('workflow_schedules')
+        .where({ workflowId })
+        .update({ nextAt: new Date(Date.now() - 60_000) })
+
+    it('refuses a time or a time zone that means nothing', async () => {
+      const { workflow } = await admin.ok('POST', '/api/workflows', {
+        name: 'Bad time',
+        definition: nightly('ENG-1', { time: 'two', timezone: 'Mars' }),
+      })
+      const published = await admin.request('POST', `/api/workflows/${workflow.id}/publish`)
+      expect(published.status).toBe(422)
+      expect(JSON.stringify(published.body)).toContain('HH:MM')
+    })
+
+    it('starts on its ticket when the time comes, once, and waits for the next', async () => {
+      await retireWorkflows()
+      const issue = await ticket('Nightly')
+      const id = await publish(nightly(issue.identifier.toLowerCase()), { enabled: true })
+      await sweepWorkflows(harness.deps)
+      const planned = await schedule(id)
+      expect(planned.nextAt.getTime()).toBeGreaterThan(Date.now())
+      expect(planned.nextAt.getTime()).toBeLessThanOrEqual(Date.now() + 24 * HOUR)
+      expect(await runsOf(id)).toHaveLength(0)
+
+      await makeDue(id)
+      await Promise.all([sweepWorkflows(harness.deps), sweepWorkflows(harness.deps)])
+      await drain()
+      const [run, ...more] = await runsOf(id)
+      expect(more).toEqual([])
+      expect(run).toMatchObject({ issueId: issue.id, status: 'succeeded', startedBy: null })
+      expect(run.trigger.event.kind).toBe('schedule')
+      expect(world().comments.at(-1)?.body).toContain(`Nightly for ${run.trigger.event.scheduledFor}`)
+      expect((await schedule(id)).nextAt.getTime()).toBeGreaterThan(Date.now())
+      await sweepWorkflows(harness.deps)
+      expect(await runsOf(id)).toHaveLength(1)
+    })
+
+    it('skips a time while the run before it is still going, and says so', async () => {
+      await retireWorkflows()
+      const issue = await ticket('Slow nightly')
+      const id = await publish(
+        {
+          nodes: [block('t', 'trigger.schedule', { issue: issue.identifier }), block('w', 'logic.wait', { amount: 2, unit: 'hours' })],
+          edges: [link('t', 'w')],
+        },
+        { enabled: true },
+      )
+      await sweepWorkflows(harness.deps)
+      await makeDue(id)
+      await sweepWorkflows(harness.deps)
+      await drain()
+      await makeDue(id)
+      await sweepWorkflows(harness.deps)
+      await drain()
+      expect(await runsOf(id)).toHaveLength(1)
+      const skipped = await db()('audit_log').where({ action: 'workflow.schedule_skipped', targetId: id })
+      expect(skipped.map((entry: { metadata: { reason: string } }) => entry.metadata.reason)).toEqual(['The run before it is still going'])
+    })
+
+    it('says so when its ticket is missing, and stops when it is turned off', async () => {
+      await retireWorkflows()
+      const id = await publish(nightly('NOPE-404'), { enabled: true })
+      await sweepWorkflows(harness.deps)
+      await makeDue(id)
+      await sweepWorkflows(harness.deps)
+      expect(await runsOf(id)).toHaveLength(0)
+      const [skipped] = await db()('audit_log').where({ action: 'workflow.schedule_skipped', targetId: id })
+      expect(skipped.metadata.reason).toContain('NOPE-404')
+
+      await makeDue(id)
+      await admin.ok('POST', `/api/workflows/${id}/enabled`, { enabled: false })
+      await sweepWorkflows(harness.deps)
+      expect(await schedule(id)).toBeUndefined()
+      await admin.ok('POST', `/api/workflows/${id}/enabled`, { enabled: true })
+      await sweepWorkflows(harness.deps)
+      expect((await schedule(id)).nextAt.getTime()).toBeGreaterThan(Date.now())
+    })
+
+    it('moves to the new time when a new version is published, without firing the old one', async () => {
+      await retireWorkflows()
+      const issue = await ticket('Rescheduled')
+      const id = await publish(nightly(issue.identifier), { enabled: true })
+      await sweepWorkflows(harness.deps)
+      await makeDue(id)
+      await admin.ok('PUT', `/api/workflows/${id}`, { name: 'Moved', definition: nightly(issue.identifier, { days: '0', time: '05:00' }) })
+      await admin.ok('POST', `/api/workflows/${id}/publish`)
+      await sweepWorkflows(harness.deps)
+      await drain()
+      expect(await runsOf(id)).toHaveLength(0)
+      const planned = (await schedule(id)).nextAt as Date
+      expect([planned.getUTCDay(), planned.getUTCHours(), planned.getUTCMinutes()]).toEqual([0, 5, 0])
+    })
+  })
+
   describe('waiting', () => {
     it('resumes a timer from the database', async () => {
       const id = await publish({

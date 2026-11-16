@@ -64,6 +64,43 @@ export const WORKFLOW_BLOCKS = {
     fields: [],
     outputs: [NEXT],
   },
+  'trigger.schedule': {
+    category: 'trigger',
+    title: 'On a schedule',
+    description: 'Starts by itself at a set time, on one ticket that collects the results.',
+    fields: [
+      {
+        key: 'days',
+        label: 'Days',
+        kind: 'select',
+        initial: 'daily',
+        required: true,
+        options: [
+          { value: 'daily', label: 'Every day' },
+          { value: 'weekdays', label: 'Monday to Friday' },
+          { value: '1', label: 'Mondays' },
+          { value: '2', label: 'Tuesdays' },
+          { value: '3', label: 'Wednesdays' },
+          { value: '4', label: 'Thursdays' },
+          { value: '5', label: 'Fridays' },
+          { value: '6', label: 'Saturdays' },
+          { value: '0', label: 'Sundays' },
+        ],
+      },
+      { key: 'time', label: 'Time', kind: 'text', initial: '02:00', required: true, placeholder: '02:00', hint: '24-hour, as HH:MM.' },
+      { key: 'timezone', label: 'Time zone', kind: 'text', initial: 'UTC', required: true, placeholder: 'Europe/Warsaw' },
+      {
+        key: 'issue',
+        label: 'Ticket',
+        kind: 'text',
+        required: true,
+        placeholder: 'ENG-12',
+        hint: 'Every run works on this ticket, so its results stay in one place.',
+      },
+    ],
+    outputs: [NEXT],
+    provides: [{ key: 'scheduledFor', label: 'Scheduled time' }],
+  },
   'trigger.issue_created': {
     category: 'trigger',
     title: 'Ticket created',
@@ -506,6 +543,49 @@ function hasCycle(definition: WorkflowDefinition): boolean {
   return definition.nodes.some((node) => visit(node.id))
 }
 
+const DAY_MS = 86_400_000
+
+function zoneOffsetMs(timezone: string, at: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: 'numeric',
+    second: 'numeric',
+  }).formatToParts(at)
+  const part = (type: string) => Number(parts.find((item) => item.type === type)?.value)
+  return Date.UTC(part('year'), part('month') - 1, part('day'), part('hour'), part('minute'), part('second')) - Math.floor(at / 1000) * 1000
+}
+
+/**
+ * The first time after `after` that an "On a schedule" block fires, or null when its settings make no sense.
+ * A time that a clock change skips fires an hour later that day, and one that happens twice fires once.
+ */
+export function nextScheduleTime(config: Record<string, unknown>, after: Date): Date | null {
+  const time = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(String(config.time ?? '').trim())
+  const timezone = String(config.timezone ?? '').trim()
+  const days = String(config.days ?? '')
+  if (!time || !timezone || !(days === 'daily' || days === 'weekdays' || /^[0-6]$/.test(days))) return null
+  try {
+    for (let ahead = -1; ahead <= 8; ahead++) {
+      const probe = after.getTime() + ahead * DAY_MS
+      const local = new Date(probe + zoneOffsetMs(timezone, probe))
+      const wall = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate(), Number(time[1]), Number(time[2]))
+      const weekday = new Date(wall).getUTCDay()
+      if (days === 'weekdays' ? weekday === 0 || weekday === 6 : days !== 'daily' && Number(days) !== weekday) continue
+      const guess = wall - zoneOffsetMs(timezone, wall)
+      const at = wall - zoneOffsetMs(timezone, guess)
+      if (at > after.getTime()) return new Date(at)
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 /** Saving a draft is always allowed. This is what has to hold before a workflow can be published. */
 export function validateWorkflow(definition: WorkflowDefinition): WorkflowIssue[] {
   const issues: WorkflowIssue[] = []
@@ -541,6 +621,13 @@ export function validateWorkflow(definition: WorkflowDefinition): WorkflowIssue[
       const message = fieldIssue(field, node.config)
       if (message) issues.push({ nodeId: node.id, message })
     }
+    if (
+      node.type === 'trigger.schedule' &&
+      !isBlank(node.config.time) &&
+      !isBlank(node.config.timezone) &&
+      !nextScheduleTime(node.config, new Date())
+    )
+      issues.push({ nodeId: node.id, message: 'Give the time as HH:MM and a time zone like Europe/Warsaw' })
   }
   return issues
 }

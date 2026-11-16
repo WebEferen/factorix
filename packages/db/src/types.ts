@@ -370,6 +370,14 @@ export interface WorkflowRow {
   updatedAt: Date
 }
 
+export interface WorkflowScheduleRow {
+  workflowId: string
+  nodeId: string
+  orgId: string
+  workflowVersion: number
+  nextAt: Date
+}
+
 export interface WorkflowRunRow {
   id: string
   orgId: string

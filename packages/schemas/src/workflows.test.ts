@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { completePlaceholder, initialBlockConfig, openPlaceholder, validateWorkflow, type WorkflowDefinition, workflowDefinition } from './workflows'
+import {
+  completePlaceholder,
+  initialBlockConfig,
+  nextScheduleTime,
+  openPlaceholder,
+  validateWorkflow,
+  type WorkflowDefinition,
+  workflowDefinition,
+} from './workflows'
 
 const block = (id: string, type: string, config: Record<string, unknown> = {}) =>
   ({ id, type, position: { x: 0, y: 0 }, config: { ...initialBlockConfig(type), ...config } }) as WorkflowDefinition['nodes'][number]
@@ -92,5 +100,35 @@ describe('completing a variable', () => {
     expect(completePlaceholder('Hi {{st there', 7, 'steps.ask-1.text')).toEqual({ text: 'Hi {{steps.ask-1.text}} there', caret: 23 })
     expect(completePlaceholder('Hi {{iss}} there', 8, 'issue.title')).toEqual({ text: 'Hi {{issue.title}} there', caret: 18 })
     expect(completePlaceholder('Hi {{issue.title}}', 9, 'issue.url')).toEqual({ text: 'Hi {{issue.url}}', caret: 16 })
+  })
+})
+
+describe('nextScheduleTime', () => {
+  const next = (config: Record<string, unknown>, after: string) => nextScheduleTime(config, new Date(after))?.toISOString() ?? null
+
+  it('finds the next time of day in the block’s time zone', () => {
+    expect(next({ days: 'daily', time: '02:00', timezone: 'UTC' }, '2026-11-16T01:00:00Z')).toBe('2026-11-16T02:00:00.000Z')
+    expect(next({ days: 'daily', time: '02:00', timezone: 'UTC' }, '2026-11-16T02:00:00Z')).toBe('2026-11-17T02:00:00.000Z')
+    expect(next({ days: 'daily', time: '2:30', timezone: 'Europe/Warsaw' }, '2026-11-16T12:00:00Z')).toBe('2026-11-17T01:30:00.000Z')
+    expect(next({ days: 'daily', time: '09:00', timezone: 'Pacific/Auckland' }, '2026-11-16T12:00:00Z')).toBe('2026-11-16T20:00:00.000Z')
+  })
+
+  it('keeps to the chosen days, counted where the block lives', () => {
+    // 2026-11-13 is a Friday.
+    expect(next({ days: 'weekdays', time: '18:00', timezone: 'UTC' }, '2026-11-13T19:00:00Z')).toBe('2026-11-16T18:00:00.000Z')
+    expect(next({ days: '0', time: '08:00', timezone: 'UTC' }, '2026-11-13T19:00:00Z')).toBe('2026-11-15T08:00:00.000Z')
+    expect(next({ days: '1', time: '00:30', timezone: 'Asia/Tokyo' }, '2026-11-13T19:00:00Z')).toBe('2026-11-15T15:30:00.000Z')
+  })
+
+  it('follows the clock through a change of time', () => {
+    expect(next({ days: 'daily', time: '08:00', timezone: 'Europe/Warsaw' }, '2026-03-28T12:00:00Z')).toBe('2026-03-29T06:00:00.000Z')
+    expect(next({ days: 'daily', time: '08:00', timezone: 'Europe/Warsaw' }, '2026-10-24T12:00:00Z')).toBe('2026-10-25T07:00:00.000Z')
+    expect(next({ days: 'daily', time: '02:30', timezone: 'Europe/Warsaw' }, '2026-03-28T12:00:00Z')).toBe('2026-03-29T01:30:00.000Z')
+  })
+
+  it('refuses settings that name no time', () => {
+    expect(next({ days: 'daily', time: '25:00', timezone: 'UTC' }, '2026-11-16T01:00:00Z')).toBeNull()
+    expect(next({ days: 'daily', time: '02:00', timezone: 'Mars/Olympus' }, '2026-11-16T01:00:00Z')).toBeNull()
+    expect(next({ days: 'sometimes', time: '02:00', timezone: 'UTC' }, '2026-11-16T01:00:00Z')).toBeNull()
   })
 })

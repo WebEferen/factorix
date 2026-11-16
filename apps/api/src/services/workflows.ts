@@ -1,7 +1,17 @@
 import { RetryLaterError } from '@factorix/connectors'
 import { FAILED_HANDLE, planWorkflow, type StepState, triggerMatches, type WorkflowEvent, waitMatches } from '@factorix/core'
-import { type Db, type IssueRow, json, type ProjectRow, type RunRow, type WorkflowRow, type WorkflowRunRow, type WorkflowStepRow } from '@factorix/db'
-import { isTriggerBlock } from '@factorix/schemas'
+import {
+  type Db,
+  type IssueRow,
+  json,
+  type ProjectRow,
+  type RunRow,
+  type WorkflowRow,
+  type WorkflowRunRow,
+  type WorkflowScheduleRow,
+  type WorkflowStepRow,
+} from '@factorix/db'
+import { isTriggerBlock, nextScheduleTime } from '@factorix/schemas'
 import type { Knex } from 'knex'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
@@ -303,9 +313,85 @@ async function withinRunLimits(db: Db, workflow: WorkflowRow, issue: IssueRow): 
   return false
 }
 
+async function scheduleSkipped(db: Db, workflow: WorkflowRow, reason: string): Promise<void> {
+  await writeAudit(db, {
+    orgId: workflow.orgId,
+    actorKind: 'system',
+    action: 'workflow.schedule_skipped',
+    targetType: 'workflow',
+    targetId: workflow.id,
+    metadata: { name: workflow.name, reason },
+  })
+}
+
+/**
+ * Fires every "On a schedule" block that is due. A time missed while no worker ran fires once, late, and a workflow
+ * turned off and on again starts from its next time, because turning it off drops its rows here.
+ */
+export async function fireSchedules(deps: Pick<AppDeps, 'db'>, now = new Date()): Promise<void> {
+  const { db } = deps
+  const workflows = await db<WorkflowRow>('workflows')
+    .where({ enabled: true })
+    .whereNull('archivedAt')
+    .whereRaw(`published_definition::text LIKE '%"trigger.schedule"%'`)
+  await db('workflow_schedules')
+    .whereNotIn(
+      'workflowId',
+      workflows.map((workflow) => workflow.id),
+    )
+    .delete()
+  for (const workflow of workflows) {
+    const nodes = (workflow.publishedDefinition?.nodes ?? []).filter((node) => node.type === 'trigger.schedule')
+    const rows = await db<WorkflowScheduleRow>('workflow_schedules').where({ workflowId: workflow.id })
+    for (const row of rows) {
+      const node = nodes.find((item) => item.id === row.nodeId)
+      const next = node ? nextScheduleTime(node.config, now) : null
+      if (!node || !next) {
+        await db('workflow_schedules').where({ workflowId: workflow.id, nodeId: row.nodeId }).delete()
+        continue
+      }
+      const due = row.workflowVersion === workflow.publishedVersion && row.nextAt.getTime() <= now.getTime()
+      if (!due && row.workflowVersion === workflow.publishedVersion) continue
+      const claimed = await db('workflow_schedules')
+        .where({ workflowId: workflow.id, nodeId: row.nodeId, nextAt: row.nextAt, workflowVersion: row.workflowVersion })
+        .update({ nextAt: next, workflowVersion: workflow.publishedVersion })
+      if (!due || claimed === 0) continue
+      const issue = await db<IssueRow>('issues')
+        .where({ orgId: workflow.orgId })
+        .where((query) => (workflow.projectId ? query.where({ projectId: workflow.projectId }) : query))
+        .whereRaw('lower(identifier) = lower(?)', [String(node.config.issue ?? '').trim()])
+        .first()
+      if (!issue) {
+        await scheduleSkipped(db, workflow, `There is no ticket ${String(node.config.issue ?? '')}`)
+        continue
+      }
+      if (!(await withinRunLimits(db, workflow, issue))) continue
+      const scheduledFor = row.nextAt.toISOString()
+      const run = await startWorkflowRun(db, {
+        workflow,
+        issue,
+        nodeId: node.id,
+        event: { kind: 'schedule', scheduledFor },
+        startedBy: null,
+        eventId: `schedule:${node.id}:${scheduledFor}`,
+      })
+      if (!run) await scheduleSkipped(db, workflow, 'The run before it is still going')
+    }
+    for (const node of nodes) {
+      const next = rows.some((row) => row.nodeId === node.id) ? null : nextScheduleTime(node.config, now)
+      if (!next) continue
+      await db('workflow_schedules')
+        .insert({ workflowId: workflow.id, nodeId: node.id, orgId: workflow.orgId, workflowVersion: workflow.publishedVersion, nextAt: next })
+        .onConflict()
+        .ignore()
+    }
+  }
+}
+
 /** Timers live in the database and this sweep reads them, so a Redis flush or a worker restart cannot lose a wait. */
 export async function sweepWorkflows(deps: Pick<AppDeps, 'db' | 'queues'>): Promise<void> {
   const { db } = deps
+  await fireSchedules(deps)
   const active = () =>
     db('workflow_steps').join('workflow_runs', 'workflow_steps.run_id', 'workflow_runs.id').where({ 'workflow_runs.status': 'running' })
   const columns = ['workflow_steps.node_id', 'workflow_steps.block', 'workflow_runs.id', 'workflow_runs.org_id', 'workflow_runs.issue_id'] as const

@@ -16,6 +16,7 @@ import { type BuiltInEdge, MarkerType, type Node } from '@xyflow/react'
 import {
   ArrowRightLeft,
   Bot,
+  CalendarClock,
   Check,
   CircleDashed,
   CircleDot,
@@ -41,6 +42,7 @@ import { Chip } from '../ui'
 
 export const BLOCK_ICONS: Record<BlockType, ReactNode> = {
   'trigger.manual': <Play />,
+  'trigger.schedule': <CalendarClock />,
   'trigger.issue_created': <CirclePlus />,
   'trigger.status_changed': <ArrowRightLeft />,
   'trigger.label_added': <Tag />,
@@ -82,6 +84,8 @@ export function summarizeBlock(type: string, config: Record<string, unknown>, na
   switch (type) {
     case 'trigger.manual':
       return 'When someone runs it on a ticket'
+    case 'trigger.schedule':
+      return `${fieldLabel('days')} at ${clip(config.time) || '?'} ${clip(config.timezone)}, on ${clip(config.issue) || 'no ticket yet'}`
     case 'trigger.issue_created':
       return 'Any new ticket'
     case 'trigger.status_changed':

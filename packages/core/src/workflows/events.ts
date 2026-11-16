@@ -3,6 +3,7 @@ export type MergeRequestEvent = 'opened' | 'merged' | 'closed'
 
 export type WorkflowEvent =
   | { kind: 'manual' }
+  | { kind: 'schedule'; scheduledFor: string }
   | { kind: 'issue.created' }
   | { kind: 'status.changed'; from: string | null; to: string }
   | { kind: 'label.added'; label: string }
