@@ -72,7 +72,23 @@ function usageFromResult(message: LooseMessage): UsageSnapshot {
   const modelUsage = message.modelUsage as Record<string, Record<string, number | undefined>> | undefined
   const totals = modelUsage && Object.keys(modelUsage).length > 0 ? Object.values(modelUsage) : null
   const sum = (key: string, fallback: string) => (totals ? totals.reduce((total, entry) => total + (entry[key] ?? 0), 0) : (usage[fallback] ?? 0))
+  const byModel =
+    modelUsage && Object.keys(modelUsage).length > 1
+      ? Object.fromEntries(
+          Object.entries(modelUsage).map(([model, entry]) => [
+            model,
+            {
+              inputTokens: entry.inputTokens ?? 0,
+              outputTokens: entry.outputTokens ?? 0,
+              cacheReadTokens: entry.cacheReadInputTokens ?? 0,
+              cacheWriteTokens: entry.cacheCreationInputTokens ?? 0,
+              costUsd: entry.costUSD,
+            },
+          ]),
+        )
+      : undefined
   return {
+    ...(byModel ? { byModel } : {}),
     inputTokens: sum('inputTokens', 'input_tokens'),
     outputTokens: sum('outputTokens', 'output_tokens'),
     cacheReadTokens: sum('cacheReadInputTokens', 'cache_read_input_tokens'),

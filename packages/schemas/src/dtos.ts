@@ -1,4 +1,4 @@
-import type { PermissionPolicy, RunEvent, RuntimeCapabilities, RuntimeId, RuntimeModel, UsageSnapshot } from '@factorix/runtime'
+import type { AgentHelper, PermissionPolicy, RunEvent, RuntimeCapabilities, RuntimeId, RuntimeModel, UsageSnapshot } from '@factorix/runtime'
 import type { ApiTokenScope, ConnectionKind, IssueSort } from './inputs'
 
 export interface AccountDto {
@@ -64,6 +64,7 @@ export interface AgentDto {
   maxBudgetUsd: number | null
   maxTurns: number | null
   policy: PermissionPolicy
+  helpers: AgentHelper[]
   capabilities: RuntimeCapabilities
   version: number
   skillIds: string[]

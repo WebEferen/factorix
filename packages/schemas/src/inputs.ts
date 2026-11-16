@@ -79,6 +79,16 @@ export const permissionPolicyInput = z.object({
   networkAccess: z.boolean().default(true),
 })
 
+export const MAX_AGENT_HELPERS = 8
+
+export const agentHelperInput = z.object({
+  name: z.string().regex(/^[a-z][a-z0-9-]{1,39}$/, 'Use 2 to 40 lowercase letters, digits, or hyphens, starting with a letter'),
+  description: z.string().trim().min(1).max(500),
+  prompt: z.string().trim().min(1).max(20_000),
+  model: z.string().max(120).nullable().default(null),
+  access: z.enum(['read', 'all']).default('read'),
+})
+
 export const agentInput = z.object({
   handle,
   displayName: z.string().min(1).max(120),
@@ -91,6 +101,11 @@ export const agentInput = z.object({
   maxBudgetUsd: z.number().positive().nullable().default(null),
   maxTurns: z.number().int().positive().nullable().default(null),
   policy: permissionPolicyInput,
+  helpers: z
+    .array(agentHelperInput)
+    .max(MAX_AGENT_HELPERS)
+    .refine((helpers) => new Set(helpers.map((helper) => helper.name)).size === helpers.length, 'Two helpers share a name')
+    .default([]),
   skillIds: z.array(z.uuid()).default([]),
   connectionIds: z.array(z.uuid()).default([]),
   status: z.enum(['active', 'disabled']).default('active'),

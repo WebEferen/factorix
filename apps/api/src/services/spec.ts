@@ -2,11 +2,13 @@ import { TRACKER_SOURCES } from '@factorix/connectors'
 import { type OpenThread, PHASES, type PhaseContext, type PhaseResource, renderSystemPrompt, resolvePolicy } from '@factorix/core'
 import type { ApprovalRow, ConnectionRow, IssueInstructionRow, IssueRow, MrDiscussionRow, ProjectRow, RunRow } from '@factorix/db'
 import {
+  type AgentHelper,
   BRIDGE_SOCKET,
   type McpServerSpec,
   type PermissionPolicy,
   type Phase,
   type ReasoningEffort,
+  RUNTIME_CAPABILITIES,
   type RunFile,
   type RunSpec,
   type RuntimeId,
@@ -42,6 +44,8 @@ export interface AgentSnapshot {
   maxBudgetUsd: number | null
   maxTurns: number | null
   policy: PermissionPolicy
+  /** Missing on a run that started before helpers existed. */
+  helpers?: AgentHelper[]
   skills: { name: string; markdown: string }[]
 }
 
@@ -319,6 +323,7 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
       maxTurns: agent.maxTurns ?? undefined,
       maxBudgetUsd: agent.maxBudgetUsd ?? undefined,
     },
+    helpers: RUNTIME_CAPABILITIES[run.runtime].subagents && agent.helpers?.length ? agent.helpers : undefined,
     prompt: {
       system: redact(
         renderSystemPrompt({

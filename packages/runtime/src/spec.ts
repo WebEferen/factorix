@@ -24,6 +24,18 @@ export interface ModelSpec {
   maxBudgetUsd?: number
 }
 
+/** A helper as an agent's settings keep it. `read` lets it look at files only, and `all` gives it what its agent may use. */
+export interface AgentHelper {
+  name: string
+  description: string
+  prompt: string
+  model: string | null
+  access: 'read' | 'all'
+}
+
+/** Tools of a helper that may only read. */
+export const HELPER_READ_TOOLS = ['Read', 'Grep', 'Glob']
+
 export interface ScriptedStep {
   sleepMs?: number
   say?: string
@@ -55,6 +67,8 @@ export interface RunSpec {
   cwd: string
   runtime: RuntimeId
   model: ModelSpec
+  /** Runs inside this run, in the same container and under the same policy. Only a runtime with `subagents` uses them. */
+  helpers?: AgentHelper[]
   prompt: { system: string; user: string }
   mcpServers: Record<string, McpServerSpec>
   policy: PermissionPolicy

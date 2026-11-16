@@ -1,7 +1,7 @@
 'use client'
 
-import type { AgentDto, RuntimeDto } from '@factorix/schemas'
-import { TriangleAlert } from 'lucide-react'
+import { type AgentDto, MAX_AGENT_HELPERS, type RuntimeDto } from '@factorix/schemas'
+import { Plus, Trash2, TriangleAlert } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { type FormEvent, useEffect, useMemo, useState } from 'react'
@@ -51,6 +51,7 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
     deny: agent?.policy.deny.join('\n') ?? '',
     requireApproval: agent?.policy.requireApproval.join('\n') ?? '',
     networkAccess: agent?.policy.networkAccess ?? true,
+    helpers: agent?.helpers ?? [],
     skillIds: agent?.skillIds ?? [],
     connectionIds: agent?.connectionIds ?? [],
     status: agent?.status ?? 'active',
@@ -94,6 +95,15 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
     }))
   }
   const canAsk = capabilities?.toolApproval === 'per_call'
+  const setHelper = (index: number, change: Partial<(typeof form.helpers)[number]>) =>
+    set(
+      'helpers',
+      form.helpers.map((helper, at) => (at === index ? { ...helper, ...change } : helper)),
+    )
+  const helperModels = [
+    { value: DEFAULT_CHOICE, label: "The agent's own model" },
+    ...models.map((item) => ({ value: item.id, label: item.label, hint: item.description ?? undefined })),
+  ]
   const attachable = connections?.connections.filter((connection) => ['mcp_stdio', 'mcp_http', 'anthropic', 'openai'].includes(connection.kind)) ?? []
 
   const accountsOf = (role: 'scm' | 'tracker') => connections?.connections.filter((connection) => connection.accountRole === role) ?? []
@@ -134,6 +144,7 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
         requireApproval: canAsk ? linesOf(form.requireApproval) : [],
         networkAccess: form.networkAccess,
       },
+      helpers: capabilities?.subagents ? form.helpers : [],
       skillIds: form.skillIds,
       connectionIds: form.connectionIds,
       status: form.status,
@@ -278,6 +289,103 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
           hint="Always limited by the project's egress policy."
         />
       </section>
+
+      {capabilities?.subagents ? (
+        <section className="flex flex-col gap-3 border-t border-divider pt-5">
+          <div>
+            <h2 className="text-sm font-semibold">Helpers</h2>
+            <p className="mt-1 text-sm text-ink-2">
+              Smaller models this agent can hand parts of its work to, such as searching the code or reading logs. A helper works inside the same run
+              and reports back, so the agent's own model spends less.
+            </p>
+          </div>
+          {form.helpers.map((helper, index) => (
+            <div key={index} className="flex flex-col gap-3 rounded-lg border border-divider p-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <Field label="Name" hint="Lowercase, like code-search.">
+                  <Input
+                    required
+                    value={helper.name}
+                    onChange={(event) => setHelper(index, { name: event.target.value })}
+                    placeholder="code-search"
+                  />
+                </Field>
+                <Field label="Model">
+                  {models.length > 0 ? (
+                    <Select
+                      value={helper.model ?? DEFAULT_CHOICE}
+                      onChange={(value) => setHelper(index, { model: value === DEFAULT_CHOICE ? null : value })}
+                      options={[
+                        ...helperModels,
+                        ...(helper.model && !models.some((item) => item.id === helper.model) ? [{ value: helper.model, label: helper.model }] : []),
+                      ]}
+                    />
+                  ) : (
+                    <Input
+                      value={helper.model ?? ''}
+                      onChange={(event) => setHelper(index, { model: event.target.value || null })}
+                      placeholder="The agent's own model"
+                    />
+                  )}
+                </Field>
+                <Field label="May">
+                  <Select
+                    value={helper.access}
+                    onChange={(value) => setHelper(index, { access: value as 'read' | 'all' })}
+                    options={[
+                      { value: 'read', label: 'Read and search', hint: 'Looks at files, changes nothing' },
+                      { value: 'all', label: 'Everything the agent may', hint: 'Runs commands and edits files under the same permissions' },
+                    ]}
+                  />
+                </Field>
+              </div>
+              <Field label="When to use it" hint="The agent reads this to decide what to hand over.">
+                <Input
+                  required
+                  value={helper.description}
+                  onChange={(event) => setHelper(index, { description: event.target.value })}
+                  placeholder="Finding where something is defined or used across the repositories."
+                />
+              </Field>
+              <Field label="Instructions">
+                <Textarea
+                  required
+                  rows={3}
+                  value={helper.prompt}
+                  onChange={(event) => setHelper(index, { prompt: event.target.value })}
+                  placeholder="Search thoroughly, then answer with file paths and line numbers. Do not paste whole files."
+                />
+              </Field>
+              <div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() =>
+                    set(
+                      'helpers',
+                      form.helpers.filter((_, at) => at !== index),
+                    )
+                  }
+                >
+                  <Trash2 />
+                  Remove helper
+                </Button>
+              </div>
+            </div>
+          ))}
+          {form.helpers.length < MAX_AGENT_HELPERS ? (
+            <div>
+              <Button
+                size="sm"
+                onClick={() => set('helpers', [...form.helpers, { name: '', description: '', prompt: '', model: null, access: 'read' }])}
+              >
+                <Plus />
+                Add helper
+              </Button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {skills && skills.skills.length > 0 ? (
         <section className="flex flex-col gap-3 border-t border-divider pt-5">

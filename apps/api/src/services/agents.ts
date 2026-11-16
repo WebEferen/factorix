@@ -43,6 +43,7 @@ export async function buildAgentSnapshot(
     maxBudgetUsd: agent.maxBudgetUsd,
     maxTurns: agent.maxTurns,
     policy: agent.policy,
+    helpers: agent.helpers,
     version: agent.version,
     skills,
   }
@@ -63,6 +64,7 @@ export function agentDto(row: AgentJoined, skillIds: string[], connectionIds: st
     maxBudgetUsd: row.maxBudgetUsd,
     maxTurns: row.maxTurns,
     policy: row.policy,
+    helpers: row.helpers,
     capabilities: row.capabilitiesSnapshot,
     version: row.version,
     skillIds,
@@ -78,6 +80,7 @@ async function validateRuntime(deps: Pick<AppDeps, 'db' | 'env'>, input: AgentIn
   const capabilities = RUNTIME_CAPABILITIES[input.runtime as RuntimeId]
   const problems = policyErrorsForRuntime({ ...input.policy }, input.runtime as RuntimeId, capabilities.toolApproval)
   if (problems[0]) throw badRequest(problems[0])
+  if (input.helpers.length > 0 && !capabilities.subagents) throw badRequest('This runtime cannot hand work to helpers')
 }
 
 export async function agentRole(db: Db | Knex.Transaction, agentId: string): Promise<string | undefined> {
@@ -137,6 +140,7 @@ export async function createAgent(deps: Pick<AppDeps, 'db' | 'env'>, orgId: stri
         maxBudgetUsd: input.maxBudgetUsd,
         maxTurns: input.maxTurns,
         policy: json(input.policy),
+        helpers: json(input.helpers),
         capabilitiesSnapshot: json(RUNTIME_CAPABILITIES[input.runtime as RuntimeId]),
       })
       await linkRelations(trx, orgId, account.id, input)
@@ -185,6 +189,7 @@ export async function updateAgent(
         maxBudgetUsd: input.maxBudgetUsd,
         maxTurns: input.maxTurns,
         policy: json(input.policy),
+        helpers: json(input.helpers),
         capabilitiesSnapshot: json(RUNTIME_CAPABILITIES[input.runtime as RuntimeId]),
         version: trx.raw('version + 1'),
         updatedAt: trx.fn.now(),

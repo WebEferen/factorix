@@ -166,6 +166,14 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           value={cost ? `${estimated ? 'est. ' : ''}${money(cost)}` : '$0.00'}
           hint={estimated ? 'This runtime reports tokens, so cost is estimated from the price table.' : undefined}
         />
+        {Object.entries(usage.byModel ?? {}).map(([model, spent]) => (
+          <Stat
+            key={model}
+            label={model}
+            value={`${compactNumber(spent.inputTokens + spent.cacheReadTokens + spent.cacheWriteTokens)} in, ${compactNumber(spent.outputTokens)} out${spent.costUsd ? `, ${money(spent.costUsd)}` : ''}`}
+            hint="What this model used in the run, counting input read from and written to the cache."
+          />
+        ))}
         {run.issueId ? null : <Stat label="Type" value="Ad-hoc" />}
         {live && !stream.connected ? (
           <Chip tone="warning" className="self-center">

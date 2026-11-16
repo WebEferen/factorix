@@ -1,6 +1,6 @@
-import type { PermissionPolicy } from '@factorix/runtime'
+import type { PermissionPolicy, RunSpec } from '@factorix/runtime'
 import { describe, expect, it, vi } from 'vitest'
-import { claudeCatalog, createCanUseTool, createRequireApprovalHook, permissionOptionsFor } from './claude'
+import { buildClaudeOptions, claudeCatalog, createCanUseTool, createRequireApprovalHook, permissionOptionsFor } from './claude'
 import { ClaudeNormalizer, classifyError } from './claude-normalize'
 
 const policy: PermissionPolicy = { mode: 'full', allow: [], deny: [], requireApproval: [], networkAccess: true }
@@ -150,13 +150,17 @@ describe('ClaudeNormalizer', () => {
       structured_output: { verdict: 'approve' },
       usage: { input_tokens: 1, output_tokens: 2 },
       modelUsage: {
-        a: { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 30, cacheCreationInputTokens: 40 },
-        b: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4 },
+        a: { inputTokens: 10, outputTokens: 20, cacheReadInputTokens: 30, cacheCreationInputTokens: 40, costUSD: 0.2 },
+        b: { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4, costUSD: 0.05 },
       },
     })
     expect(events[0]).toEqual({
       type: 'usage',
       cumulative: true,
+      byModel: {
+        a: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40, costUsd: 0.2 },
+        b: { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4, costUsd: 0.05 },
+      },
       inputTokens: 11,
       outputTokens: 22,
       cacheReadTokens: 33,
@@ -224,6 +228,29 @@ describe('ClaudeNormalizer', () => {
     expect(classifyError('Rate limit hit')).toBe('rate_limit')
     expect(classifyError('request timed out')).toBe('timeout')
     expect(classifyError('whatever')).toBe('unknown')
+  })
+})
+
+describe('buildClaudeOptions', () => {
+  const spec = (helpers?: RunSpec['helpers']) =>
+    ({ runId: 'r1', cwd: '/workspace/repos/r', policy, model: {}, prompt: { system: 's', user: 'u' }, mcpServers: {}, helpers }) as unknown as RunSpec
+  const options = (helpers?: RunSpec['helpers']) =>
+    buildClaudeOptions(spec(helpers), {} as never, { homeDir: '/home/agent' } as never, new AbortController())
+
+  it('hands the run its helpers, each on its own model and limited to reading unless told otherwise', () => {
+    const { agents } = options([
+      { name: 'code-search', description: 'Finds code', prompt: 'Search.', model: 'claude-haiku-5-5', access: 'read' },
+      { name: 'test-runner', description: 'Runs tests', prompt: 'Run them.', model: null, access: 'all' },
+    ])
+    expect(agents).toEqual({
+      'code-search': { description: 'Finds code', prompt: 'Search.', model: 'claude-haiku-5-5', tools: ['Read', 'Grep', 'Glob'] },
+      'test-runner': { description: 'Runs tests', prompt: 'Run them.', model: 'inherit', tools: undefined },
+    })
+  })
+
+  it('defines none for an agent without helpers', () => {
+    expect(options().agents).toBeUndefined()
+    expect(options([]).agents).toBeUndefined()
   })
 })
 

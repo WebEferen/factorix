@@ -5,6 +5,7 @@ import {
   type ApprovalRequest,
   AsyncQueue,
   EMPTY_USAGE,
+  HELPER_READ_TOOLS,
   ISSUE_FILES_DIR,
   matchesAnyToolRule,
   type PermissionPolicy,
@@ -95,6 +96,19 @@ export function buildClaudeOptions(spec: RunSpec, control: RunControl, io: Runne
     thinking: { type: 'adaptive', display: 'summarized' },
     outputFormat: spec.outputSchema ? { type: 'json_schema', schema: spec.outputSchema } : undefined,
     mcpServers: spec.mcpServers,
+    agents: spec.helpers?.length
+      ? Object.fromEntries(
+          spec.helpers.map((helper) => [
+            helper.name,
+            {
+              description: helper.description,
+              prompt: helper.prompt,
+              model: helper.model ?? 'inherit',
+              tools: helper.access === 'read' ? HELPER_READ_TOOLS : undefined,
+            },
+          ]),
+        )
+      : undefined,
     canUseTool: createCanUseTool(policy, control),
     hooks: policy.requireApproval.length > 0 ? { PreToolUse: [{ hooks: [createRequireApprovalHook(policy)] }] } : undefined,
     stderr: (data) => process.stderr.write(data),

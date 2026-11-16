@@ -6,6 +6,14 @@ export type RunOutcome = 'completed' | 'cancelled' | 'failed' | 'budget_exceeded
 export type ErrorCode = 'auth' | 'rate_limit' | 'model' | 'runtime_crash' | 'tool' | 'policy' | 'timeout' | 'unknown'
 export type ApprovalRequestKind = 'tool' | 'plan' | 'question'
 
+export interface ModelUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  costUsd?: number
+}
+
 export interface UsageSnapshot {
   inputTokens: number
   outputTokens: number
@@ -14,6 +22,8 @@ export interface UsageSnapshot {
   reasoningTokens?: number
   costUsd?: number
   turns: number
+  /** Present when more than one model worked in the run, such as an agent and its helpers. */
+  byModel?: Record<string, ModelUsage>
 }
 
 export const EMPTY_USAGE: UsageSnapshot = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, turns: 0 }

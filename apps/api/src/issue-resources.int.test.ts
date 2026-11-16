@@ -80,6 +80,27 @@ describe('resources attached to an issue', () => {
       resources: [document],
     })
     expect(spec.prompt.user).toContain('<issue_resources>\nDocument: ABC-1 Spec\nhttps://linear.app/x/document/spec\n\n# Spec\n</issue_resources>')
+    expect(spec.helpers).toBeUndefined()
+  })
+
+  it('gives a run the helpers its agent had when it started, on a runtime that has them', async () => {
+    const { agents } = await admin.ok('GET', '/api/agents')
+    const { run } = await admin.ok('POST', '/api/runs', { agentId: agents[0].id, prompt: 'Look', gitUrl: 'file:///remote/repo.git' })
+    const row = (await harness.deps.db('runs').where({ id: run.id }).first()) as RunRow
+    const helpers = [{ name: 'code-search', description: 'Finds code', prompt: 'Search.', model: 'claude-haiku-5-5', access: 'read' as const }]
+    const build = (runtime: RunRow['runtime']) =>
+      buildRunSpec(harness.deps, {
+        run: { ...row, runtime, agentSnapshot: { ...row.agentSnapshot, helpers }, issueId: issue.id, phase: 'implement', adHoc: null },
+        issue,
+        project,
+        repos: [{ name: 'r', path: 'g/r', baseBranch: 'main' }],
+        branch: 'factorix/abc-1',
+        repoDocs: [],
+        ciFailures: [],
+        extraNotes: [],
+      })
+    expect((await build('claude')).helpers).toEqual(helpers)
+    expect((await build('codex')).helpers).toBeUndefined()
   })
 
   it('copies files and description uploads for the container, masks secrets, and points the description at the copies', async () => {

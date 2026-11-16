@@ -651,6 +651,7 @@ class RunExecution {
           reasoningTokens: event.reasoningTokens,
           turns: event.turns,
           costUsd: event.costUsd,
+          byModel: event.byModel,
         }),
         costUsd: cost ?? null,
         costEstimated: estimated,

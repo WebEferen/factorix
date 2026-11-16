@@ -219,6 +219,23 @@ describe('API', () => {
       expect(response.body.error.message).toContain('cannot pause')
     })
 
+    it('keeps an agent’s helpers, and refuses them where they cannot work', async () => {
+      const helper = { name: 'code-search', description: 'Finds code', prompt: 'Search and answer with paths.', model: 'claude-haiku-5-5' }
+      const created = (await admin.ok('POST', '/api/agents', { ...agent, handle: 'lead-1', helpers: [helper] })).agent
+      expect(created.helpers).toEqual([{ ...helper, access: 'read' }])
+      const row = await harness.deps.db('agents').where({ accountId: created.id }).first()
+      expect(row.helpers).toEqual(created.helpers)
+
+      const twice = await admin.request('POST', '/api/agents', { ...agent, handle: 'lead-2', helpers: [helper, helper] })
+      expect(twice.status).toBe(422)
+      expect(JSON.stringify(twice.body)).toContain('share a name')
+      const codex = await admin.request('POST', '/api/agents', { ...agent, handle: 'lead-3', runtime: 'codex', helpers: [helper] })
+      expect(codex.status).toBe(400)
+      expect(codex.body.error.message).toContain('helpers')
+      expect((await admin.ok('PUT', `/api/agents/${created.id}`, { ...agent, handle: 'lead-1' })).agent.helpers).toEqual([])
+      await harness.deps.db('accounts').where({ id: created.id }).delete()
+    })
+
     it('bumps the version on update', async () => {
       const { agents } = await admin.ok('GET', '/api/agents')
       const target = agents.find((candidate: { handle: string }) => candidate.handle === 'engineer-2')

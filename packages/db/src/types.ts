@@ -1,5 +1,5 @@
 import type { Autonomy, FactoryState, PipelineCursor, PipelineDefinition, RunState, TrackerStateKey } from '@factorix/core'
-import type { PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
+import type { AgentHelper, PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
 
 export type ConnectionKind = 'linear' | 'gitlab' | 'anthropic' | 'openai' | 'mcp_stdio' | 'mcp_http' | 'generic' | 'slack' | 'doppler'
 
@@ -90,6 +90,7 @@ export interface AgentRow {
   maxBudgetUsd: number | null
   maxTurns: number | null
   policy: PermissionPolicy
+  helpers: AgentHelper[]
   capabilitiesSnapshot: RuntimeCapabilities
   version: number
   updatedAt: Date
