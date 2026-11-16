@@ -2,6 +2,8 @@
 
 import type { MeDto } from '@factorix/schemas'
 import {
+  Building2,
+  Check,
   ChevronsUpDown,
   CircleDot,
   FolderKanban,
@@ -134,33 +136,35 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
             </button>
           </MenuTrigger>
           <MenuContent className="w-56">
-            <div className="flex items-center gap-2 px-2 py-1.5">
-              <Avatar name={me.account.displayName} size={24} />
-              <div className="min-w-0">
-                <div className="truncate text-sm">{me.account.displayName}</div>
-                <div className="truncate text-xs text-ink-2">{me.account.email}</div>
-              </div>
-            </div>
-            <MenuSeparator />
-            <MenuItem onSelect={toggleTheme}>
-              {theme === 'dark' ? <Sun /> : <Moon />}
-              {theme === 'dark' ? 'Light theme' : 'Dark theme'}
-            </MenuItem>
-            <MenuItem onSelect={openShortcuts}>
-              <Keyboard />
-              Keyboard shortcuts
-            </MenuItem>
-            <MenuSeparator />
-            <MenuItem
-              onSelect={() => {
-                void api.post('/api/auth/logout').finally(() => {
-                  window.location.href = '/login'
-                })
-              }}
-            >
-              <LogOut />
-              Log out
-            </MenuItem>
+            {me.orgs.map((org) => (
+              <MenuItem
+                key={org.id}
+                onSelect={() => {
+                  if (org.id === me.org.id) return
+                  // A full load drops everything cached from the organization being left.
+                  void api.post('/api/auth/switch', { orgId: org.id }).then(() => {
+                    window.location.href = '/'
+                  })
+                }}
+              >
+                <span className="flex size-4 shrink-0 items-center justify-center rounded-sm bg-soft text-[10px] font-bold">
+                  {org.name.charAt(0).toUpperCase()}
+                </span>
+                <span className="min-w-0 flex-1 truncate">{org.name}</span>
+                {org.id === me.org.id ? <Check /> : null}
+              </MenuItem>
+            ))}
+            {me.installationAdmin ? (
+              <>
+                <MenuSeparator />
+                <MenuItem asChild>
+                  <Link href="/settings/organizations" onClick={onNavigate}>
+                    <Building2 />
+                    Organizations
+                  </Link>
+                </MenuItem>
+              </>
+            ) : null}
           </MenuContent>
         </Menu>
         <Tooltip
@@ -236,6 +240,47 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
           <NavLink href="/settings" icon={<Settings />} label="Settings" active={is('/settings')} onNavigate={onNavigate} />
         </div>
       </nav>
+
+      <div className="border-t border-divider p-2">
+        <Menu>
+          <MenuTrigger asChild>
+            <button
+              type="button"
+              className="flex h-9 w-full min-w-0 items-center gap-2 rounded-sm px-1.5 text-left transition-colors duration-100 hover:bg-soft"
+            >
+              <Avatar name={me.account.displayName} size={24} />
+              <span className="min-w-0 flex-1 truncate text-sm">{me.account.displayName}</span>
+              <ChevronsUpDown className="size-3.5 shrink-0 text-ink-3" />
+            </button>
+          </MenuTrigger>
+          <MenuContent className="w-56" side="top" align="start">
+            <div className="px-2 py-1.5">
+              <div className="truncate text-sm">{me.account.displayName}</div>
+              <div className="truncate text-xs text-ink-2">{me.account.email}</div>
+            </div>
+            <MenuSeparator />
+            <MenuItem onSelect={toggleTheme}>
+              {theme === 'dark' ? <Sun /> : <Moon />}
+              {theme === 'dark' ? 'Light theme' : 'Dark theme'}
+            </MenuItem>
+            <MenuItem onSelect={openShortcuts}>
+              <Keyboard />
+              Keyboard shortcuts
+            </MenuItem>
+            <MenuSeparator />
+            <MenuItem
+              onSelect={() => {
+                void api.post('/api/auth/logout').finally(() => {
+                  window.location.href = '/login'
+                })
+              }}
+            >
+              <LogOut />
+              Log out
+            </MenuItem>
+          </MenuContent>
+        </Menu>
+      </div>
     </div>
   )
 }

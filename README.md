@@ -251,7 +251,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 ## Known limits
 
-- **One organization in practice.** Tables carry `org_id`, but only one organization can be set up today.
+- **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them under Settings, Organizations. They still share the worker's run slots and one network for agent containers.
 - **Email and password only.** There is no SSO yet.
 - **Two connectors so far.** Linear and GitLab ship today. Other sources implement the same connector interfaces.
 

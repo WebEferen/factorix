@@ -18,6 +18,11 @@ export type SetupInput = z.infer<typeof setupInput>
 export const loginInput = z.object({ email: z.email(), password: z.string().min(1).max(200) })
 export type LoginInput = z.infer<typeof loginInput>
 
+export const createOrgInput = z.object({ name: z.string().min(1).max(120) })
+export type CreateOrgInput = z.infer<typeof createOrgInput>
+
+export const switchOrgInput = z.object({ orgId: z.uuid() })
+
 /**
  * What an API token may change. Every token can read what its account can, and nothing here reaches an admin action.
  * A request that changes something and names no scope is refused for every token.
@@ -51,10 +56,11 @@ export type CreateApiTokenInput = z.infer<typeof createApiTokenInput>
 export const createRunnerInput = z.object({ name: z.string().trim().min(1).max(80) })
 export type CreateRunnerInput = z.infer<typeof createRunnerInput>
 
+/** Someone who already signs in to this installation keeps their password, so one is only needed for a new person. */
 export const createMemberInput = z.object({
   name: z.string().min(1).max(120),
   email: z.email(),
-  password: z.string().min(10).max(200),
+  password: z.string().min(10).max(200).optional(),
   role: z.enum(['admin', 'member']).default('member'),
 })
 export type CreateMemberInput = z.infer<typeof createMemberInput>

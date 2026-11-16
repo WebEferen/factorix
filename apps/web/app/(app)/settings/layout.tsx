@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import type { ReactNode } from 'react'
+import { useMe } from '@/modules/lib/data'
 import { cn } from '@/modules/lib/format'
 import { PageHeader } from '@/modules/shell/page-header'
 
@@ -19,11 +20,13 @@ const SECTIONS = [
 
 export default function SettingsLayout({ children }: { children: ReactNode }) {
   const pathname = usePathname()
+  const { data: me } = useMe()
+  const sections = me?.installationAdmin ? [...SECTIONS, { href: '/settings/organizations', label: 'Organizations' }] : SECTIONS
   return (
     <>
       <PageHeader
         crumbs={[{ label: 'Settings' }]}
-        below={SECTIONS.map((section) => (
+        below={sections.map((section) => (
           <Link
             key={section.href}
             href={section.href}

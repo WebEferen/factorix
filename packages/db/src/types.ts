@@ -12,15 +12,29 @@ export interface OrganizationRow {
   createdAt: Date
 }
 
+/** A person who signs in. Each organization they belong to has an account of theirs. */
+export interface UserRow {
+  id: string
+  email: string
+  passwordHash: string | null
+  displayName: string
+  installationAdmin: boolean
+  status: 'active' | 'disabled'
+  lastAccountId: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
 export interface AccountRow {
   id: string
   orgId: string
+  /** Null for an agent. */
+  userId: string | null
   kind: 'human' | 'agent'
   role: 'admin' | 'member'
   handle: string
   displayName: string
   email: string | null
-  passwordHash: string | null
   avatarUrl: string | null
   status: 'active' | 'disabled'
   createdAt: Date

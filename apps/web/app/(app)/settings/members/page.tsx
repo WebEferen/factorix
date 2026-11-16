@@ -19,7 +19,8 @@ export default function MembersPage() {
     event.preventDefault()
     setLoading(true)
     try {
-      await api.post('/api/members', form)
+      const { existing } = await api.post<{ existing: boolean }>('/api/members', { ...form, password: form.password || undefined })
+      if (existing) toast.success(`${form.email} already signs in here, so they keep their own name and password.`)
       setForm({ name: '', email: '', password: '', role: 'member' })
       setOpen(false)
       void mutate()
@@ -70,9 +71,11 @@ export default function MembersPage() {
           <Field label="Email">
             <Input required type="email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
           </Field>
-          <Field label="Temporary password" hint="At least 10 characters. Share it with them directly.">
+          <Field
+            label="Temporary password"
+            hint="At least 10 characters. Share it with them directly. Leave it empty for someone who already signs in to another organization here."
+          >
             <Input
-              required
               type="password"
               minLength={10}
               autoComplete="new-password"

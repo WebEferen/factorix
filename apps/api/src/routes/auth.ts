@@ -1,23 +1,25 @@
-import type { AccountRow, ApiTokenRow, OrganizationRow } from '@factorix/db'
-import { createApiTokenInput, createMemberInput, loginInput, setupInput } from '@factorix/schemas'
+import type { AccountRow, ApiTokenRow, OrganizationRow, UserRow } from '@factorix/db'
+import { createApiTokenInput, createMemberInput, createOrgInput, loginInput, setupInput, switchOrgInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { accountDto, apiTokenDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import {
+  accountsOf,
   createApiToken,
   createSession,
   hashPassword,
   passwordProvider,
   requireAdmin,
   requireAuth,
+  requireInstallationAdmin,
   requireSession,
   SESSION_COOKIE,
   setSessionCookie,
 } from '../lib/auth'
-import { conflict, HttpError, isUniqueViolation, notFound, parseBody } from '../lib/errors'
+import { badRequest, conflict, HttpError, isUniqueViolation, notFound, parseBody } from '../lib/errors'
 import { readSettings } from '../services/settings'
-import { bootstrapOrg, isSetUp } from '../services/setup'
+import { addMember, bootstrapOrg, createOrg, isSetUp } from '../services/setup'
 
 const MAX_TOKENS_PER_ACCOUNT = 20
 
@@ -42,14 +44,16 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.get('/api/auth/status', async () => ({ setUp: await isSetUp(db) }))
 
   app.post('/api/auth/setup', async (request, reply) => {
-    const account = await bootstrapOrg(db, parseBody(setupInput, request.body))
+    const { account } = await bootstrapOrg(db, parseBody(setupInput, request.body))
     await login(account, request, reply)
     return { account: accountDto(account) }
   })
 
   app.post('/api/auth/login', async (request, reply) => {
     const input = parseBody(loginInput, request.body)
-    const account = await passwordProvider.authenticate(db, input)
+    const user = await passwordProvider.authenticate(db, input)
+    // Someone removed from every organization gets the same answer as a wrong password, so an address is never confirmed.
+    const [account] = user ? await accountsOf(db, user) : []
     if (!account) throw new HttpError(401, 'invalid_credentials', 'That email and password do not match')
     await login(account, request, reply)
     await writeAudit(db, {
@@ -71,9 +75,63 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
   })
 
   app.get('/api/auth/me', async (request) => {
-    const { account } = requireAuth(request)
+    const { account, user } = requireAuth(request)
+    const accounts = await accountsOf(db, user)
+    const rows = await db<OrganizationRow>('organizations').whereIn(
+      'id',
+      accounts.map((row) => row.orgId),
+    )
+    const orgs = rows
+      .map((org) => ({ id: org.id, name: org.name, slug: org.slug, role: accounts.find((row) => row.orgId === org.id)?.role ?? 'member' }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+    const org = orgs.find((candidate) => candidate.id === account.orgId)
+    return {
+      account: accountDto(account),
+      org: { id: org?.id, name: org?.name, slug: org?.slug },
+      orgs,
+      installationAdmin: user.installationAdmin,
+    }
+  })
+
+  /** Moves this session to another organization the person belongs to. An API token stays in the one it was made in. */
+  app.post('/api/auth/switch', async (request) => {
+    const { user, sessionId } = requireSession(request)
+    const { orgId } = parseBody(switchOrgInput, request.body)
+    const account = (await accountsOf(db, user)).find((row) => row.orgId === orgId)
+    if (!account) throw notFound('Organization')
+    await db.transaction(async (trx) => {
+      await trx('auth_sessions').where({ id: sessionId }).update({ accountId: account.id, orgId })
+      await trx('users').where({ id: user.id }).update({ lastAccountId: account.id })
+    })
+    return { account: accountDto(account) }
+  })
+
+  app.get('/api/orgs', async (request) => {
+    requireInstallationAdmin(request)
+    const rows = await db('organizations')
+      .select('organizations.*')
+      .select(db.raw("(SELECT count(*) FROM accounts WHERE accounts.org_id = organizations.id AND kind = 'human') AS member_count"))
+      .select(db.raw('(SELECT count(*) FROM projects WHERE projects.org_id = organizations.id) AS project_count'))
+      .orderBy('name')
+    return {
+      orgs: rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        memberCount: Number(row.memberCount),
+        projectCount: Number(row.projectCount),
+        createdAt: new Date(row.createdAt).toISOString(),
+      })),
+    }
+  })
+
+  /** The new organization starts with the person who made it as its admin. They add everyone else from inside it. */
+  app.post('/api/orgs', async (request) => {
+    const { user } = requireInstallationAdmin(request)
+    const input = parseBody(createOrgInput, request.body)
+    const account = await db.transaction((trx) => createOrg(trx, input.name, user))
     const org = await db<OrganizationRow>('organizations').where({ id: account.orgId }).first()
-    return { account: accountDto(account), org: { id: org?.id, name: org?.name, slug: org?.slug } }
+    return { org: { id: org?.id, name: org?.name, slug: org?.slug } }
   })
 
   app.get('/api/tokens', async (request) => {
@@ -128,31 +186,29 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.post('/api/members', async (request) => {
     const { account } = requireAdmin(request)
     const input = parseBody(createMemberInput, request.body)
-    const handle = (input.email.split('@')[0] ?? 'member').toLowerCase().replace(/[^a-z0-9-]+/g, '-')
+    const known = await db<UserRow>('users').whereRaw('lower(email) = lower(?)', [input.email]).first()
+    if (!known && !input.password) throw badRequest('Give a password for someone who has not signed in to this installation before')
+    const passwordHash = !known && input.password ? await hashPassword(input.password) : null
     try {
-      const [row] = await db<AccountRow>('accounts')
-        .insert({
+      // Someone who already signs in here keeps their own name and password: an admin of one organization must not change them.
+      const { row, existing } = await db.transaction(async (trx) => {
+        const user =
+          known ?? ((await trx<UserRow>('users').insert({ email: input.email, passwordHash, displayName: input.name }).returning('*'))[0] as UserRow)
+        const row = await addMember(trx, account.orgId, user, input.role)
+        await writeAudit(trx, {
           orgId: account.orgId,
-          kind: 'human',
-          role: input.role,
-          handle,
-          displayName: input.name,
-          email: input.email,
-          passwordHash: await hashPassword(input.password),
+          actorAccountId: account.id,
+          actorKind: 'human',
+          action: 'member.created',
+          targetType: 'account',
+          targetId: row.id,
+          metadata: { email: input.email, role: input.role, existing: Boolean(known) },
         })
-        .returning('*')
-      await writeAudit(db, {
-        orgId: account.orgId,
-        actorAccountId: account.id,
-        actorKind: 'human',
-        action: 'member.created',
-        targetType: 'account',
-        targetId: row?.id,
-        metadata: { email: input.email, role: input.role },
+        return { row, existing: Boolean(known) }
       })
-      return { member: accountDto(row as AccountRow) }
+      return { member: accountDto(row), existing }
     } catch (error) {
-      if (isUniqueViolation(error)) throw conflict('Someone with that email or handle is already a member')
+      if (isUniqueViolation(error)) throw conflict('Someone with that email is already a member')
       throw error
     }
   })

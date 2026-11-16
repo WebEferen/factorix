@@ -1,4 +1,4 @@
-import type { AccountRow, ApiTokenRow, Db } from '@factorix/db'
+import type { AccountRow, ApiTokenRow, Db, UserRow } from '@factorix/db'
 import { API_TOKEN_SCOPES, type ApiTokenScope } from '@factorix/schemas'
 import { hash, verify } from '@node-rs/argon2'
 import type { FastifyReply, FastifyRequest } from 'fastify'
@@ -12,7 +12,9 @@ export const API_TOKEN_PREFIX = 'fxp_'
 const TOKEN_SEEN_AFTER_MS = 60_000
 
 export interface AuthContext {
+  /** The person, in the organization they are working in. Every query is scoped by its `orgId`. */
   account: AccountRow
+  user: UserRow
   /** Null when the request carries an API token. */
   sessionId: string | null
   tokenId: string | null
@@ -22,7 +24,7 @@ export interface AuthContext {
 
 export interface AuthProvider {
   id: string
-  authenticate(db: Db, input: { email: string; password: string }): Promise<AccountRow | null>
+  authenticate(db: Db, input: { email: string; password: string }): Promise<UserRow | null>
 }
 
 // Hashing a throwaway value keeps timing the same whether or not the account exists.
@@ -31,10 +33,16 @@ const DUMMY_HASH = hash('factorix-dummy-password')
 export const passwordProvider: AuthProvider = {
   id: 'password',
   async authenticate(db, { email, password }) {
-    const account = await db<AccountRow>('accounts').whereRaw('lower(email) = lower(?)', [email]).where({ kind: 'human', status: 'active' }).first()
-    const valid = await verify(account?.passwordHash ?? (await DUMMY_HASH), password)
-    return account?.passwordHash && valid ? account : null
+    const user = await db<UserRow>('users').whereRaw('lower(email) = lower(?)', [email]).where({ status: 'active' }).first()
+    const valid = await verify(user?.passwordHash ?? (await DUMMY_HASH), password)
+    return user?.passwordHash && valid ? user : null
   },
+}
+
+/** A person's memberships, the one they last worked in first. */
+export async function accountsOf(db: Db, user: Pick<UserRow, 'id' | 'lastAccountId'>): Promise<AccountRow[]> {
+  const rows = await db<AccountRow>('accounts').where({ userId: user.id, kind: 'human', status: 'active' }).orderBy('created_at')
+  return [...rows.filter((row) => row.id === user.lastAccountId), ...rows.filter((row) => row.id !== user.lastAccountId)]
 }
 
 export function hashPassword(password: string): Promise<string> {
@@ -67,13 +75,14 @@ export async function loadSession(db: Db, token: string, sessionDays: () => Prom
     .first()
   if (!row) return null
   const account = await db<AccountRow>('accounts').where({ id: row.accountId, status: 'active' }).first()
-  if (!account) return null
+  const user = account?.userId ? await db<UserRow>('users').where({ id: account.userId, status: 'active' }).first() : undefined
+  if (!account || !user) return null
   if (Date.now() - new Date(row.lastSeenAt).getTime() > SLIDE_AFTER_MS) {
     await db('auth_sessions')
       .where({ id: row.id })
       .update({ lastSeenAt: db.fn.now(), expiresAt: new Date(Date.now() + (await sessionDays()) * 86_400_000) })
   }
-  return { account, sessionId: row.id, tokenId: null, scopes: [] }
+  return { account, user, sessionId: row.id, tokenId: null, scopes: [] }
 }
 
 export async function createApiToken(
@@ -103,11 +112,12 @@ export async function loadApiToken(db: Db, secret: string): Promise<AuthContext 
     .first()
   if (!row) return null
   const account = await db<AccountRow>('accounts').where({ id: row.accountId, kind: 'human', status: 'active' }).first()
-  if (!account) return null
+  const user = account?.userId ? await db<UserRow>('users').where({ id: account.userId, status: 'active' }).first() : undefined
+  if (!account || !user) return null
   if (!row.lastUsedAt || Date.now() - new Date(row.lastUsedAt).getTime() > TOKEN_SEEN_AFTER_MS) {
     await db('api_tokens').where({ id: row.id }).update({ lastUsedAt: db.fn.now() })
   }
-  return { account, sessionId: null, tokenId: row.id, scopes: row.scopes }
+  return { account, user, sessionId: null, tokenId: row.id, scopes: row.scopes }
 }
 
 export function setSessionCookie(reply: FastifyReply, token: string, expiresAt: Date, secure: boolean): void {
@@ -156,5 +166,12 @@ export function requireSession(request: FastifyRequest): AuthContext {
 export function requireAdmin(request: FastifyRequest): AuthContext {
   const auth = requireSession(request)
   if (auth.account.role !== 'admin') throw new HttpError(403, 'forbidden', 'Only admins can do this')
+  return auth
+}
+
+/** For what belongs to the whole installation, such as its settings and its organizations. */
+export function requireInstallationAdmin(request: FastifyRequest): AuthContext {
+  const auth = requireSession(request)
+  if (!auth.user.installationAdmin) throw new HttpError(403, 'forbidden', 'Only an installation admin can do this')
   return auth
 }

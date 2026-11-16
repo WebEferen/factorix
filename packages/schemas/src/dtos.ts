@@ -351,9 +351,23 @@ export interface SpendDto {
   byProject: SpendRowDto[]
 }
 
+export interface MembershipDto extends OrgDto {
+  role: 'admin' | 'member'
+}
+
 export interface MeDto {
   account: AccountDto
   org: OrgDto
+  /** Every organization this person can switch to, the current one included. */
+  orgs: MembershipDto[]
+  /** May create organizations and change the installation's settings. */
+  installationAdmin: boolean
+}
+
+export interface OrgSummaryDto extends OrgDto {
+  memberCount: number
+  projectCount: number
+  createdAt: string
 }
 
 export type RunStreamMessage =

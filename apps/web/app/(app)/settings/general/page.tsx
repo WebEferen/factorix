@@ -79,7 +79,7 @@ function SettingRow({
 
 function GeneralForm({ settings, onSaved }: { settings: PlatformSettingDto[]; onSaved: (settings: PlatformSettingDto[]) => void }) {
   const { data: me } = useMe()
-  const admin = me?.account.role === 'admin'
+  const admin = me?.installationAdmin === true
   const [draft, setDraft] = useState<Draft>(() => draftOf(settings))
   const [saving, setSaving] = useState(false)
   const byKey = new Map(settings.map((setting) => [setting.key, setting]))
@@ -149,7 +149,7 @@ function GeneralForm({ settings, onSaved }: { settings: PlatformSettingDto[]; on
             Save
           </Button>
         ) : (
-          <p className="text-xs text-ink-2">Only admins can change these.</p>
+          <p className="text-xs text-ink-2">These apply to every organization here. Only an installation admin can change them.</p>
         )}
       </div>
     </div>

@@ -4,7 +4,7 @@ import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { networkSettingsDto } from '../dto'
 import { writeAudit } from '../lib/audit'
-import { requireAdmin, requireAuth } from '../lib/auth'
+import { requireAdmin, requireAuth, requireInstallationAdmin } from '../lib/auth'
 import { notFound, parseBody } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { settingsDtos, updateSettings } from '../services/settings'
@@ -49,7 +49,7 @@ export function settingsRoutes(app: FastifyInstance, deps: AppDeps): void {
   })
 
   app.put('/api/settings/general', async (request) => {
-    const { account } = requireAdmin(request)
+    const { account } = requireInstallationAdmin(request)
     await updateSettings(deps, account.orgId, account.id, parseBody(platformSettingsInput, request.body) as PlatformSettingsInput)
     return { settings: await settingsDtos(deps) }
   })
