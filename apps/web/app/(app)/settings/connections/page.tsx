@@ -1,12 +1,13 @@
 'use client'
 
 import type { ConnectionDto } from '@factorix/schemas'
-import { Bot, CheckCircle2, CircleAlert, GitBranch, GitPullRequest, Hash, KeyRound, Plug, Plus, SquareKanban, Vault } from 'lucide-react'
+import { Bot, CheckCircle2, CircleAlert, GitBranch, GitPullRequest, Hash, KeyRound, Plug, Plus, Puzzle, SquareKanban, Vault } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from '@/modules/lib/api'
-import { useConnections, useMe } from '@/modules/lib/data'
+import { useConnections, useMe, usePlugins } from '@/modules/lib/data'
 import { timeAgo } from '@/modules/lib/format'
+import { PluginFields } from '@/modules/plugins/fields'
 import { Button, Chip, CopyField, Dialog, EmptyState, ErrorState, Field, Input, ListSkeleton, Select, Textarea } from '@/modules/ui'
 import { ConnectionsArt } from '@/modules/ui/empty-art'
 
@@ -23,6 +24,12 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
     hint: 'Tracker: projects, issues, comments, webhooks',
     icon: <SquareKanban />,
     secret: 'API token. On Data Center, a personal access token with the email left empty',
+  },
+  plugin: {
+    label: 'Plugin',
+    hint: 'A tracker served by a plugin that is turned on under Settings, Plugins',
+    icon: <Puzzle />,
+    secret: '',
   },
   trello: {
     label: 'Trello',
@@ -87,6 +94,7 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
   },
 }
 
+const TRACKER_PLUGIN = (plugin: { enabled: boolean; provides: string[] }) => plugin.enabled && plugin.provides.includes('tracker')
 const usesJsonSecret = (kind: string) => kind === 'mcp_http' || kind === 'generic'
 const SCM_HOSTS: Partial<Record<ConnectionDto['kind'], string>> = { gitlab: 'https://gitlab.com', github: 'https://github.com' }
 
@@ -114,8 +122,16 @@ function ConnectionDialog({
   const [botName, setBotName] = useState('')
   const [botEmail, setBotEmail] = useState('')
   const [loading, setLoading] = useState(false)
+  const [pluginId, setPluginId] = useState('')
+  const [pluginValues, setPluginValues] = useState<Record<string, string>>({})
+  const plugins = (usePlugins().data?.plugins ?? []).filter(TRACKER_PLUGIN)
+  const plugin = plugins.find((candidate) => candidate.id === pluginId) ?? (connection ? undefined : plugins[0])
   useEffect(() => {
     if (!open) return
+    setPluginId(String(connection?.config.pluginId ?? ''))
+    setPluginValues(
+      Object.fromEntries(Object.entries(connection?.config ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === 'string')),
+    )
     setKind(connection?.kind ?? 'linear')
     setName(connection?.name ?? '')
     setSecret('')
@@ -147,7 +163,16 @@ function ConnectionDialog({
                 : {}
       let secretValue: unknown
       if (secret) secretValue = usesJsonSecret(kind) ? JSON.parse(secret) : secret
-      const body = { name: name || KINDS[kind].label, config, secret: secretValue }
+      if (kind === 'plugin') {
+        if (!plugin) throw new Error('Turn a plugin on under Settings, Plugins first')
+        // The API sorts these into open and secret fields by the plugin's manifest.
+        const typed = Object.fromEntries(
+          plugin.connectionFields.flatMap((field) => (pluginValues[field.key] ? [[field.key, pluginValues[field.key]]] : [])),
+        )
+        Object.assign(config, { pluginId: plugin.id })
+        secretValue = typed
+      }
+      const body = { name: name || (kind === 'plugin' ? plugin?.name : undefined) || KINDS[kind].label, config, secret: secretValue }
       const { connection: saved } = connection
         ? await api.put<{ connection: ConnectionDto }>(`/api/connections/${connection.id}`, body)
         : await api.post<{ connection: ConnectionDto }>('/api/connections', { ...body, kind })
@@ -184,6 +209,31 @@ function ConnectionDialog({
           <Field label="Host">
             <Input required value={host} onChange={(event) => setHost(event.target.value)} />
           </Field>
+        ) : null}
+        {kind === 'plugin' ? (
+          plugins.length === 0 ? (
+            <p className="text-sm text-ink-2">No plugin with a tracker is turned on. Turn one on under Settings, Plugins.</p>
+          ) : (
+            <>
+              {connection ? null : (
+                <Field label="Plugin">
+                  <Select
+                    value={plugin?.id ?? ''}
+                    onChange={setPluginId}
+                    options={plugins.map((item) => ({ value: item.id, label: item.name, hint: item.description ?? undefined }))}
+                  />
+                </Field>
+              )}
+              {plugin ? (
+                <PluginFields
+                  fields={plugin.connectionFields}
+                  values={pluginValues}
+                  stored={connection?.hasSecret ? plugin.connectionFields.filter((field) => field.type === 'secret').map((field) => field.key) : []}
+                  onChange={setPluginValues}
+                />
+              ) : null}
+            </>
+          )
         ) : null}
         {kind === 'trello' ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -238,7 +288,7 @@ function ConnectionDialog({
             </Field>
           </div>
         ) : null}
-        {kind !== 'mcp_stdio' && kind !== 'factorix' ? (
+        {kind !== 'mcp_stdio' && kind !== 'factorix' && kind !== 'plugin' ? (
           <Field
             label={meta.secret}
             hint={connection?.hasSecret ? 'A secret is stored. Leave this blank to keep it.' : 'Encrypted at rest and never shown again.'}

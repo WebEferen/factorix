@@ -166,6 +166,7 @@ export const CONNECTION_KINDS = [
   'slack',
   'doppler',
   'factorix',
+  'plugin',
 ] as const
 export type ConnectionKind = (typeof CONNECTION_KINDS)[number]
 
@@ -188,6 +189,18 @@ export const connectionInput = z.object({
   secret: z.union([z.string().min(1), z.record(z.string(), z.string())]).optional(),
 })
 export type ConnectionInput = z.infer<typeof connectionInput>
+
+export const pluginInput = z.object({
+  url: z.url().max(500),
+  /** The secret the plugin was started with. Both sides sign with it. */
+  secret: z.string().min(16).max(200),
+})
+
+export const pluginOrganizationInput = z.object({
+  enabled: z.boolean(),
+  /** Every settings field, secret ones included. A secret left out keeps its stored value. */
+  settings: z.record(z.string(), z.string()).optional(),
+})
 
 export const connectionUpdateInput = updateOf(connectionInput.omit({ kind: true }))
 export type ConnectionUpdateInput = z.infer<typeof connectionUpdateInput>

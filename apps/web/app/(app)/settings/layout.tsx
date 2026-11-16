@@ -9,6 +9,7 @@ import { PageHeader } from '@/modules/shell/page-header'
 const SECTIONS = [
   { href: '/settings/general', label: 'General' },
   { href: '/settings/connections', label: 'Connections' },
+  { href: '/settings/plugins', label: 'Plugins' },
   { href: '/settings/network', label: 'Network' },
   { href: '/settings/runners', label: 'Runners' },
   { href: '/settings/tokens', label: 'API tokens' },

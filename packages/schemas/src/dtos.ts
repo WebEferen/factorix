@@ -24,6 +24,32 @@ export interface ApiTokenDto {
   createdAt: string
 }
 
+export interface PluginFieldDto {
+  key: string
+  label: string
+  type: 'text' | 'url' | 'secret'
+  required?: boolean
+  placeholder?: string
+  hint?: string
+}
+
+export interface PluginDto {
+  id: string
+  name: string
+  version: string
+  description: string | null
+  /** Shown to an installation admin only. */
+  url: string | null
+  provides: 'tracker'[]
+  connectionFields: PluginFieldDto[]
+  settingsFields: PluginFieldDto[]
+  pages: { key: string; label: string; placement: 'sidebar' | 'settings' }[]
+  /** Whether this organization has turned it on, and what it set. Secret settings are named, never returned. */
+  enabled: boolean
+  settings: Record<string, string>
+  secretSettings: string[]
+}
+
 export interface RunnerDto {
   id: string
   name: string

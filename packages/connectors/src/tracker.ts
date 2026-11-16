@@ -105,7 +105,7 @@ export interface TrackerMedia {
 }
 
 export interface TrackerConnector {
-  readonly kind: 'linear' | 'factorix' | 'jira' | 'trello'
+  readonly kind: 'linear' | 'factorix' | 'jira' | 'trello' | 'plugin'
   viewer(): Promise<{ id: string; name: string; email: string | null }>
   listTeams(): Promise<TrackerTeam[]>
   listProjects(teamId: string): Promise<TrackerProject[]>

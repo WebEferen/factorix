@@ -16,7 +16,10 @@ ENV API_URL=$API_URL FACTORIX_PUBLIC_URL=$FACTORIX_PUBLIC_URL FACTORIX_PREVIEW_U
 RUN cd apps/web && ../../node_modules/.bin/next build
 
 FROM node:22.23.4-bookworm-slim
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=4101 HOSTNAME=0.0.0.0
+# The proxy that writes the content security policy reads these when a request comes in, not when the image is built.
+ARG API_URL=http://api:4100
+ARG FACTORIX_PREVIEW_URL=http://preview.localhost:4102
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=4101 HOSTNAME=0.0.0.0 API_URL=$API_URL FACTORIX_PREVIEW_URL=$FACTORIX_PREVIEW_URL
 WORKDIR /app
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static

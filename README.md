@@ -260,6 +260,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 - **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them from the organization menu, under All organizations. Their agents run on separate networks, and the model keys in `.env` serve only the first one. They still share the worker's run slots.
 - **Email and password only.** There is no SSO yet.
+- **Plugins are young.** A plugin can add a tracker, pages in the sidebar or under Settings, and settings of its own, from a server outside Factorix. It cannot add a code host, attachments, or workflow blocks yet.
 - **Five connectors so far.** Linear, Jira, Trello, GitLab, and GitHub ship today. Jira and Trello have only run against stub servers. Trello has no priorities, and a list's place in the workflow is read from its name. Other sources implement the same connector interfaces.
 
 ## License

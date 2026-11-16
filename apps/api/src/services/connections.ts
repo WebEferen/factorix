@@ -4,6 +4,7 @@ import type { ConnectionInput } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { randomToken } from '../lib/crypto'
 import { notFound } from '../lib/errors'
+import { pluginTrackerFor } from './plugins'
 import { FactorixTracker } from './tickets'
 
 export function decryptConnection(deps: Pick<AppDeps, 'secrets'>, connection: ConnectionRow): string | null {
@@ -26,6 +27,7 @@ export async function getConnection(db: Db, orgId: string, id: string): Promise<
 export function trackerFor(deps: Pick<AppDeps, 'db' | 'secrets' | 'connectors'>, connection: ConnectionRow): TrackerConnector {
   // Built-in tickets are this database, so there is no secret and nothing for the factory of outside connectors to build.
   if (connection.kind === 'factorix') return new FactorixTracker(deps.db, connection)
+  if (connection.kind === 'plugin') return pluginTrackerFor(deps, connection)
   return deps.connectors.tracker(connection, requireSecret(deps, connection))
 }
 

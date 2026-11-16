@@ -15,6 +15,7 @@ export type ConnectionKind =
   | 'slack'
   | 'doppler'
   | 'factorix'
+  | 'plugin'
 
 export interface OrganizationRow {
   id: string
@@ -106,6 +107,30 @@ export interface AgentRow {
   helpers: AgentHelper[]
   capabilitiesSnapshot: RuntimeCapabilities
   version: number
+  updatedAt: Date
+}
+
+export interface PluginRow {
+  id: string
+  name: string
+  url: string
+  manifest: Record<string, unknown>
+  secretCiphertext: Buffer
+  secretNonce: Buffer
+  keyVersion: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface OrganizationPluginRow {
+  orgId: string
+  pluginId: string
+  config: Record<string, string>
+  secretCiphertext: Buffer | null
+  secretNonce: Buffer | null
+  keyVersion: number
+  enabledBy: string | null
+  createdAt: Date
   updatedAt: Date
 }
 
@@ -352,7 +377,7 @@ export interface ApprovalRow {
 export interface WebhookDeliveryRow {
   id: string
   connectionId: string
-  source: 'linear' | 'gitlab' | 'github' | 'jira' | 'trello'
+  source: 'linear' | 'gitlab' | 'github' | 'jira' | 'trello' | 'plugin'
   deliveryId: string
   eventType: string | null
   payload: unknown

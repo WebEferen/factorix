@@ -1,5 +1,7 @@
 import { createHmac } from 'node:crypto'
-import type { TrackerIssue } from '@factorix/connectors'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { signPlugin, type TrackerIssue, verifyPlugin } from '@factorix/connectors'
 import { ISSUE_SORTS, type RuntimeDto } from '@factorix/schemas'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { relayDomainEvents } from './services/relay'
@@ -480,6 +482,127 @@ describe('API', () => {
         )
         expect(trelloJob?.data).toMatchObject({ source: 'trello' })
         await trelloJob?.remove()
+      })
+
+      it('installs a plugin, turns it on, opens its page, and uses its tracker', async () => {
+        const secret = 'plugin-secret-0123456789'
+        const calls: { method: string; connection: { config: Record<string, string>; secrets: Record<string, string> } | null }[] = []
+        const manifest = {
+          protocol: 1,
+          name: 'Acme board',
+          version: '1.0.0',
+          provides: ['tracker'],
+          connection: {
+            fields: [
+              { key: 'site', label: 'Site', type: 'url', required: true },
+              { key: 'token', label: 'Token', type: 'secret' },
+            ],
+          },
+          settings: {
+            fields: [
+              { key: 'region', label: 'Region', type: 'text' },
+              { key: 'apiKey', label: 'API key', type: 'secret' },
+            ],
+          },
+          pages: [{ key: 'reports', label: 'Reports', path: '/pages/reports', placement: 'sidebar' }],
+        }
+        const server = createServer((req, res) => {
+          const chunks: Buffer[] = []
+          req.on('data', (chunk: Buffer) => chunks.push(chunk))
+          req.on('end', () => {
+            const raw = Buffer.concat(chunks)
+            const signed = verifyPlugin(secret, String(req.headers['x-factorix-timestamp']), String(req.headers['x-factorix-signature']), raw)
+            const call = JSON.parse(raw.toString('utf8'))
+            calls.push(call)
+            const result =
+              call.method === 'manifest'
+                ? manifest
+                : call.method === 'tracker.viewer'
+                  ? { id: 'u1', name: 'Board bot', email: null }
+                  : [{ id: 't1', key: 'ACME', name: 'Acme' }]
+            res.writeHead(signed ? 200 : 401, { 'content-type': 'application/json' })
+            res.end(JSON.stringify(signed ? { result } : { error: { message: 'bad signature' } }))
+          })
+        })
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/factorix`
+        try {
+          expect((await admin.request('POST', '/api/plugins', { url, secret: 'the-wrong-secret-0000' })).status).toBe(400)
+          const { plugin } = await admin.ok('POST', '/api/plugins', { url, secret })
+          expect(plugin).toMatchObject({
+            name: 'Acme board',
+            enabled: false,
+            url,
+            pages: [{ key: 'reports', label: 'Reports', placement: 'sidebar' }],
+          })
+          expect((await admin.ok('GET', '/api/plugins/origins')).origins).toContain(new URL(url).origin)
+
+          const connect = {
+            kind: 'plugin',
+            name: 'Acme',
+            config: { pluginId: plugin.id, site: 'https://acme.example', other: 'x' },
+            secret: { token: 't0k' },
+          }
+          expect((await admin.request('POST', '/api/connections', connect)).status).toBe(400)
+          const on = await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true, settings: { region: 'eu', apiKey: 'k1' } })
+          expect(on.plugin).toMatchObject({ enabled: true, settings: { region: 'eu' }, secretSettings: ['apiKey'] })
+          const kept = await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true, settings: { region: 'us' } })
+          expect(kept.plugin).toMatchObject({ settings: { region: 'us' }, secretSettings: ['apiKey'] })
+
+          const page = await admin.ok('POST', `/api/plugins/${plugin.id}/pages/reports/open`)
+          const opened = new URL(page.url)
+          expect(opened.origin + opened.pathname).toBe(`${url}/pages/reports`)
+          const [payload, signature] = String(opened.searchParams.get('factorix')).split('.')
+          expect(signature).toBe(createHmac('sha256', secret).update(String(payload)).digest('hex'))
+          expect(JSON.parse(Buffer.from(String(payload), 'base64url').toString())).toMatchObject({
+            page: 'reports',
+            account: { role: 'admin' },
+            settings: { region: 'us' },
+          })
+
+          const { connection } = await admin.ok('POST', '/api/connections', connect)
+          expect(connection).toMatchObject({ accountRole: 'tracker', hasSecret: true, config: { pluginId: plugin.id, site: 'https://acme.example' } })
+          expect(connection.config.other).toBeUndefined()
+          expect((await admin.ok('POST', `/api/connections/${connection.id}/test`)).message).toBe('Connected to the plugin as Board bot')
+          expect(calls.at(-1)).toMatchObject({
+            method: 'tracker.viewer',
+            connection: { config: { site: 'https://acme.example' }, secrets: { token: 't0k' } },
+          })
+          expect((await admin.ok('GET', `/api/tracker/teams?connectionId=${connection.id}`)).teams).toEqual([{ id: 't1', key: 'ACME', name: 'Acme' }])
+
+          const send = (path: string, body: string, key: string) => {
+            const timestamp = String(Date.now())
+            return harness.app.inject({
+              method: 'POST',
+              url: path,
+              payload: body,
+              headers: {
+                'content-type': 'application/json',
+                'x-factorix-timestamp': timestamp,
+                'x-factorix-signature': signPlugin(key, timestamp, body),
+              },
+            })
+          }
+          const event = JSON.stringify({ event: { kind: 'issue.removed', issueId: 'i1' } })
+          expect((await send(`/webhooks/plugin/${connection.id}`, event, 'another-secret-000000')).statusCode).toBe(401)
+          expect((await send(`/webhooks/plugin/${connection.id}`, event, secret)).json()).toEqual({ ok: true, duplicate: false })
+          const row = await harness.deps.db('webhook_deliveries').where({ connectionId: connection.id }).first()
+          expect(row).toMatchObject({ source: 'plugin', eventType: 'issue.removed' })
+          await (await harness.deps.queues.trackerInbound.getJob(`plugin-${row.id}`))?.remove()
+
+          const { org } = await admin.ok('GET', '/api/auth/me')
+          const ask = JSON.stringify({ orgId: org.id })
+          expect((await send(`/webhooks/plugins/${plugin.id}/settings`, ask, 'another-secret-000000')).statusCode).toBe(401)
+          expect((await send(`/webhooks/plugins/${plugin.id}/settings`, ask, secret)).json()).toEqual({
+            settings: { region: 'us' },
+            secrets: { apiKey: 'k1' },
+          })
+
+          expect((await admin.request('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: false })).status).toBe(409)
+          expect((await admin.request('DELETE', `/api/plugins/${plugin.id}`)).status).toBe(409)
+        } finally {
+          await new Promise((resolve) => server.close(resolve))
+        }
       })
 
       it('runs a project on built-in tickets when there is no tracker to connect', async () => {

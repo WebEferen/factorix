@@ -12,6 +12,9 @@ export * from './jira/webhook'
 export * from './linear/client'
 export * from './linear/markup'
 export * from './linear/webhook'
+export * from './plugin/protocol'
+export * from './plugin/remote'
+export * from './plugin/webhook'
 export * from './scm'
 export * from './secrets'
 export * from './source'
@@ -30,6 +33,7 @@ import { jiraSource } from './jira/markup'
 import { jiraWebhookCodec } from './jira/webhook'
 import { linearSource } from './linear/markup'
 import { linearWebhookCodec } from './linear/webhook'
+import { pluginSource, pluginWebhookCodec } from './plugin/webhook'
 import type { ScmConnector, ScmWebhookCodec } from './scm'
 import { type SecretSource, type SecretSourceKind, storedSecretSource } from './secrets'
 import type { ScmSource, TrackerSource } from './source'
@@ -42,12 +46,14 @@ export const TRACKER_SOURCES: Record<TrackerConnector['kind'], TrackerSource> = 
   factorix: factorixSource,
   jira: jiraSource,
   trello: trelloSource,
+  plugin: pluginSource,
 }
 /** Built-in tickets live in Factorix's own database, so nothing calls in about them. */
 export const TRACKER_WEBHOOK_CODECS: Partial<Record<TrackerConnector['kind'], TrackerWebhookCodec>> = {
   linear: linearWebhookCodec,
   jira: jiraWebhookCodec,
   trello: trelloWebhookCodec,
+  plugin: pluginWebhookCodec,
 }
 export const SCM_SOURCES: Record<ScmConnector['kind'], ScmSource> = { gitlab: gitlabSource, github: githubSource }
 export const SCM_WEBHOOK_CODECS: Record<ScmConnector['kind'], ScmWebhookCodec> = { gitlab: gitlabWebhookCodec, github: githubWebhookCodec }

@@ -14,6 +14,7 @@ import {
   Moon,
   Play,
   Plus,
+  Puzzle,
   Search,
   Settings,
   Shapes,
@@ -25,7 +26,7 @@ import {
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { api } from '../lib/api'
-import { useInbox, useProjects } from '../lib/data'
+import { useInbox, usePlugins, useProjects } from '../lib/data'
 import { cn } from '../lib/format'
 import { Avatar, Button, Kbd, Menu, MenuContent, MenuItem, MenuSeparator, MenuTrigger, Skeleton, Tooltip } from '../ui'
 import { useShell } from './state'
@@ -115,6 +116,7 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
   const pathname = usePathname()
   const { data: inbox } = useInbox()
   const { data: projects, error: projectsError, mutate: reloadProjects } = useProjects()
+  const { data: plugins } = usePlugins()
   const { openPalette, openNewIssue, openShortcuts } = useShell()
   const [theme, toggleTheme] = useTheme()
   const needsYou = (inbox?.approvals.length ?? 0) + (inbox?.failedIssues.length ?? 0)
@@ -240,6 +242,23 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
         {projects && projects.projects.length === 0 ? (
           <NavLink href="/projects" icon={<FolderKanban />} label="All projects" active={pathname === '/projects'} onNavigate={onNavigate} />
         ) : null}
+
+        {plugins?.plugins
+          .filter((plugin) => plugin.enabled)
+          .flatMap((plugin) =>
+            plugin.pages
+              .filter((page) => page.placement === 'sidebar')
+              .map((page) => (
+                <NavLink
+                  key={`${plugin.id}/${page.key}`}
+                  href={`/plugins/${plugin.id}/${page.key}`}
+                  icon={<Puzzle />}
+                  label={page.label}
+                  active={is(`/plugins/${plugin.id}/${page.key}`)}
+                  onNavigate={onNavigate}
+                />
+              )),
+          )}
 
         <div className="mt-auto pt-4">
           <NavLink href="/settings" icon={<Settings />} label="Settings" active={is('/settings')} onNavigate={onNavigate} />

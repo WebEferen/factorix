@@ -8,6 +8,7 @@ import { requireAdmin, requireAuth } from '../lib/auth'
 import { badRequest, conflict, isUniqueViolation, parseBody } from '../lib/errors'
 import { encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
 import { secretSourceFor } from '../services/environments'
+import { pluginConnectionValues, secretsOf } from '../services/plugins'
 import { readSettings } from '../services/settings'
 import { FactorixTracker } from '../services/tickets'
 
@@ -24,6 +25,7 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.post('/api/connections', async (request) => {
     const { account } = requireAdmin(request)
     const input = parseBody(connectionInput, request.body)
+    if (input.kind === 'plugin') Object.assign(input, await pluginConnectionValues(deps, account.orgId, input.config, input.secret))
     try {
       const [row] = await db<ConnectionRow>('connections')
         .insert({
@@ -57,6 +59,12 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { id } = request.params as { id: string }
     const current = await getConnection(db, account.orgId, id)
     const input = parseBody(connectionUpdateInput, request.body)
+    if (current.kind === 'plugin' && input.config) {
+      // Fields left blank keep their stored secret, and the plugin a connection belongs to never changes.
+      const values = await pluginConnectionValues(deps, account.orgId, { ...input.config, pluginId: current.config.pluginId }, input.secret)
+      input.config = values.config
+      input.secret = { ...secretsOf(deps, current), ...values.secret }
+    }
     const config = input.config ? withWebhookSecret(current.kind, { webhookSecret: current.config.webhookSecret, ...input.config }) : current.config
     const [row] = await db<ConnectionRow>('connections')
       .where({ id })
@@ -83,9 +91,9 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { account } = requireAdmin(request)
     const connection = await getConnection(db, account.orgId, (request.params as { id: string }).id)
     try {
-      if (connection.kind === 'linear' || connection.kind === 'jira' || connection.kind === 'trello') {
+      if (connection.kind === 'linear' || connection.kind === 'jira' || connection.kind === 'trello' || connection.kind === 'plugin') {
         const viewer = await trackerFor(deps, connection).viewer()
-        const label = { linear: 'Linear', jira: 'Jira', trello: 'Trello' }[connection.kind]
+        const label = { linear: 'Linear', jira: 'Jira', trello: 'Trello', plugin: 'the plugin' }[connection.kind]
         return { ok: true, message: `Connected to ${label} as ${viewer.name}` }
       }
       if (connection.kind === 'gitlab' || connection.kind === 'github') {

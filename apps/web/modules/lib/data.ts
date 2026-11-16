@@ -15,6 +15,7 @@ import type {
   NetworkSettings,
   NotificationChannelDto,
   PlatformSettingDto,
+  PluginDto,
   PreviewDto,
   ProjectDto,
   RunDto,
@@ -34,6 +35,10 @@ function useApi<T>(path: string | null, config?: SWRConfiguration<T>) {
 
 export function useMe() {
   return useApi<MeDto>('/api/auth/me', { revalidateOnFocus: false, shouldRetryOnError: false })
+}
+
+export function usePlugins() {
+  return useApi<{ plugins: PluginDto[] }>('/api/plugins', { revalidateOnFocus: false })
 }
 
 export function useProjects() {
