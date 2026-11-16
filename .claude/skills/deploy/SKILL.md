@@ -105,10 +105,10 @@ docker compose up -d
 A fresh Linux machine needs only SSH access as root or a sudo user. From the server, with DNS for the domain and `*.preview.<domain>` already pointing at it:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain <domain> --email <address>
+curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain <domain>
 ```
 
-Without a domain it serves on `127.0.0.1:4101` only, reachable through an SSH tunnel: `ssh -L 4101:127.0.0.1:4101 "$HOST"`. Ask the user for the domain and address. Never take them from this file's history or memory.
+Without a domain it serves on `127.0.0.1:4101` only, reachable through an SSH tunnel: `ssh -L 4101:127.0.0.1:4101 "$HOST"`. Ask the user for the domain. Never take it from this file's history or memory.
 
 ## Never
 

@@ -5,7 +5,7 @@
 The installer sets up a fresh Linux server in one command, Docker and HTTPS included:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com --email ops@example.com
+curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com
 ```
 
 Before running it, point DNS at the server: an A record for `factorix.example.com` and one for `*.preview.factorix.example.com`. `--preview-domain` picks another name for previews. Give the server 8 GB of memory or more and 40 GB of free disk, since agents and previews run beside Factorix.

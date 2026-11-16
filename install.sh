@@ -6,7 +6,7 @@
 #
 # On a Linux server, give it a domain to serve Factorix over HTTPS there, with previews on *.preview.<domain>:
 #
-#   curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com --email ops@example.com
+#   curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com
 #
 # Point an A record for the domain and a wildcard one for *.preview.<domain> at the server first.
 #
@@ -34,10 +34,10 @@ warn() { printf 'Warning: %s\n' "$*" >&2; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [--domain HOST --email ADDRESS [--preview-domain HOST]]
+Usage: install.sh [--domain HOST [--email ADDRESS] [--preview-domain HOST]]
 
   --domain HOST           Serve Factorix over HTTPS at HOST. Linux servers only.
-  --email ADDRESS         Contact address for Let's Encrypt. Required with --domain.
+  --email ADDRESS         Contact address on the Let's Encrypt account. Optional.
   --preview-domain HOST   Previews live on *.HOST. Defaults to preview.<domain>.
 
 Without options, Factorix runs on http://localhost:4101 for this machine only.
@@ -66,7 +66,7 @@ parse_args() {
   local host='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
   [[ "$DOMAIN" =~ $host ]] || die "$DOMAIN is not a host name such as factorix.example.com."
   [[ "$PREVIEW_DOMAIN" =~ $host ]] || die "$PREVIEW_DOMAIN is not a host name such as preview.example.com."
-  [[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "--email needs an address, which Let's Encrypt uses to warn about certificates."
+  [ -z "$EMAIL" ] || [[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "--email needs an address such as ops@example.com."
   [ "$(uname -s)" = Linux ] || die "--domain sets up a Linux server. On this machine, run it without options."
 }
 
@@ -273,7 +273,7 @@ setup_https() {
   say "Serving https://$DOMAIN, with previews on *.$PREVIEW_DOMAIN"
   set_env FACTORIX_DOMAIN "$DOMAIN"
   set_env FACTORIX_PREVIEW_DOMAIN "$PREVIEW_DOMAIN"
-  set_env FACTORIX_ACME_EMAIL "$EMAIL"
+  [ -z "$EMAIL" ] || set_env FACTORIX_ACME_EMAIL "$EMAIL"
   set_env FACTORIX_PUBLIC_URL "https://$DOMAIN"
   set_env FACTORIX_PREVIEW_URL "https://$PREVIEW_DOMAIN"
   set_env COOKIE_SECURE true

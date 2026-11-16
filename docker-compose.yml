@@ -170,7 +170,8 @@ services:
     environment:
       FACTORIX_DOMAIN: ${FACTORIX_DOMAIN:-}
       FACTORIX_PREVIEW_DOMAIN: ${FACTORIX_PREVIEW_DOMAIN:-}
-      FACTORIX_ACME_EMAIL: ${FACTORIX_ACME_EMAIL:-}
+      # Empty without an address, since Caddy refuses an `email` line with nothing after it.
+      FACTORIX_ACME_EMAIL_DIRECTIVE: ${FACTORIX_ACME_EMAIL:+email ${FACTORIX_ACME_EMAIL}}
     volumes:
       - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - fx-caddy:/data
