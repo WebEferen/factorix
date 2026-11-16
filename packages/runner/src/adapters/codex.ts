@@ -2,8 +2,10 @@ import { execFile } from 'node:child_process'
 import { mkdirSync } from 'node:fs'
 import { promisify } from 'node:util'
 import {
+  type AgentHelper,
   type AgentRuntime,
   type McpServerSpec,
+  type ModelUsage,
   type ReasoningEffort,
   RUNTIME_CAPABILITIES,
   type RunControl,
@@ -22,7 +24,12 @@ export function mcpServersToConfig(servers: Record<string, McpServerSpec>): Reco
   const config: Record<string, ConfigValue> = {}
   for (const [name, server] of Object.entries(servers)) {
     if (server.type === 'stdio') {
-      config[name] = { command: server.command, args: server.args ?? [], env: server.env ?? {} }
+      config[name] = {
+        command: server.command,
+        args: server.args ?? [],
+        env: server.env ?? {},
+        ...(server.toolTimeoutSec ? { tool_timeout_sec: server.toolTimeoutSec } : {}),
+      }
     } else {
       config[name] = { url: server.url, http_headers: server.headers ?? {} }
     }
@@ -47,6 +54,16 @@ export function buildThreadOptions(spec: RunSpec): ThreadOptions {
 export function buildFirstTurn(spec: RunSpec): string {
   const denied = spec.policy.deny.length > 0 ? `\n\nDo not use these tools or commands: ${spec.policy.deny.join(', ')}.` : ''
   return `<operator_instructions>\n${spec.prompt.system}${denied}\n</operator_instructions>\n\n${spec.prompt.user}`
+}
+
+/**
+ * A helper's one turn. Codex cannot hold a thread to reading only inside a container, so for a helper that may only
+ * read, that is an instruction here and not a limit.
+ */
+export function buildHelperTurn(helper: AgentHelper, task: string): string {
+  const readOnly =
+    helper.access === 'read' ? '\n\nYou may read and search files. Do not change files, and do not run commands that change anything.' : ''
+  return `<operator_instructions>\n${helper.prompt}${readOnly}\n</operator_instructions>\n\n${task}`
 }
 
 interface CodexCatalogRow {
@@ -95,21 +112,42 @@ export class CodexRuntime implements AgentRuntime {
 
   async prepare(): Promise<void> {}
 
-  async *run(spec: RunSpec, control: RunControl, io: RunnerIO): AsyncIterable<RunEventBody> {
+  private readonly helperUsage: Record<string, ModelUsage> = {}
+
+  private client(io: RunnerIO, mcpServers: RunSpec['mcpServers'] = {}): Codex {
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value
     env.CODEX_HOME = `${io.homeDir}/.codex`
     env.HOME = io.homeDir
-
-    const codex = new Codex({
+    return new Codex({
       env,
       apiKey: process.env.CODEX_API_KEY,
       baseUrl: process.env.OPENAI_BASE_URL,
-      config: Object.keys(spec.mcpServers).length > 0 ? { mcp_servers: mcpServersToConfig(spec.mcpServers) } : undefined,
+      config: Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServersToConfig(mcpServers) } : undefined,
     })
+  }
+
+  /** The SDK has no helpers, so one is a second thread on its own model. It gets no MCP servers, and so cannot delegate further. */
+  async runHelper(spec: RunSpec, helper: AgentHelper, task: string, signal: AbortSignal, io: RunnerIO): Promise<string> {
+    const model = helper.model ?? spec.model.name
+    const thread = this.client(io).startThread({ ...buildThreadOptions(spec), model, modelReasoningEffort: undefined })
+    const turn = await thread.run(buildHelperTurn(helper, task), { signal })
+    const key = model ?? 'default'
+    const spent = this.helperUsage[key] ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+    this.helperUsage[key] = {
+      inputTokens: spent.inputTokens + (turn.usage?.input_tokens ?? 0),
+      outputTokens: spent.outputTokens + (turn.usage?.output_tokens ?? 0),
+      cacheReadTokens: spent.cacheReadTokens + (turn.usage?.cached_input_tokens ?? 0),
+      cacheWriteTokens: spent.cacheWriteTokens,
+    }
+    return turn.finalResponse
+  }
+
+  async *run(spec: RunSpec, control: RunControl, io: RunnerIO): AsyncIterable<RunEventBody> {
+    const codex = this.client(io, spec.mcpServers)
     const options = buildThreadOptions(spec)
     const thread = spec.resume ? codex.resumeThread(spec.resume.sessionRef, options) : codex.startThread(options)
-    const normalizer = new CodexNormalizer(spec.model.name, spec.resume?.sessionRef)
+    const normalizer = new CodexNormalizer(spec.model.name, spec.resume?.sessionRef, this.helperUsage)
 
     const pending: string[] = [buildFirstTurn(spec)]
     const forward = (async () => {

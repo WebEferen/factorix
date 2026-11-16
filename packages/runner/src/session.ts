@@ -56,6 +56,10 @@ export class RunnerSession {
     this.options.emit({ ...body, seq: partial ? 0 : ++this.seq, ts: now, runId: this.options.spec.runId })
   }
 
+  get signal(): AbortSignal {
+    return this.abort.signal
+  }
+
   handleCommand(command: RunCommand): void {
     switch (command.type) {
       case 'approval.decide': {

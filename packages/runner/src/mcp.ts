@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline'
-import { BRIDGE_SOCKET, type BridgeOp } from '@factorix/runtime'
+import { BRIDGE_SOCKET, type BridgeOp, type RunnerOp } from '@factorix/runtime'
 import { callBridge } from './bridge'
 
 interface Tool {
@@ -43,6 +43,27 @@ export const PREVIEW_TOOLS: Tool[] = [
   },
 ]
 
+type Call = (op: BridgeOp | RunnerOp, input: unknown) => Promise<unknown>
+
+/** Offered only when the run has helpers and the runtime's SDK cannot run them itself. */
+async function delegateTool(call: Call): Promise<object | null> {
+  const helpers = (await call('helper.list', {})) as { name: string; description: string }[]
+  if (helpers.length === 0) return null
+  return {
+    name: 'delegate',
+    description:
+      'Hands a task to a helper, a smaller model that works in this same checkout and answers when it is done. ' +
+      'Use it for work that does not need you, and say in task everything the helper needs, since it sees nothing else. Helpers:\n' +
+      helpers.map((helper) => `- ${helper.name}: ${helper.description}`).join('\n'),
+    inputSchema: {
+      type: 'object',
+      properties: { helper: { type: 'string', enum: helpers.map((helper) => helper.name) }, task: { type: 'string' } },
+      required: ['helper', 'task'],
+      additionalProperties: false,
+    },
+  }
+}
+
 interface Message {
   jsonrpc?: string
   id?: string | number | null
@@ -54,7 +75,8 @@ const reply = (id: Message['id'], result: unknown) => ({ jsonrpc: '2.0', id, res
 const failure = (id: Message['id'], code: number, message: string) => ({ jsonrpc: '2.0', id, error: { code, message } })
 
 /** Answers one MCP message, or returns null for a notification. */
-export function createMcpHandler(call: (op: BridgeOp, input: unknown) => Promise<unknown>) {
+export function createMcpHandler(call: Call, groups: string[] = ['preview']) {
+  const previews = groups.includes('preview') ? PREVIEW_TOOLS : []
   return async (message: Message): Promise<object | null> => {
     if (message.id === undefined || message.id === null) return null
     const { id } = message
@@ -67,13 +89,16 @@ export function createMcpHandler(call: (op: BridgeOp, input: unknown) => Promise
         })
       case 'ping':
         return reply(id, {})
-      case 'tools/list':
-        return reply(id, { tools: PREVIEW_TOOLS.map(({ op: _op, ...tool }) => tool) })
+      case 'tools/list': {
+        const delegate = groups.includes('helpers') ? await delegateTool(call).catch(() => null) : null
+        return reply(id, { tools: [...previews.map(({ op: _op, ...tool }) => tool), ...(delegate ? [delegate] : [])] })
+      }
       case 'tools/call': {
-        const tool = PREVIEW_TOOLS.find((candidate) => candidate.name === message.params?.name)
-        if (!tool) return failure(id, -32602, `There is no tool called ${String(message.params?.name)}.`)
+        const tool = previews.find((candidate) => candidate.name === message.params?.name)
+        const op = tool?.op ?? (groups.includes('helpers') && message.params?.name === 'delegate' ? 'helper.run' : null)
+        if (!op) return failure(id, -32602, `There is no tool called ${String(message.params?.name)}.`)
         try {
-          const value = await call(tool.op, message.params?.arguments ?? {})
+          const value = await call(op, message.params?.arguments ?? {})
           return reply(id, { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] })
         } catch (error) {
           return reply(id, { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true })
@@ -87,7 +112,7 @@ export function createMcpHandler(call: (op: BridgeOp, input: unknown) => Promise
 
 /** The stdio MCP server the agent's runtime starts. Every tool call goes over the bridge to the runner, and from there to the worker. */
 export async function runMcpServer(path = process.env.FACTORIX_BRIDGE ?? BRIDGE_SOCKET): Promise<void> {
-  const handle = createMcpHandler((op, input) => callBridge(path, op, input))
+  const handle = createMcpHandler((op, input) => callBridge(path, op, input), (process.env.FACTORIX_TOOLS ?? 'preview').split(','))
   const pending = new Set<Promise<void>>()
   for await (const line of createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY })) {
     if (!line.trim()) continue

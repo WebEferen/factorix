@@ -2,9 +2,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import type { Server } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { type AgentRuntime, RUNTIME_CAPABILITIES, type RunEvent, type RunSpec } from '@factorix/runtime'
+import { type AgentHelper, type AgentRuntime, type BridgeOp, RUNTIME_CAPABILITIES, type RunEvent, type RunSpec } from '@factorix/runtime'
 import { afterEach, describe, expect, it } from 'vitest'
 import { callBridge, serveBridge } from './bridge'
+import { createHelperDesk } from './helpers'
 import { createMcpHandler } from './mcp'
 import { RunnerSession } from './session'
 
@@ -89,7 +90,7 @@ describe('asking the worker', () => {
     const path = join(dir, 'bridge.sock')
     const events: RunEvent[] = []
     const { session, finish } = idleSession(events)
-    server = await serveBridge(path, (op, input) => session.request(op, input))
+    server = await serveBridge(path, (op, input) => session.request(op as BridgeOp, input))
     const handle = createMcpHandler((op, input) => callBridge(path, op, input))
 
     const listed = (await handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as { result: { tools: { name: string }[] } }
@@ -121,5 +122,92 @@ describe('asking the worker', () => {
     const path = join(dir, 'bridge.sock')
     server = await serveBridge(path, async () => 'never')
     await expect(callBridge(path, 'shell.exec' as never, {})).rejects.toThrow('There is no operation called shell.exec.')
+  })
+})
+
+describe('helpers behind the delegate tool', () => {
+  let dir = ''
+  let server: Server | null = null
+  afterEach(() => {
+    server?.close()
+    if (dir) rmSync(dir, { recursive: true, force: true })
+  })
+
+  const helpers: AgentHelper[] = [
+    { name: 'code-search', description: 'Finds code', prompt: 'Search.', model: 'small', access: 'read' },
+    { name: 'test-runner', description: 'Runs tests', prompt: 'Run.', model: null, access: 'all' },
+  ]
+  const withHelpers = { helpers } as unknown as RunSpec
+  const runtimeOf = (mode: 'native' | 'delegate', runHelper?: AgentRuntime['runHelper']) =>
+    ({ capabilities: () => ({ ...RUNTIME_CAPABILITIES.codex, helpers: mode }), runHelper }) as unknown as AgentRuntime
+
+  async function toolsOf(runtime: AgentRuntime, signal = new AbortController().signal, groups = ['preview', 'helpers']) {
+    dir = mkdtempSync(join(tmpdir(), 'fx-helpers-'))
+    const path = join(dir, 'bridge.sock')
+    const desk = createHelperDesk(withHelpers, runtime, io, signal)
+    server = await serveBridge(path, (op, input) => desk(op as never, input))
+    return createMcpHandler((op, input) => callBridge(path, op, input), groups)
+  }
+  const names = async (handle: Awaited<ReturnType<typeof toolsOf>>) =>
+    ((await handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as { result: { tools: { name: string }[] } }).result.tools.map(
+      (tool) => tool.name,
+    )
+  const delegate = (handle: Awaited<ReturnType<typeof toolsOf>>, args: unknown) =>
+    handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'delegate', arguments: args } }) as Promise<{
+      result: { content: { text: string }[]; isError?: boolean }
+    }>
+
+  it('offers the tool with the run’s helpers, runs the one asked for, and returns its answer', async () => {
+    const asked: unknown[] = []
+    const handle = await toolsOf(
+      runtimeOf('delegate', async (_spec, helper, task) => {
+        asked.push([helper.name, helper.model, task])
+        return 'Defined in src/a.ts:12'
+      }),
+      undefined,
+      ['helpers'],
+    )
+    const listed = (await handle({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as {
+      result: { tools: { name: string; description: string; inputSchema: { properties: { helper: { enum: string[] } } } }[] }
+    }
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(['delegate'])
+    expect(listed.result.tools[0]?.description).toContain('- code-search: Finds code')
+    expect(listed.result.tools[0]?.inputSchema.properties.helper.enum).toEqual(['code-search', 'test-runner'])
+
+    const answer = await delegate(handle, { helper: 'code-search', task: 'Where is parse defined?' })
+    expect(answer.result).toEqual({ content: [{ type: 'text', text: 'Defined in src/a.ts:12' }] })
+    expect(asked).toEqual([['code-search', 'small', 'Where is parse defined?']])
+  })
+
+  it('says which helpers exist when asked for one that does not, and wants a task', async () => {
+    const handle = await toolsOf(runtimeOf('delegate', async () => 'x'))
+    const unknown = await delegate(handle, { helper: 'nobody', task: 'x' })
+    expect(unknown.result.isError).toBe(true)
+    expect(unknown.result.content[0]?.text).toContain('Choose one of: code-search, test-runner')
+    expect((await delegate(handle, { helper: 'code-search', task: ' ' })).result.content[0]?.text).toContain('task')
+  })
+
+  it('is not offered where the SDK runs helpers itself, or where the server was not asked for it', async () => {
+    expect(await names(await toolsOf(runtimeOf('native', async () => 'x')))).not.toContain('delegate')
+    server?.close()
+    expect(
+      await names(
+        await toolsOf(
+          runtimeOf('delegate', async () => 'x'),
+          undefined,
+          ['preview'],
+        ),
+      ),
+    ).not.toContain('delegate')
+  })
+
+  it('refuses once the run is ending', async () => {
+    const abort = new AbortController()
+    const handle = await toolsOf(
+      runtimeOf('delegate', async () => 'x'),
+      abort.signal,
+    )
+    abort.abort()
+    expect((await delegate(handle, { helper: 'code-search', task: 'x' })).result.content[0]?.text).toContain('ending')
   })
 })

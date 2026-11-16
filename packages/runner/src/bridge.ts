@@ -1,8 +1,10 @@
 import { rmSync } from 'node:fs'
 import { connect, createServer, type Server } from 'node:net'
-import { BRIDGE_OPS, type BridgeCall, type BridgeOp, type BridgeReply, LineSplitter } from '@factorix/runtime'
+import { BRIDGE_OPS, type BridgeCall, type BridgeOp, type BridgeReply, LineSplitter, RUNNER_OPS, type RunnerOp } from '@factorix/runtime'
 
-export type BridgeHandler = (op: BridgeOp, input: unknown) => Promise<unknown>
+export type BridgeHandler = (op: BridgeOp | RunnerOp, input: unknown) => Promise<unknown>
+
+const KNOWN_OPS: readonly string[] = [...BRIDGE_OPS, ...RUNNER_OPS]
 
 /** Listens inside the agent's container for tools that need the worker, one JSON line per call and per reply. */
 export function serveBridge(path: string, handle: BridgeHandler): Promise<Server> {
@@ -19,7 +21,7 @@ export function serveBridge(path: string, handle: BridgeHandler): Promise<Server
         return
       }
       let reply: BridgeReply
-      if (!BRIDGE_OPS.includes(call.op)) reply = { id: call.id, ok: false, error: `There is no operation called ${String(call.op)}.` }
+      if (!KNOWN_OPS.includes(call.op)) reply = { id: call.id, ok: false, error: `There is no operation called ${String(call.op)}.` }
       else {
         try {
           reply = { id: call.id, ok: true, result: await handle(call.op, call.input) }
@@ -40,7 +42,7 @@ export function serveBridge(path: string, handle: BridgeHandler): Promise<Server
 }
 
 /** One call over the bridge. Rejects with the worker's message when it refuses. */
-export function callBridge(path: string, op: BridgeOp, input: unknown): Promise<unknown> {
+export function callBridge(path: string, op: BridgeOp | RunnerOp, input: unknown): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const socket = connect(path)
     const lines = new LineSplitter()

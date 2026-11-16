@@ -83,7 +83,7 @@ describe('resources attached to an issue', () => {
     expect(spec.helpers).toBeUndefined()
   })
 
-  it('gives a run the helpers its agent had when it started, on a runtime that has them', async () => {
+  it('gives a run the helpers its agent had when it started, through the SDK or the delegate tool', async () => {
     const { agents } = await admin.ok('GET', '/api/agents')
     const { run } = await admin.ok('POST', '/api/runs', { agentId: agents[0].id, prompt: 'Look', gitUrl: 'file:///remote/repo.git' })
     const row = (await harness.deps.db('runs').where({ id: run.id }).first()) as RunRow
@@ -99,8 +99,15 @@ describe('resources attached to an issue', () => {
         ciFailures: [],
         extraNotes: [],
       })
-    expect((await build('claude')).helpers).toEqual(helpers)
-    expect((await build('codex')).helpers).toBeUndefined()
+    const claude = await build('claude')
+    expect(claude.helpers).toEqual(helpers)
+    expect(claude.mcpServers.factorix).toBeUndefined()
+    // Codex has no helpers of its own, so its run gets the delegate tool and may call it.
+    const codex = await build('codex')
+    expect(codex.helpers).toEqual(helpers)
+    expect(codex.mcpServers.factorix).toMatchObject({ env: { FACTORIX_TOOLS: 'helpers' }, toolTimeoutSec: 900 })
+    expect(codex.policy.allow).toContain('mcp__factorix__*')
+    expect((await build('scripted')).helpers).toBeUndefined()
   })
 
   it('copies files and description uploads for the container, masks secrets, and points the description at the copies', async () => {

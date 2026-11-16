@@ -1,4 +1,4 @@
-import { EMPTY_USAGE, estimateCostUsd, type RunEventBody, type UsageSnapshot } from '@factorix/runtime'
+import { EMPTY_USAGE, estimateCostUsd, estimateRunCostUsd, type ModelUsage, type RunEventBody, type UsageSnapshot } from '@factorix/runtime'
 import { truncateOutput } from '../truncate'
 
 interface LooseItem {
@@ -38,15 +38,47 @@ interface LooseEvent {
 export class CodexNormalizer {
   sessionRef: string
   finalText = ''
-  usage: UsageSnapshot = { ...EMPTY_USAGE }
   failed: string | null = null
+  private own: UsageSnapshot = { ...EMPTY_USAGE }
   private readonly started = new Set<string>()
   private readonly model: string | undefined
   private announced = false
 
-  constructor(model: string | undefined, resumeRef?: string) {
+  /** `helperUsage` is what helpers spent, by model. They run beside this thread, so it is read each time usage is asked for. */
+  constructor(
+    model: string | undefined,
+    resumeRef?: string,
+    private readonly helperUsage: Record<string, ModelUsage> = {},
+  ) {
     this.model = model
     this.sessionRef = resumeRef ?? ''
+  }
+
+  get usage(): UsageSnapshot {
+    const helpers = Object.entries(this.helperUsage)
+    if (helpers.length === 0) return this.own
+    const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } = this.own
+    const byModel: Record<string, ModelUsage> = { [this.model ?? 'default']: { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens } }
+    for (const [model, spent] of helpers) {
+      const sum = byModel[model] ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+      byModel[model] = {
+        inputTokens: sum.inputTokens + spent.inputTokens,
+        outputTokens: sum.outputTokens + spent.outputTokens,
+        cacheReadTokens: sum.cacheReadTokens + spent.cacheReadTokens,
+        cacheWriteTokens: sum.cacheWriteTokens + spent.cacheWriteTokens,
+      }
+    }
+    const total = (key: keyof ModelUsage) => Object.values(byModel).reduce((all, spent) => all + (spent[key] ?? 0), 0)
+    const usage: UsageSnapshot = {
+      ...this.own,
+      inputTokens: total('inputTokens'),
+      outputTokens: total('outputTokens'),
+      cacheReadTokens: total('cacheReadTokens'),
+      cacheWriteTokens: total('cacheWriteTokens'),
+      byModel,
+    }
+    usage.costUsd = estimateRunCostUsd(this.model, usage)
+    return usage
   }
 
   normalize(raw: unknown): RunEventBody[] {
@@ -182,16 +214,16 @@ export class CodexNormalizer {
   private turnCompleted(event: LooseEvent): RunEventBody[] {
     const usage = event.usage
     const next: UsageSnapshot = {
-      inputTokens: this.usage.inputTokens + (usage?.input_tokens ?? 0),
-      outputTokens: this.usage.outputTokens + (usage?.output_tokens ?? 0),
-      cacheReadTokens: this.usage.cacheReadTokens + (usage?.cached_input_tokens ?? 0),
-      cacheWriteTokens: this.usage.cacheWriteTokens + (usage?.cache_write_input_tokens ?? 0),
-      reasoningTokens: (this.usage.reasoningTokens ?? 0) + (usage?.reasoning_output_tokens ?? 0),
-      turns: this.usage.turns + 1,
+      inputTokens: this.own.inputTokens + (usage?.input_tokens ?? 0),
+      outputTokens: this.own.outputTokens + (usage?.output_tokens ?? 0),
+      cacheReadTokens: this.own.cacheReadTokens + (usage?.cached_input_tokens ?? 0),
+      cacheWriteTokens: this.own.cacheWriteTokens + (usage?.cache_write_input_tokens ?? 0),
+      reasoningTokens: (this.own.reasoningTokens ?? 0) + (usage?.reasoning_output_tokens ?? 0),
+      turns: this.own.turns + 1,
     }
     next.costUsd = estimateCostUsd(this.model, next)
-    this.usage = next
-    return [{ type: 'usage', cumulative: true, ...next }]
+    this.own = next
+    return [{ type: 'usage', cumulative: true, ...this.usage }]
   }
 }
 

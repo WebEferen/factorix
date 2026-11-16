@@ -6,10 +6,15 @@ export type BridgeOp = 'preview.start' | 'preview.status' | 'preview.logs' | 'pr
 
 export const BRIDGE_OPS: readonly BridgeOp[] = ['preview.start', 'preview.status', 'preview.logs', 'preview.stop']
 
+/** Answered by the runner itself, inside the container: the helpers of a runtime whose SDK has none of its own. */
+export type RunnerOp = 'helper.list' | 'helper.run'
+
+export const RUNNER_OPS: readonly RunnerOp[] = ['helper.list', 'helper.run']
+
 /** One line on the socket each way. */
 export interface BridgeCall {
   id: number
-  op: BridgeOp
+  op: BridgeOp | RunnerOp
   input: unknown
 }
 

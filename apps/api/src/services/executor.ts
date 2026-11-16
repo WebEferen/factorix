@@ -7,6 +7,7 @@ import {
   type ErrorCode,
   encodeLine,
   estimateCostUsd,
+  estimateRunCostUsd,
   type Phase,
   RUNTIME_CAPABILITIES,
   type RunCommand,
@@ -639,7 +640,7 @@ class RunExecution {
     const { db } = this.deps
     this.usage = event
     const estimated = event.costUsd === undefined
-    const cost = event.costUsd ?? estimateCostUsd(this.run.model ?? undefined, event)
+    const cost = event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event)
     await db('runs')
       .where({ id: this.run.id })
       .update({

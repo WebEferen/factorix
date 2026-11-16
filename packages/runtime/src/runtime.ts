@@ -1,7 +1,7 @@
 import type { RuntimeCapabilities } from './capabilities'
 import type { RunCommand } from './commands'
 import type { RunEventBody } from './events'
-import type { ReasoningEffort, RunSpec, RuntimeId } from './spec'
+import type { AgentHelper, ReasoningEffort, RunSpec, RuntimeId } from './spec'
 
 export interface ApprovalRequest {
   kind: 'tool' | 'plan' | 'question'
@@ -49,4 +49,9 @@ export interface AgentRuntime {
   capabilities(): RuntimeCapabilities
   prepare(spec: RunSpec, io: RunnerIO): Promise<void>
   run(spec: RunSpec, control: RunControl, io: RunnerIO): AsyncIterable<RunEventBody>
+  /**
+   * Runs one helper to its answer, for a runtime whose capabilities say `delegate`. What it spends belongs in the
+   * usage that `run` reports.
+   */
+  runHelper?(spec: RunSpec, helper: AgentHelper, task: string, signal: AbortSignal, io: RunnerIO): Promise<string>
 }

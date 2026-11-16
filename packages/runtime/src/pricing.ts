@@ -30,3 +30,19 @@ export function estimateCostUsd(
     perToken(usage.cacheWriteTokens, price.cacheWritePerMTok)
   )
 }
+
+/** Prices each model's share when a run used several, and says nothing when one of them has no known price. */
+export function estimateRunCostUsd(
+  model: string | undefined,
+  usage: UsageSnapshot,
+  prices: Record<string, ModelPrice> = MODEL_PRICES,
+): number | undefined {
+  if (!usage.byModel) return estimateCostUsd(model, usage, prices)
+  let total = 0
+  for (const [name, spent] of Object.entries(usage.byModel)) {
+    const cost = spent.costUsd ?? estimateCostUsd(name, { ...spent, turns: 0 }, prices)
+    if (cost === undefined) return undefined
+    total += cost
+  }
+  return total
+}

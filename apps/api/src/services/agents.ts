@@ -80,7 +80,7 @@ async function validateRuntime(deps: Pick<AppDeps, 'db' | 'env'>, input: AgentIn
   const capabilities = RUNTIME_CAPABILITIES[input.runtime as RuntimeId]
   const problems = policyErrorsForRuntime({ ...input.policy }, input.runtime as RuntimeId, capabilities.toolApproval)
   if (problems[0]) throw badRequest(problems[0])
-  if (input.helpers.length > 0 && !capabilities.subagents) throw badRequest('This runtime cannot hand work to helpers')
+  if (input.helpers.length > 0 && capabilities.helpers === 'none') throw badRequest('This runtime cannot hand work to helpers')
 }
 
 export async function agentRole(db: Db | Knex.Transaction, agentId: string): Promise<string | undefined> {

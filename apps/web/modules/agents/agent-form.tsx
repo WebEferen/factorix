@@ -95,6 +95,7 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
     }))
   }
   const canAsk = capabilities?.toolApproval === 'per_call'
+  const offersHelpers = capabilities !== undefined && capabilities.helpers !== 'none'
   const setHelper = (index: number, change: Partial<(typeof form.helpers)[number]>) =>
     set(
       'helpers',
@@ -144,7 +145,7 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
         requireApproval: canAsk ? linesOf(form.requireApproval) : [],
         networkAccess: form.networkAccess,
       },
-      helpers: capabilities?.subagents ? form.helpers : [],
+      helpers: offersHelpers ? form.helpers : [],
       skillIds: form.skillIds,
       connectionIds: form.connectionIds,
       status: form.status,
@@ -290,13 +291,16 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
         />
       </section>
 
-      {capabilities?.subagents ? (
+      {offersHelpers ? (
         <section className="flex flex-col gap-3 border-t border-divider pt-5">
           <div>
             <h2 className="text-sm font-semibold">Helpers</h2>
             <p className="mt-1 text-sm text-ink-2">
               Smaller models this agent can hand parts of its work to, such as searching the code or reading logs. A helper works inside the same run
               and reports back, so the agent's own model spends less.
+              {capabilities?.helpers === 'delegate'
+                ? ' This runtime has none of its own, so Factorix runs them when the agent calls its delegate tool, and "Read and search" is an instruction to the helper, not a limit.'
+                : ''}
             </p>
           </div>
           {form.helpers.map((helper, index) => (

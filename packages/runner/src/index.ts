@@ -4,18 +4,22 @@ import { createInterface } from 'node:readline'
 import {
   type AgentRuntime,
   BRIDGE_SOCKET,
+  type BridgeOp,
   decodeCommand,
   encodeLine,
   ISSUE_FILES_DIR,
   JOURNAL_FILE,
+  RUNNER_OPS,
   type RunEvent,
   type RunnerIO,
+  type RunnerOp,
   type RunSpec,
   type RuntimeId,
   type RuntimeModelCatalog,
 } from '@factorix/runtime'
 import { serveBridge } from './bridge'
 import { writeIssueFiles } from './files'
+import { createHelperDesk } from './helpers'
 import { runMcpServer } from './mcp'
 import { RunnerSession } from './session'
 
@@ -77,7 +81,10 @@ async function main(): Promise<void> {
     })
     holder.session = session
     try {
-      await serveBridge(BRIDGE_SOCKET, (op, input) => session.request(op, input))
+      const helpers = createHelperDesk(spec, runtime, io, session.signal)
+      await serveBridge(BRIDGE_SOCKET, (op, input) =>
+        (RUNNER_OPS as readonly string[]).includes(op) ? helpers(op as RunnerOp, input) : session.request(op as BridgeOp, input),
+      )
       process.env.FACTORIX_BRIDGE = BRIDGE_SOCKET
     } catch (error) {
       console.error('the factorix bridge did not start', error)

@@ -4,7 +4,7 @@ export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type JsonSchema = Record<string, unknown>
 
 export type McpServerSpec =
-  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string> }
+  | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; toolTimeoutSec?: number }
   | { type: 'http'; url: string; headers?: Record<string, string> }
 
 export type ToolRule = string
@@ -67,7 +67,7 @@ export interface RunSpec {
   cwd: string
   runtime: RuntimeId
   model: ModelSpec
-  /** Runs inside this run, in the same container and under the same policy. Only a runtime with `subagents` uses them. */
+  /** Run inside this run, in the same container and under the same policy, by the SDK or by the runner. */
   helpers?: AgentHelper[]
   prompt: { system: string; user: string }
   mcpServers: Record<string, McpServerSpec>

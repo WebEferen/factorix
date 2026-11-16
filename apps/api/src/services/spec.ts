@@ -130,11 +130,18 @@ function openThreadsFrom(rows: MrDiscussionRow[], repos: { id?: string | null; n
   return threads
 }
 
-const FACTORIX_MCP_SERVER: McpServerSpec = {
-  type: 'stdio',
-  command: 'node',
-  args: ['/opt/factorix/runner/index.mjs', '--mcp'],
-  env: { FACTORIX_BRIDGE: BRIDGE_SOCKET },
+/** A helper works for minutes, far longer than a runtime waits on a tool by default. */
+const DELEGATE_TIMEOUT_SECONDS = 900
+
+/** The MCP server inside the container. `tools` names what it offers: `preview`, `helpers`, or both. */
+function factorixMcpServer(tools: string[]): McpServerSpec {
+  return {
+    type: 'stdio',
+    command: 'node',
+    args: ['/opt/factorix/runner/index.mjs', '--mcp'],
+    env: { FACTORIX_BRIDGE: BRIDGE_SOCKET, FACTORIX_TOOLS: tools.join(',') },
+    ...(tools.includes('helpers') ? { toolTimeoutSec: DELEGATE_TIMEOUT_SECONDS } : {}),
+  }
 }
 
 /** An edit-only agent may use only what its policy allows, so the platform's own tools are allowed explicitly. */
@@ -286,7 +293,7 @@ export interface SpecInput {
   ciFailures: string[]
   extraNotes: string[]
   resumeSessionRef?: string
-  /** Adds the factorix MCP server, whose preview tools reach the worker through the runner. */
+  /** Offers the preview tools of the factorix MCP server, which reach the worker through the runner. */
   previewTool?: boolean
   resources?: PhaseResource[]
   files?: RunFile[]
@@ -311,6 +318,9 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
   }
   const notes = input.extraNotes.length > 0 ? `\n\n${input.extraNotes.join('\n\n')}` : ''
   const redact = input.redact ?? ((text: string) => text)
+  const helperMode = RUNTIME_CAPABILITIES[run.runtime].helpers
+  const helpers = helperMode !== 'none' && agent.helpers?.length ? agent.helpers : undefined
+  const tools = [...(input.previewTool ? ['preview'] : []), ...(helpers && helperMode === 'delegate' ? ['helpers'] : [])]
   return {
     runId: run.id,
     attempt: run.attempt,
@@ -323,7 +333,7 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
       maxTurns: agent.maxTurns ?? undefined,
       maxBudgetUsd: agent.maxBudgetUsd ?? undefined,
     },
-    helpers: RUNTIME_CAPABILITIES[run.runtime].subagents && agent.helpers?.length ? agent.helpers : undefined,
+    helpers,
     prompt: {
       system: redact(
         renderSystemPrompt({
@@ -338,9 +348,9 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
     },
     mcpServers: {
       ...input.mcpServers,
-      ...(input.previewTool ? { factorix: FACTORIX_MCP_SERVER } : {}),
+      ...(tools.length > 0 ? { factorix: factorixMcpServer(tools) } : {}),
     },
-    policy: input.previewTool ? withFactorixTools(resolvePolicy(agent.policy, phase)) : resolvePolicy(agent.policy, phase),
+    policy: tools.length > 0 ? withFactorixTools(resolvePolicy(agent.policy, phase)) : resolvePolicy(agent.policy, phase),
     resume: input.resumeSessionRef ? { sessionRef: input.resumeSessionRef } : undefined,
     outputSchema: template.outputSchema,
     startSeq: run.lastRunnerSeq,

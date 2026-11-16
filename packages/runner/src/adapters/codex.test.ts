@@ -1,6 +1,6 @@
 import type { RunSpec } from '@factorix/runtime'
 import { describe, expect, it } from 'vitest'
-import { buildFirstTurn, buildThreadOptions, codexCatalog, mcpServersToConfig } from './codex'
+import { buildFirstTurn, buildHelperTurn, buildThreadOptions, codexCatalog, mcpServersToConfig } from './codex'
 import { CodexNormalizer, parseStructuredOutput } from './codex-normalize'
 
 describe('codexCatalog', () => {
@@ -102,6 +102,22 @@ describe('CodexNormalizer', () => {
     expect((event as { costUsd?: number }).costUsd).toBeUndefined()
   })
 
+  it('adds what helpers spent, by model, and prices each share', () => {
+    const helpers: Record<string, { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}
+    const normalizer = new CodexNormalizer('claude-opus-5-5', undefined, helpers)
+    const usage = { input_tokens: 1_000_000, cached_input_tokens: 0, output_tokens: 0 }
+    expect(normalizer.normalize({ type: 'turn.completed', usage })[0]).not.toHaveProperty('byModel')
+    helpers['claude-haiku-5-5'] = { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+    expect(normalizer.usage).toMatchObject({
+      inputTokens: 2_000_000,
+      turns: 1,
+      costUsd: 4.1,
+      byModel: { 'claude-opus-5-5': { inputTokens: 1_000_000 }, 'claude-haiku-5-5': { inputTokens: 1_000_000 } },
+    })
+    helpers['unpriced-model'] = { inputTokens: 5, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+    expect(normalizer.usage.costUsd).toBeUndefined()
+  })
+
   it('remembers the last agent message as the final text', () => {
     const normalizer = new CodexNormalizer(undefined)
     normalizer.normalize({ type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: 'first' } })
@@ -153,6 +169,21 @@ describe('Codex option mapping', () => {
     const turn = buildFirstTurn(spec)
     expect(turn.indexOf('SYSTEM')).toBeLessThan(turn.indexOf('USER'))
     expect(turn).toContain('Bash(git push*)')
+  })
+
+  it('gives a helper its instructions before the task, and tells a reading one to change nothing', () => {
+    const helper = { name: 'code-search', description: 'Finds code', prompt: 'Answer with paths.', model: null, access: 'read' as const }
+    const turn = buildHelperTurn(helper, 'Where is parse defined?')
+    expect(turn.indexOf('Answer with paths.')).toBeLessThan(turn.indexOf('Where is parse defined?'))
+    expect(turn).toContain('Do not change files')
+    expect(buildHelperTurn({ ...helper, access: 'all' }, 'x')).not.toContain('Do not change files')
+  })
+
+  it('lets a server say how long its tools may take', () => {
+    expect(mcpServersToConfig({ factorix: { type: 'stdio', command: 'node', toolTimeoutSec: 900 } }).factorix).toMatchObject({
+      tool_timeout_sec: 900,
+    })
+    expect(mcpServersToConfig({ other: { type: 'stdio', command: 'node' } }).other).not.toHaveProperty('tool_timeout_sec')
   })
 
   it('maps both MCP transports', () => {

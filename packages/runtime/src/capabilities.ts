@@ -11,7 +11,8 @@ export interface RuntimeCapabilities {
   partialStreaming: boolean
   sessionResume: boolean
   structuredOutput: boolean
-  subagents: boolean
+  /** `native` hands an agent's helpers to the SDK. `delegate` means the SDK has none, so the runner runs them behind a tool. */
+  helpers: 'native' | 'delegate' | 'none'
   questionsToHuman: boolean
   budgetLimit: 'native' | 'emulated'
   maxTurns: 'native' | 'emulated'
@@ -29,7 +30,7 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     partialStreaming: true,
     sessionResume: true,
     structuredOutput: true,
-    subagents: true,
+    helpers: 'native',
     questionsToHuman: true,
     budgetLimit: 'native',
     maxTurns: 'native',
@@ -45,7 +46,7 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     partialStreaming: false,
     sessionResume: true,
     structuredOutput: true,
-    subagents: false,
+    helpers: 'delegate',
     questionsToHuman: false,
     budgetLimit: 'emulated',
     maxTurns: 'emulated',
@@ -61,7 +62,7 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     partialStreaming: false,
     sessionResume: true,
     structuredOutput: true,
-    subagents: false,
+    helpers: 'none',
     questionsToHuman: true,
     budgetLimit: 'emulated',
     maxTurns: 'emulated',
