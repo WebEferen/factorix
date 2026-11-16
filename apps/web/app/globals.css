@@ -156,3 +156,30 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* The sign-in panel: each stage of a ticket's way lights up in turn. */
+@keyframes fx-stage {
+  0%,
+  22% {
+    border-color: var(--signal);
+    background-color: var(--selected);
+    transform: translateY(-2px);
+  }
+  28%,
+  100% {
+    border-color: var(--divider);
+    background-color: var(--surface);
+    transform: none;
+  }
+}
+
+@keyframes fx-link {
+  0%,
+  8% {
+    background-color: var(--signal);
+  }
+  14%,
+  100% {
+    background-color: var(--divider);
+  }
+}
