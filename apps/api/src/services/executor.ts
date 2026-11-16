@@ -15,7 +15,7 @@ import {
   type RunSpec,
   type UsageSnapshot,
 } from '@factorix/runtime'
-import type { AgentHandle, SandboxProvider, StartAgentOptions, Workspace } from '@factorix/sandbox'
+import type { AgentHandle, SandboxProvider, StartAgentOptions, TenantIsolation, Workspace } from '@factorix/sandbox'
 import { noProxyHost } from '@factorix/schemas'
 import type { Redis } from 'ioredis'
 import type { AppDeps } from '../deps'
@@ -308,7 +308,7 @@ class RunExecution {
       const checkoutEnv: Record<string, string> = { ...repo.env, ...containerEnv }
       // With several repositories a ticket may touch only one, so setup runs where the agent works, not in all of them.
       if (repo.setupCommands.length > 0 && this.repos.length === 1) checkoutEnv.FX_SETUP = repo.setupCommands.join(' && ')
-      const checkout = await sandbox.runStep(workspace, { op: 'checkout', env: checkoutEnv, timeoutSeconds: 1800 })
+      const checkout = await sandbox.runStep(workspace, { op: 'checkout', env: checkoutEnv, timeoutSeconds: 1800, isolation: this.isolation() })
       if (checkout.stderr.trim()) this.log('debug', checkout.stderr.trim().slice(-4000), 'checkout')
       if (checkout.exitCode !== 0) throw new StepFailed('checkout', checkout)
       if (checkout.values.CONFLICT === '1') result.conflicts.push(repo.name)
@@ -316,6 +316,11 @@ class RunExecution {
       result.head ??= checkout.values.HEAD
     }
     return result
+  }
+
+  private isolation(): TenantIsolation | undefined {
+    const proxy = this.deps.env.FACTORIX_PROXY_URL
+    return proxy ? { tenant: this.run.orgId, egressAlias: new URL(proxy).hostname } : undefined
   }
 
   /** Env for anything that runs repo or agent code. It holds the egress proxy token, never the git token. */
@@ -480,6 +485,7 @@ class RunExecution {
       readOnlyRepo: PHASES[this.run.phase as Phase].readOnlyRepo,
       env: withServices(await this.containerEnv(), services.started),
       networks: services.started?.network ? [services.started.network] : undefined,
+      isolation: this.isolation(),
       image: this.project?.sandboxImage ?? undefined,
       limits:
         this.project?.limits.memoryMb || this.project?.limits.cpus

@@ -14,6 +14,7 @@ import {
   environmentSourceVolume,
   managedLabels,
   parseStepValues,
+  STEP_PROFILES,
   serviceContainerConfig,
   stepContainerConfig,
 } from './profiles'
@@ -29,6 +30,7 @@ import type {
   StartAgentOptions,
   StepRequest,
   StepResult,
+  TenantIsolation,
   Workspace,
 } from './provider'
 
@@ -221,12 +223,39 @@ export class DockerSandboxProvider implements SandboxProvider {
     return workspace
   }
 
+  /**
+   * Agents of different organizations must not reach each other, so each organization gets an internal network with
+   * only the egress proxy on it. Without a proxy the container would have no way out, so that fails here, loudly.
+   */
+  private async tenantDefaults(isolation: TenantIsolation | undefined): Promise<ContainerDefaults> {
+    const base = this.defaults.agentNetwork
+    if (!base || !isolation) return this.defaults
+    const name = `${base}-${isolation.tenant}`
+    const existing = await this.docker.listNetworks({ filters: JSON.stringify({ name: [name] }) })
+    if (!existing.some((network) => network.Name === name)) {
+      const Labels = { ...managedLabels(this.defaults), 'factorix.tenant': isolation.tenant }
+      await this.docker.createNetwork({ Name: name, Internal: true, Labels }).catch((error: { statusCode?: number }) => {
+        if (error.statusCode !== 409) throw error
+      })
+    }
+    const labels = ['factorix.role=egress', ...(this.defaults.stack ? [`factorix.stack=${this.defaults.stack}`] : [])]
+    const [proxy] = await this.docker.listContainers({ filters: JSON.stringify({ label: labels, status: ['running'] }) })
+    if (!proxy) throw new Error('The egress proxy is not running, or lacks the factorix.role=egress label, so an agent would have no network.')
+    const network = this.docker.getNetwork(name)
+    const info = (await network.inspect()) as { Containers?: Record<string, unknown> }
+    if (!info.Containers?.[proxy.Id]) {
+      await network.connect({ Container: proxy.Id, EndpointConfig: { Aliases: [isolation.egressAlias] } }).catch((error: { statusCode?: number }) => {
+        // Another run of the same organization connected it first.
+        if (error.statusCode !== 403 && error.statusCode !== 409) throw error
+      })
+    }
+    return { ...this.defaults, agentNetwork: name }
+  }
+
   async runStep(workspace: Workspace, request: StepRequest): Promise<StepResult> {
     const startedAt = Date.now()
-    const result = await this.runToExit(
-      stepContainerConfig(workspace, request, this.defaults),
-      request.timeoutSeconds ?? DEFAULT_STEP_TIMEOUT_SECONDS,
-    )
+    const defaults = STEP_PROFILES[request.op].network === 'agent' ? await this.tenantDefaults(request.isolation) : this.defaults
+    const result = await this.runToExit(stepContainerConfig(workspace, request, defaults), request.timeoutSeconds ?? DEFAULT_STEP_TIMEOUT_SECONDS)
     return {
       op: request.op,
       exitCode: result.exitCode,
@@ -276,7 +305,7 @@ export class DockerSandboxProvider implements SandboxProvider {
   }
 
   async startAgent(workspace: Workspace, options: StartAgentOptions): Promise<AgentHandle> {
-    const container = await this.docker.createContainer(agentContainerConfig(workspace, options, this.defaults))
+    const container = await this.docker.createContainer(agentContainerConfig(workspace, options, await this.tenantDefaults(options.isolation)))
     for (const network of options.networks ?? []) await this.docker.getNetwork(network).connect({ Container: container.id })
     const stream = await attachWithStdin(this.docker, container.id, {})
     const handle = new DockerAgentHandle(container, stream, this.docker.modem)

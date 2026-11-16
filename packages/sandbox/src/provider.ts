@@ -8,8 +8,19 @@ export interface Workspace {
   mirrorVolume: string
 }
 
+/**
+ * Puts a container on its organization's own agent network, which only that organization's containers and the egress
+ * proxy are on. The proxy answers there under the name agents are told to use.
+ */
+export interface TenantIsolation {
+  tenant: string
+  egressAlias: string
+}
+
 export interface StepRequest {
   op: StepOp
+  /** Applies to ops that run on the agent network. */
+  isolation?: TenantIsolation
   env?: Record<string, string>
   /** Only token-holding ops may receive this. The provider throws otherwise. */
   gitToken?: string
@@ -44,6 +55,7 @@ export interface StartAgentOptions {
   limits?: Partial<ResourceLimits>
   /** Joined before the agent starts, such as the network of the services its run gets. */
   networks?: string[]
+  isolation?: TenantIsolation
 }
 
 export interface AgentHandle {

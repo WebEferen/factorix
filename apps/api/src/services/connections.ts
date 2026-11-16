@@ -83,7 +83,10 @@ export interface ModelCredential {
   apiKey: string
 }
 
-/** Agent-linked connection first, then any org connection of that kind, then the environment. */
+/**
+ * Agent-linked connection first, then any org connection of that kind. The keys in the environment belong to whoever
+ * runs the installation, so only its first organization falls back to them and no other organization spends them.
+ */
 export async function resolveModelKey(
   deps: Pick<AppDeps, 'db' | 'env' | 'secrets'>,
   orgId: string,
@@ -101,5 +104,7 @@ export async function resolveModelKey(
     const secret = decryptConnection(deps, row)
     if (secret) return secret
   }
+  const first = await deps.db('organizations').orderBy('created_at').orderBy('id').first('id')
+  if (first?.id !== orgId) return undefined
   return provider === 'anthropic' ? deps.env.ANTHROPIC_API_KEY : deps.env.OPENAI_API_KEY
 }

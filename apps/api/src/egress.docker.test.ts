@@ -23,6 +23,7 @@ const docker = dockerClientFromEnv()
 const suffix = randomUUID().slice(0, 8)
 const agentsNetwork = `fx-test-agents-${suffix}`
 const egressNetwork = `fx-test-egress-${suffix}`
+const stack = `fxtest-${suffix}`
 const remoteVolume = `fx-test-egress-remote-${suffix}`
 
 const ECHO_SERVER = `require('node:http').createServer((q,s)=>{let b='';q.on('data',d=>b+=d);q.on('end',()=>{s.setHeader('content-type','application/json');s.end(JSON.stringify({url:q.url,headers:q.headers}))})}).listen(8000)`
@@ -80,6 +81,8 @@ describe('egress control', () => {
       Cmd: ['node', '/tmp/proxy.cjs'],
       Env: [`REDIS_URL=redis://host.docker.internal:${redisPort}`, 'PORT=8080', 'FACTORIX_ANTHROPIC_UPSTREAM=http://allowed.test:8000'],
       HostConfig: { NetworkMode: egressNetwork, ExtraHosts: ['host.docker.internal:host-gateway'] },
+      // The worker finds the proxy by these to put it on each organization's agent network.
+      Labels: { 'factorix.role': 'egress', 'factorix.stack': stack },
     })
     await proxy.putArchive(tarPath, { path: '/tmp' })
     await docker.getNetwork(agentsNetwork).connect({ Container: proxy.id, EndpointConfig: { Aliases: ['egress-proxy'] } })
@@ -95,6 +98,7 @@ describe('egress control', () => {
             image,
             stepNetwork: egressNetwork,
             agentNetwork: agentsNetwork,
+            stack,
             extraStepMounts: [{ Type: 'volume', Source: remoteVolume, Target: '/remote' }],
           },
           docker,
@@ -142,10 +146,11 @@ describe('egress control', () => {
         .getContainer(id)
         .remove({ force: true })
         .catch(() => undefined)
-    await docker
-      .getNetwork(agentsNetwork)
-      .remove()
-      .catch(() => undefined)
+    for (const network of await docker.listNetworks({ filters: JSON.stringify({ name: [agentsNetwork] }) }))
+      await docker
+        .getNetwork(network.Id)
+        .remove()
+        .catch(() => undefined)
     await docker
       .getNetwork(egressNetwork)
       .remove()

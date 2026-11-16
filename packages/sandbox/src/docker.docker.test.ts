@@ -520,3 +520,66 @@ git config url."file:///nowhere".insteadOf /remote/repo.git`,
     expect(managed.containers.some((container) => container.id === containers[0])).toBe(true)
   })
 })
+
+describe('organizations on one Docker host', () => {
+  const stack = `fxtest-${suffix}`
+  const base = `fxtest-agents-${suffix}`
+  const provider = new DockerSandboxProvider({ image, agentNetwork: base, stack }, docker)
+  const keys = [`test-a-${suffix}`, `test-b-${suffix}`]
+  const containers: string[] = []
+
+  const start = async (workspaceKey: string, tenant: string) => {
+    const workspace = await provider.ensureWorkspace(workspaceKey)
+    const handle = await provider.startAgent(workspace, {
+      runId: `run-${randomUUID().slice(0, 8)}`,
+      issueKey: workspaceKey,
+      readOnlyRepo: false,
+      isolation: { tenant, egressAlias: 'egress-proxy' },
+    })
+    containers.push(handle.containerId)
+    handle.detach()
+    return handle.containerId
+  }
+  const networksOf = async (id: string) => Object.keys((await docker.getContainer(id).inspect()).NetworkSettings.Networks)
+
+  afterAll(async () => {
+    for (const id of containers) await docker.getContainer(id).remove({ force: true })
+    for (const workspaceKey of keys) await provider.destroyWorkspace(workspaceKey)
+    for (const tenant of ['a', 'b'])
+      await docker
+        .getNetwork(`${base}-${tenant}`)
+        .remove()
+        .catch(() => undefined)
+  })
+
+  it('refuses to start an agent while no proxy could give it a way out', async () => {
+    await expect(start(keys[0] as string, 'a')).rejects.toThrow(/egress proxy is not running/)
+  })
+
+  it('gives each organization its own internal network, with only the proxy on both', async () => {
+    const proxy = await docker.createContainer({
+      Image: image,
+      Cmd: ['sleep', '300'],
+      Labels: { 'factorix.role': 'egress', 'factorix.stack': stack },
+    })
+    await proxy.start()
+    containers.push(proxy.id)
+
+    const first = await start(keys[0] as string, 'a')
+    const second = await start(keys[0] as string, 'a')
+    const other = await start(keys[1] as string, 'b')
+    expect(await networksOf(first)).toEqual([`${base}-a`])
+    expect(await networksOf(second)).toEqual([`${base}-a`])
+    expect(await networksOf(other)).toEqual([`${base}-b`])
+
+    const ours = await docker.getNetwork(`${base}-a`).inspect()
+    const theirs = await docker.getNetwork(`${base}-b`).inspect()
+    expect(ours.Internal).toBe(true)
+    expect(theirs.Internal).toBe(true)
+    expect(Object.keys(ours.Containers ?? {}).sort()).toEqual([first, second, proxy.id].sort())
+    expect(Object.keys(theirs.Containers ?? {}).sort()).toEqual([other, proxy.id].sort())
+    const joined = (await proxy.inspect()).NetworkSettings.Networks
+    expect(joined[`${base}-a`]?.Aliases).toContain('egress-proxy')
+    expect(joined[`${base}-b`]?.Aliases).toContain('egress-proxy')
+  })
+})

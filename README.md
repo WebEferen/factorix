@@ -251,7 +251,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 ## Known limits
 
-- **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them under Settings, Organizations. They still share the worker's run slots and one network for agent containers.
+- **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them under Settings, Organizations. Their agents run on separate networks, and the model keys in `.env` serve only the first one. They still share the worker's run slots.
 - **Email and password only.** There is no SSO yet.
 - **Two connectors so far.** Linear and GitLab ship today. Other sources implement the same connector interfaces.
 

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { resolveModelKey } from './services/connections'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
 
 const SETUP = { orgName: 'Acme', name: 'Ada', email: 'ada@example.com', password: 'correct horse battery' }
@@ -106,5 +107,14 @@ describe('organizations', () => {
     expect((await token.ok('GET', '/api/auth/me')).org.id).toBe(acmeId)
     expect((await token.ok('GET', '/api/connections')).connections).toHaveLength(1)
     expect((await token.request('POST', '/api/auth/switch', { orgId: betaId })).status).toBe(403)
+  })
+
+  it('spend the keys in the environment only for the first organization', async () => {
+    const deps = { ...harness.deps, env: { ...harness.deps.env, ANTHROPIC_API_KEY: 'sk-env', OPENAI_API_KEY: 'sk-env-openai' } }
+    const agentIn = async (orgId: string) => (await deps.db('agents').where({ orgId }).first()).accountId as string
+    expect(await resolveModelKey(deps, acmeId, await agentIn(acmeId), 'anthropic')).toBe('sk-acme')
+    expect(await resolveModelKey(deps, acmeId, await agentIn(acmeId), 'openai')).toBe('sk-env-openai')
+    expect(await resolveModelKey(deps, betaId, await agentIn(betaId), 'anthropic')).toBeUndefined()
+    expect(await resolveModelKey(deps, betaId, await agentIn(betaId), 'openai')).toBeUndefined()
   })
 })
