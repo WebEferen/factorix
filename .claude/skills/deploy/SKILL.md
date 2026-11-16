@@ -47,10 +47,10 @@ A deploy changes a running system, so get a clear go-ahead for this deploy from 
 ```sh
 mkdir -p ~/factorix-backups && chmod 700 ~/factorix-backups
 cd ~/factorix && f=~/factorix-backups/compose-backup-before-$(git rev-parse --short HEAD)-$(date -u +%Y%m%dT%H%M%SZ).sql
-(umask 077 && docker compose exec -T postgres pg_dump -U factorix factorix > "$f") && ls -l "$f" && tail -n 3 "$f"
+(umask 077 && docker compose exec -T postgres pg_dump -U factorix factorix > "$f") && ls -l "$f" && grep -c 'PostgreSQL database dump complete' "$f"
 ```
 
-The dump must be non-empty and end with `PostgreSQL database dump complete`. Do not continue without it. On a first install there is nothing to back up.
+The dump must be non-empty and the last command must print `1`. Do not look for the marker with `tail`: Postgres 17 writes one more line after it. Do not continue without it. On a first install there is nothing to back up.
 
 ## 3. Roll out
 
