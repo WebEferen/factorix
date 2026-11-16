@@ -11,6 +11,32 @@ export class ApiError extends Error {
   }
 }
 
+const LINK = /^\/api\/(issues|runs|projects|agents|workflows)\/([0-9a-f]{8}-[0-9a-f-]{27})$/
+export const SWITCHED_KEY = 'fx-switched-org'
+
+/**
+ * A link to something in another organization of yours answers 404 in the one you are in. This moves the session
+ * to the right one and loads the page again. It tries once per address, so a link to nothing stays a 404.
+ */
+async function followLink(path: string): Promise<void> {
+  const match = LINK.exec(path)
+  if (!match || typeof window === 'undefined') return
+  const tried = `fx-followed:${path}`
+  if (sessionStorage.getItem(tried)) return
+  sessionStorage.setItem(tried, '1')
+  const response = await fetch('/api/auth/follow', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind: match[1], id: match[2] }),
+  })
+  if (!response.ok) return
+  const result = (await response.json()) as { switched: boolean; org?: { name: string } }
+  if (!result.switched) return
+  sessionStorage.setItem(SWITCHED_KEY, result.org?.name ?? '')
+  window.location.reload()
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
@@ -36,6 +62,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     ) {
       window.location.href = '/login'
     }
+    if (response.status === 404 && method === 'GET') await followLink(path).catch(() => undefined)
     throw new ApiError(response.status, error?.code ?? 'error', error?.message ?? `The request failed with status ${response.status}`, error?.details)
   }
   return parsed as T

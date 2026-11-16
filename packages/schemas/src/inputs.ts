@@ -23,6 +23,10 @@ export type CreateOrgInput = z.infer<typeof createOrgInput>
 
 export const switchOrgInput = z.object({ orgId: z.uuid() })
 
+/** What a link can point at. Each lives in exactly one organization. */
+export const LINK_KINDS = ['issues', 'runs', 'projects', 'agents', 'workflows'] as const
+export const followLinkInput = z.object({ kind: z.enum(LINK_KINDS), id: z.uuid() })
+
 /**
  * What an API token may change. Every token can read what its account can, and nothing here reaches an admin action.
  * A request that changes something and names no scope is refused for every token.

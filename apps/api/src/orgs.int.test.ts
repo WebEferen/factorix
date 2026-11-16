@@ -56,6 +56,24 @@ describe('organizations', () => {
     expect((await ada.request('GET', `/api/agents/${acmeAgents[0]}`)).status).toBe(404)
   })
 
+  it('follow a link into another organization the person is in, and nowhere else', async () => {
+    const [acmeAgent] = await harness.deps.db('agents').where({ orgId: acmeId }).pluck('account_id')
+    expect((await ada.request('GET', `/api/agents/${acmeAgent}`)).status).toBe(404)
+    expect(await ada.ok('POST', '/api/auth/follow', { kind: 'agents', id: acmeAgent })).toMatchObject({ switched: true, org: { name: 'Acme' } })
+    expect((await ada.ok('GET', `/api/agents/${acmeAgent}`)).agent.id).toBe(acmeAgent)
+    expect(await ada.ok('POST', '/api/auth/follow', { kind: 'agents', id: acmeAgent })).toEqual({ switched: false })
+
+    const [outside] = await harness.deps.db('organizations').insert({ name: 'Outside', slug: 'outside' }).returning('id')
+    const [foreign] = await harness.deps.db('workflows').insert({ orgId: outside.id, name: 'Theirs', definition: '{}' }).returning('id')
+    const missing = await ada.request('POST', '/api/auth/follow', { kind: 'workflows', id: '11111111-2222-4333-8444-555555555555' })
+    const notMine = await ada.request('POST', '/api/auth/follow', { kind: 'workflows', id: foreign.id })
+    expect(missing.status).toBe(404)
+    expect(notMine.body).toEqual(missing.body)
+    expect((await ada.ok('GET', '/api/auth/me')).org.id).toBe(acmeId)
+    await harness.deps.db('organizations').where({ id: outside.id }).delete()
+    await ada.ok('POST', '/api/auth/switch', { orgId: betaId })
+  })
+
   it('land a new sign-in where the person last worked', async () => {
     const again = new ApiClient(harness.app)
     await again.ok('POST', '/api/auth/login', { email: SETUP.email, password: SETUP.password })

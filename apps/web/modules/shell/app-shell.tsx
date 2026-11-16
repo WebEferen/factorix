@@ -6,9 +6,10 @@ import { Bot, CircleDot, FolderKanban, Inbox, Moon, Play, Plus, Settings, Shapes
 import { usePathname, useRouter } from 'next/navigation'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { toast } from 'sonner'
 import useSWR from 'swr'
 import { NewIssueDialog } from '../issues/new-issue-dialog'
-import { ApiError, fetcher } from '../lib/api'
+import { ApiError, fetcher, SWITCHED_KEY } from '../lib/api'
 import { useAgents, useMe, useProjects } from '../lib/data'
 import { Dialog, ErrorState, Kbd, Skeleton } from '../ui'
 import { Boundary } from '../ui/boundary'
@@ -199,6 +200,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       .then((status: { setUp?: boolean }) => router.replace(status.setUp ? '/login' : '/setup'))
       .catch(() => router.replace('/login'))
   }, [signedOut, router])
+
+  useEffect(() => {
+    const name = sessionStorage.getItem(SWITCHED_KEY)
+    if (name === null) return
+    sessionStorage.removeItem(SWITCHED_KEY)
+    toast.info(`Switched to ${name || 'another organization'}, where this link belongs.`)
+  }, [])
 
   const openNewIssue = useCallback((projectId?: string) => setNewIssue({ open: true, projectId }), [])
 

@@ -1,5 +1,14 @@
 import type { AccountRow, ApiTokenRow, OrganizationRow, UserRow } from '@factorix/db'
-import { createApiTokenInput, createMemberInput, createOrgInput, loginInput, setupInput, switchOrgInput, updateMemberInput } from '@factorix/schemas'
+import {
+  createApiTokenInput,
+  createMemberInput,
+  createOrgInput,
+  followLinkInput,
+  loginInput,
+  setupInput,
+  switchOrgInput,
+  updateMemberInput,
+} from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { accountDto, apiTokenDto } from '../dto'
@@ -104,6 +113,27 @@ export function authRoutes(app: FastifyInstance, deps: AppDeps): void {
       await trx('users').where({ id: user.id }).update({ lastAccountId: account.id })
     })
     return { account: accountDto(account) }
+  })
+
+  /**
+   * Opens a link to something in another organization the person belongs to, by moving the session there. Something that
+   * does not exist and something in an organization they are not in get the same answer.
+   */
+  app.post('/api/auth/follow', async (request) => {
+    const { account: current, user, sessionId } = requireSession(request)
+    const { kind, id } = parseBody(followLinkInput, request.body)
+    const row = await db(kind)
+      .where(kind === 'agents' ? { accountId: id } : { id })
+      .first('org_id')
+    const account = row ? (await accountsOf(db, user)).find((candidate) => candidate.orgId === row.orgId) : undefined
+    if (!account) throw notFound('Organization')
+    if (account.id === current.id) return { switched: false }
+    await db.transaction(async (trx) => {
+      await trx('auth_sessions').where({ id: sessionId }).update({ accountId: account.id, orgId: account.orgId })
+      await trx('users').where({ id: user.id }).update({ lastAccountId: account.id })
+    })
+    const org = await db<OrganizationRow>('organizations').where({ id: account.orgId }).first()
+    return { switched: true, org: { id: org?.id, name: org?.name, slug: org?.slug } }
   })
 
   app.get('/api/orgs', async (request) => {
