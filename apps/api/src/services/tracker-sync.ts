@@ -220,6 +220,8 @@ export async function handleTrackerEvent(deps: Deps, connectionId: string, event
       if (!issue.stateName) {
         const fresh = await trackerFor(deps, connection).getIssue(issue.id)
         if (fresh) issue = fresh
+        // An event that only names the issue is nothing to mirror once the issue itself cannot be read.
+        else if (!issue.identifier) return 'ignored'
       }
       for (const project of projects) await applyTrackerIssue(deps, project, issue)
       return projects.length > 0 ? 'processed' : 'ignored'

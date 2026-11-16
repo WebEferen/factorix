@@ -45,7 +45,7 @@ export function NewIssueDialog({ open, onOpenChange, projectId }: { open: boolea
       })
       refreshIssueData()
       onOpenChange(false)
-      toast.success(`Created ${issue.identifier} in the tracker`, { action: { label: 'Open', onClick: () => router.push(`/issues/${issue.id}`) } })
+      toast.success(`Created ${issue.identifier}`, { action: { label: 'Open', onClick: () => router.push(`/issues/${issue.id}`) } })
     } catch (error) {
       toast.error((error as Error).message)
     } finally {
@@ -70,7 +70,7 @@ export function NewIssueDialog({ open, onOpenChange, projectId }: { open: boolea
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="New issue" description="The issue is created in your tracker and mirrored here." wide>
+    <Dialog open={open} onOpenChange={onOpenChange} title="New issue" description="The issue is created in the project's tracker." wide>
       <form onSubmit={submit}>
         <DialogColumns
           className="md:grid-cols-[2fr_1fr]"

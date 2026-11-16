@@ -1,4 +1,4 @@
-import { gitlabWebhookCodec, linearWebhookCodec } from '@factorix/connectors'
+import { SCM_WEBHOOK_CODECS, TRACKER_WEBHOOK_CODECS, type TrackerWebhookCodec } from '@factorix/connectors'
 import type { PipelineEvent, TrackerStateKey } from '@factorix/core'
 import { createDb } from '@factorix/db'
 import { DockerSandboxProvider, RoutingSandboxProvider } from '@factorix/sandbox'
@@ -64,7 +64,9 @@ export function startWorkers(
     new Worker(
       QUEUE_NAMES.trackerInbound,
       async (job) => {
-        const status = await handleTrackerEvent(deps, job.data.connectionId, linearWebhookCodec.parse(job.data.payload))
+        // Jobs queued before Jira existed name no source.
+        const codec = TRACKER_WEBHOOK_CODECS[(job.data.source ?? 'linear') as keyof typeof TRACKER_WEBHOOK_CODECS] as TrackerWebhookCodec
+        const status = await handleTrackerEvent(deps, job.data.connectionId, codec.parse(job.data.payload))
         if (job.data.deliveryId)
           await deps.db('webhook_deliveries').where({ id: job.data.deliveryId }).update({ status, processedAt: deps.db.fn.now() })
       },
@@ -73,7 +75,9 @@ export function startWorkers(
     new Worker(
       QUEUE_NAMES.scmInbound,
       async (job) => {
-        const status = await handleScmEvent(deps, job.data.connectionId, gitlabWebhookCodec.parse(job.data.headers, job.data.payload))
+        // Jobs queued before GitHub existed name no source.
+        const codec = SCM_WEBHOOK_CODECS[(job.data.source ?? 'gitlab') as keyof typeof SCM_WEBHOOK_CODECS]
+        const status = await handleScmEvent(deps, job.data.connectionId, codec.parse(job.data.headers, job.data.payload))
         if (job.data.deliveryId)
           await deps.db('webhook_deliveries').where({ id: job.data.deliveryId }).update({ status, processedAt: deps.db.fn.now() })
       },

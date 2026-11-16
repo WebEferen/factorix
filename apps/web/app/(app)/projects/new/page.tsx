@@ -1,6 +1,6 @@
 'use client'
 
-import type { ProjectDto } from '@factorix/schemas'
+import type { ConnectionDto, ProjectDto } from '@factorix/schemas'
 import { Check } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -30,6 +30,7 @@ interface TrackerState {
   position: number
 }
 const WHOLE_TEAM = 'all'
+const BUILT_IN = 'built-in'
 
 const STATE_KEYS = [
   { key: 'in_progress', label: 'While an agent works', guess: (state: TrackerState) => state.type === 'started' && /progress/i.test(state.name) },
@@ -43,9 +44,9 @@ const STEPS = ['Tracker', 'Repositories', 'Workflow', 'Autonomy', 'Webhooks']
 
 export default function NewProjectPage() {
   const router = useRouter()
-  const { data: connections } = useConnections()
-  const trackers = connections?.connections.filter((connection) => connection.kind === 'linear') ?? []
-  const scms = connections?.connections.filter((connection) => connection.kind === 'gitlab') ?? []
+  const { data: connections, mutate: mutateConnections } = useConnections()
+  const trackers = connections?.connections.filter((connection) => connection.accountRole === 'tracker' || connection.kind === 'factorix') ?? []
+  const scms = connections?.connections.filter((connection) => connection.accountRole === 'scm') ?? []
   const [step, setStep] = useState(0)
   const [name, setName] = useState('')
   const [trackerConnectionId, setTrackerConnectionId] = useState<string>()
@@ -64,6 +65,8 @@ export default function NewProjectPage() {
     monthlyBudgetUsd: '',
   })
   const [loading, setLoading] = useState(false)
+  const [boardKey, setBoardKey] = useState('')
+  const [boardName, setBoardName] = useState('')
   const [created, setCreated] = useState<ProjectDto | null>(null)
 
   useEffect(() => {
@@ -71,10 +74,11 @@ export default function NewProjectPage() {
     if (!scmConnectionId && scms.length === 1) setScmConnectionId(scms[0]?.id)
   }, [trackers, scms, trackerConnectionId, scmConnectionId])
 
-  const { data: teams, error: teamsError } = useSWR<{ teams: Team[] }>(
-    trackerConnectionId ? `/api/tracker/teams?connectionId=${trackerConnectionId}` : null,
-    fetcher as never,
-  )
+  const {
+    data: teams,
+    error: teamsError,
+    mutate: mutateTeams,
+  } = useSWR<{ teams: Team[] }>(trackerConnectionId ? `/api/tracker/teams?connectionId=${trackerConnectionId}` : null, fetcher as never)
   const { data: projects } = useSWR<{ projects: TrackerProject[] }>(
     trackerConnectionId && trackerTeamId ? `/api/tracker/projects?connectionId=${trackerConnectionId}&teamId=${trackerTeamId}` : null,
     fetcher as never,
@@ -95,6 +99,36 @@ export default function NewProjectPage() {
   }, [states])
 
   const team = teams?.teams.find((item) => item.id === trackerTeamId)
+  const builtIn = trackers.find((item) => item.id === trackerConnectionId)?.kind === 'factorix'
+
+  const pickTracker = async (value: string) => {
+    setTrackerTeamId(undefined)
+    setTrackerProjectId(WHOLE_TEAM)
+    if (value !== BUILT_IN) return setTrackerConnectionId(value)
+    try {
+      const { connection } = await api.post<{ connection: ConnectionDto }>('/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
+      await mutateConnections()
+      setTrackerConnectionId(connection.id)
+    } catch (error) {
+      toast.error((error as Error).message)
+    }
+  }
+
+  const createBoard = async () => {
+    try {
+      const { team: board } = await api.post<{ team: Team }>('/api/tracker/teams', {
+        connectionId: trackerConnectionId,
+        key: boardKey,
+        name: boardName,
+      })
+      await mutateTeams()
+      setTrackerTeamId(board.id)
+      setBoardKey('')
+      setBoardName('')
+    } catch (error) {
+      toast.error((error as Error).message)
+    }
+  }
   // biome-ignore lint/correctness/useExhaustiveDependencies: suggest a name only when the team changes, never over what someone typed
   useEffect(() => {
     if (team && !name) setName(team.name)
@@ -143,7 +177,7 @@ export default function NewProjectPage() {
     }
   }
 
-  const missing = connections && (trackers.length === 0 || scms.length === 0)
+  const missing = connections && scms.length === 0
 
   return (
     <>
@@ -173,7 +207,7 @@ export default function NewProjectPage() {
 
           {missing ? (
             <div className="rounded-md border border-divider p-4">
-              <p className="text-sm">A project needs a Linear connection and a GitLab connection first.</p>
+              <p className="text-sm">A project needs a GitLab or GitHub connection first.</p>
               <Link href="/settings/connections" className="mt-3 inline-block">
                 <Button variant="primary">Go to connections</Button>
               </Link>
@@ -183,33 +217,65 @@ export default function NewProjectPage() {
               {step === 0 ? (
                 <>
                   <h1 className="text-xl font-semibold">Which issues should this project follow?</h1>
-                  <Field label="Linear connection">
+                  <Field label="Tracker" hint={builtIn ? 'Tickets are written and kept in Factorix.' : undefined}>
                     <Select
                       value={trackerConnectionId}
-                      onChange={setTrackerConnectionId}
-                      options={trackers.map((item) => ({ value: item.id, label: item.name }))}
-                    />
-                  </Field>
-                  <Field label="Team" error={teamsError ? (teamsError as Error).message : undefined}>
-                    <Select
-                      value={trackerTeamId}
-                      onChange={setTrackerTeamId}
-                      placeholder={teams ? 'Choose a team' : 'Loading teams'}
-                      disabled={!teams}
-                      options={teams?.teams.map((item) => ({ value: item.id, label: `${item.key} ${item.name}` })) ?? []}
-                    />
-                  </Field>
-                  <Field label="Linear project" hint="Follow one Linear project, or everything in the team.">
-                    <Select
-                      value={trackerProjectId}
-                      onChange={setTrackerProjectId}
-                      disabled={!projects}
+                      onChange={(value) => void pickTracker(value)}
+                      placeholder="Choose where the issues live"
                       options={[
-                        { value: WHOLE_TEAM, label: 'The whole team' },
-                        ...(projects?.projects.map((item) => ({ value: item.id, label: item.name })) ?? []),
+                        ...trackers.map((item) => ({ value: item.id, label: item.name })),
+                        ...(trackers.some((item) => item.kind === 'factorix')
+                          ? []
+                          : [{ value: BUILT_IN, label: 'Factorix tickets', hint: 'Built in. No tracker to connect' }]),
                       ]}
                     />
                   </Field>
+                  {builtIn && teams?.teams.length === 0 ? null : (
+                    <Field label={builtIn ? 'Board' : 'Team'} error={teamsError ? (teamsError as Error).message : undefined}>
+                      <Select
+                        value={trackerTeamId}
+                        onChange={setTrackerTeamId}
+                        placeholder={!trackerConnectionId ? 'Choose a tracker first' : teams ? `Choose a ${builtIn ? 'board' : 'team'}` : 'Loading'}
+                        disabled={!teams}
+                        options={teams?.teams.map((item) => ({ value: item.id, label: `${item.key} ${item.name}` })) ?? []}
+                      />
+                    </Field>
+                  )}
+                  {builtIn && !trackerTeamId ? (
+                    <div className="flex flex-col gap-3 rounded-md border border-divider p-3">
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-[8rem_1fr]">
+                        <Field label="Prefix" hint="Tickets are numbered after it, like WEB-12.">
+                          <Input
+                            value={boardKey}
+                            placeholder="WEB"
+                            maxLength={10}
+                            onChange={(event) => setBoardKey(event.target.value.toUpperCase())}
+                          />
+                        </Field>
+                        <Field label="Board name">
+                          <Input value={boardName} placeholder="Web app" onChange={(event) => setBoardName(event.target.value)} />
+                        </Field>
+                      </div>
+                      <div>
+                        <Button disabled={!/^[A-Z][A-Z0-9]*$/.test(boardKey) || !boardName.trim()} onClick={() => void createBoard()}>
+                          Create board
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {builtIn ? null : (
+                    <Field label="Tracker project" hint="Follow one project, or everything in the team.">
+                      <Select
+                        value={trackerProjectId}
+                        onChange={setTrackerProjectId}
+                        disabled={!projects}
+                        options={[
+                          { value: WHOLE_TEAM, label: 'The whole team' },
+                          ...(projects?.projects.map((item) => ({ value: item.id, label: item.name })) ?? []),
+                        ]}
+                      />
+                    </Field>
+                  )}
                   <Field label="Project name">
                     <Input required value={name} onChange={(event) => setName(event.target.value)} />
                   </Field>
@@ -219,7 +285,7 @@ export default function NewProjectPage() {
               {step === 1 ? (
                 <>
                   <h1 className="text-xl font-semibold">Which repositories can agents change?</h1>
-                  <Field label="GitLab connection">
+                  <Field label="Code host connection">
                     <Select
                       value={scmConnectionId}
                       onChange={(value) => {
@@ -235,7 +301,7 @@ export default function NewProjectPage() {
 
               {step === 2 ? (
                 <>
-                  <h1 className="text-xl font-semibold">How does the work move in Linear?</h1>
+                  <h1 className="text-xl font-semibold">How does the work move in the tracker?</h1>
                   <p className="text-sm text-ink-2">
                     Factorix moves an issue through these states. If someone moves it by hand, Factorix leaves it alone and logs that.
                   </p>

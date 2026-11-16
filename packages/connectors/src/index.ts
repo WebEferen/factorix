@@ -1,7 +1,14 @@
 export * from './doppler/client'
+export * from './factorix/source'
+export * from './github/client'
+export * from './github/markup'
+export * from './github/webhook'
 export * from './gitlab/client'
 export * from './gitlab/markup'
 export * from './gitlab/webhook'
+export * from './jira/client'
+export * from './jira/markup'
+export * from './jira/webhook'
 export * from './linear/client'
 export * from './linear/markup'
 export * from './linear/webhook'
@@ -9,17 +16,41 @@ export * from './scm'
 export * from './secrets'
 export * from './source'
 export * from './tracker'
+export * from './trello/client'
+export * from './trello/markup'
+export * from './trello/webhook'
 
 import { dopplerSource } from './doppler/client'
+import { factorixSource } from './factorix/source'
+import { githubSource } from './github/markup'
+import { githubWebhookCodec } from './github/webhook'
 import { gitlabSource } from './gitlab/markup'
+import { gitlabWebhookCodec } from './gitlab/webhook'
+import { jiraSource } from './jira/markup'
+import { jiraWebhookCodec } from './jira/webhook'
 import { linearSource } from './linear/markup'
-import type { ScmConnector } from './scm'
+import { linearWebhookCodec } from './linear/webhook'
+import type { ScmConnector, ScmWebhookCodec } from './scm'
 import { type SecretSource, type SecretSourceKind, storedSecretSource } from './secrets'
 import type { ScmSource, TrackerSource } from './source'
-import type { TrackerConnector } from './tracker'
+import type { TrackerConnector, TrackerWebhookCodec } from './tracker'
+import { trelloSource } from './trello/markup'
+import { trelloWebhookCodec } from './trello/webhook'
 
-export const TRACKER_SOURCES: Record<TrackerConnector['kind'], TrackerSource> = { linear: linearSource }
-export const SCM_SOURCES: Record<ScmConnector['kind'], ScmSource> = { gitlab: gitlabSource }
+export const TRACKER_SOURCES: Record<TrackerConnector['kind'], TrackerSource> = {
+  linear: linearSource,
+  factorix: factorixSource,
+  jira: jiraSource,
+  trello: trelloSource,
+}
+/** Built-in tickets live in Factorix's own database, so nothing calls in about them. */
+export const TRACKER_WEBHOOK_CODECS: Partial<Record<TrackerConnector['kind'], TrackerWebhookCodec>> = {
+  linear: linearWebhookCodec,
+  jira: jiraWebhookCodec,
+  trello: trelloWebhookCodec,
+}
+export const SCM_SOURCES: Record<ScmConnector['kind'], ScmSource> = { gitlab: gitlabSource, github: githubSource }
+export const SCM_WEBHOOK_CODECS: Record<ScmConnector['kind'], ScmWebhookCodec> = { gitlab: gitlabWebhookCodec, github: githubWebhookCodec }
 export const SECRET_SOURCES: Record<SecretSourceKind, SecretSource> = { doppler: dopplerSource, generic: storedSecretSource }
 
 export function egressHostsOf(kind: string, config: Record<string, unknown>): string[] {
@@ -34,10 +65,14 @@ export function scmServerOf(kind: string, config: Record<string, unknown>): stri
   return SCM_SOURCES[kind as keyof typeof SCM_SOURCES]?.server(config) ?? null
 }
 
-/** Connections an agent can use as its own account, instead of the one its project shares. */
+/** Connections an agent can use as its own account, instead of the one its project shares. Built-in tickets have no accounts. */
 export function accountRoleOf(kind: string): 'scm' | 'tracker' | null {
   if (Object.hasOwn(SCM_SOURCES, kind)) return 'scm'
-  return Object.hasOwn(TRACKER_SOURCES, kind) ? 'tracker' : null
+  return Object.hasOwn(TRACKER_SOURCES, kind) && kind !== 'factorix' ? 'tracker' : null
+}
+
+export function hasWebhookOf(kind: string): boolean {
+  return Object.hasOwn(SCM_WEBHOOK_CODECS, kind) || Object.hasOwn(TRACKER_WEBHOOK_CODECS, kind)
 }
 
 export * from './notifier'

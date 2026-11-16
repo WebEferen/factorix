@@ -1,4 +1,4 @@
-import { accountRoleOf, egressHostsOf } from '@factorix/connectors'
+import { accountRoleOf, egressHostsOf, hasWebhookOf } from '@factorix/connectors'
 import type { RunState } from '@factorix/core'
 import { TERMINAL_RUN_STATES } from '@factorix/core'
 import type {
@@ -89,7 +89,7 @@ export function networkSettingsDto(row: OrganizationRow): NetworkSettings {
 
 export function connectionDto(row: ConnectionRow, publicUrl: string, admin: boolean): ConnectionDto {
   const { webhookSecret, ...config } = row.config as { webhookSecret?: string }
-  const hasWebhook = row.kind === 'linear' || row.kind === 'gitlab'
+  const hasWebhook = hasWebhookOf(row.kind)
   return {
     id: row.id,
     kind: row.kind,

@@ -50,15 +50,15 @@ export default function ProjectsPage() {
             </div>
             <h1 className="text-xl font-semibold">Set up your first project</h1>
             <p className="mt-1 mb-5 text-sm text-ink-2">
-              A project joins a Linear team to a GitLab repository, so agents can pick up issues and open merge requests.
+              A project joins a team's issues to its repositories on GitLab or GitHub, so agents can pick up issues and open merge requests.
             </p>
             <Card>
               <ol>
-                <Step done={has('linear')} href="/settings/connections" action="Connect">
-                  Connect Linear
+                <Step done={has('linear', 'jira', 'trello', 'factorix')} href="/settings/connections" action="Connect">
+                  Connect Linear, Jira, or Trello, or skip this and use built-in tickets
                 </Step>
-                <Step done={has('gitlab')} href="/settings/connections" action="Connect">
-                  Connect GitLab
+                <Step done={has('gitlab', 'github')} href="/settings/connections" action="Connect">
+                  Connect GitLab or GitHub
                 </Step>
                 <Step done={has('anthropic', 'openai')} href="/settings/connections" action="Add key">
                   Add an Anthropic or OpenAI key

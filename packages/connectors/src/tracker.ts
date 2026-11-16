@@ -90,6 +90,8 @@ export interface CreateIssueInput {
   priority?: number
   stateId?: string
   labelIds?: string[]
+  /** Who wrote it, for a tracker that has no account of its own to record. */
+  creatorName?: string
 }
 
 export type Headers = Record<string, string | string[] | undefined>
@@ -103,7 +105,7 @@ export interface TrackerMedia {
 }
 
 export interface TrackerConnector {
-  readonly kind: 'linear'
+  readonly kind: 'linear' | 'factorix' | 'jira' | 'trello'
   viewer(): Promise<{ id: string; name: string; email: string | null }>
   listTeams(): Promise<TrackerTeam[]>
   listProjects(teamId: string): Promise<TrackerProject[]>
@@ -135,6 +137,7 @@ export interface TrackerConnector {
 export interface TrackerWebhookCodec {
   deliveryId(headers: Headers, rawBody: Buffer): string
   /** Rejects bad signatures and stale timestamps. */
-  verify(rawBody: Buffer, headers: Headers, secret: string): boolean
+  /** The address the tracker called is passed for the ones that sign it along with the body. */
+  verify(rawBody: Buffer, headers: Headers, secret: string, callbackUrl?: string): boolean
   parse(payload: unknown): TrackerWebhookEvent
 }

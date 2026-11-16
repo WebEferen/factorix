@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream'
 import type { ReadableStream as NodeReadableStream } from 'node:stream/web'
-import { TRACKER_SOURCES } from '@factorix/connectors'
+import { FACTORIX_STATES, TRACKER_SOURCES } from '@factorix/connectors'
 import type { ApprovalRow, ConnectionRow, IssueInstructionRow, IssueRow, MrDiscussionRow, ProjectRow } from '@factorix/db'
 import {
   assignIssueInput,
@@ -13,6 +13,7 @@ import {
   type IssueSortDto,
   issueListQuery,
   NO_VALUE,
+  updateIssueInput,
 } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { Knex } from 'knex'
@@ -20,13 +21,15 @@ import type { AppDeps } from '../deps'
 import { approvalDto, auditDto, CLOSED_SQL, issueDto, isTrackerClosed, MERGE_REQUESTS_SQL, projectDto, RUN_LIST_COLUMNS, runDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { requireAuth } from '../lib/auth'
-import { conflict, notFound, parseBody } from '../lib/errors'
+import { badRequest, conflict, notFound, parseBody } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { assignIssue, CLOSED_MESSAGE } from '../services/assign'
 import { getConnection, trackerFor } from '../services/connections'
 import { issueTextFormatters } from '../services/markup'
 import { advanceIssue } from '../services/pipeline'
 import { projectRepos } from '../services/repos'
+import { FactorixTracker } from '../services/tickets'
+import { applyTrackerIssue } from '../services/tracker-sync'
 import { resolveBranch } from '../services/workspace'
 
 const ISSUE_COLUMNS = ['issues.*', 'projects.name as project_name', 'accounts.handle as assigned_agent_handle']
@@ -306,7 +309,9 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
     return {
       issue: {
         ...issueDto(row),
+        editable: connections.some((connection) => connection.id === projectRow.trackerConnectionId && connection.kind === 'factorix'),
         description: row.description ? format.tracker(row.description) : null,
+        descriptionSource: row.description,
         project: projectDto(projectRow, repos),
         workBranch: resolveBranch(row),
         runs: runs.map(runDto),
@@ -334,6 +339,29 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
         timeline: timeline.map(auditDto),
       },
     }
+  })
+
+  app.put('/api/issues/:id', { config: { scope: 'issues' } }, async (request) => {
+    const { account } = requireAuth(request)
+    const issue = await load(account.orgId, (request.params as { id: string }).id)
+    const input = parseBody(updateIssueInput, request.body)
+    const project = (await db<ProjectRow>('projects').where({ id: issue.projectId }).first()) as ProjectRow
+    const connection = await getConnection(db, account.orgId, project.trackerConnectionId)
+    if (connection.kind !== 'factorix') throw conflict('This issue is edited in its tracker')
+    if (input.stateId && !FACTORIX_STATES.some((state) => state.id === input.stateId)) throw badRequest('Unknown status')
+    const fresh = await new FactorixTracker(db, connection).updateIssue(issue.trackerIssueId, input)
+    await writeAudit(db, {
+      orgId: account.orgId,
+      actorAccountId: account.id,
+      actorKind: 'human',
+      action: 'issue.updated',
+      targetType: 'issue',
+      targetId: issue.id,
+      metadata: { identifier: issue.identifier, fields: Object.keys(input) },
+    })
+    // The same path a tracker's webhook takes, so a status change starts, cancels, and announces exactly as it would from outside.
+    await applyTrackerIssue(deps, project, fresh)
+    return { issue: issueDto(await load(account.orgId, issue.id)) }
   })
 
   app.post('/api/issues/:id/assign', { config: { scope: 'issues' } }, async (request) => {

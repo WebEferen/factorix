@@ -1,3 +1,4 @@
+import { hasWebhookOf } from '@factorix/connectors'
 import { BUILTIN_PIPELINE_NAME } from '@factorix/core'
 import { type ConnectionRow, type IssueRow, json, type PipelineRow, type ProjectRepoRow, type ProjectRow } from '@factorix/db'
 import { createIssueInput, projectInput, projectUpdateInput } from '@factorix/schemas'
@@ -186,7 +187,9 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     const tracker = await getConnection(db, account.orgId, project.trackerConnectionId)
     const scm = await getConnection(db, account.orgId, project.scmConnectionId)
     const results = await Promise.all([
-      register(tracker, (url, secret) => trackerFor(deps, tracker).registerWebhook({ teamId: project.trackerTeamId, url, secret })),
+      ...(hasWebhookOf(tracker.kind)
+        ? [register(tracker, (url, secret) => trackerFor(deps, tracker).registerWebhook({ teamId: project.trackerTeamId, url, secret }))]
+        : []),
       ...(await projectRepos(db, project.id)).map(async (repo) => ({
         ...(await register(scm, (url, secret) => scmFor(deps, scm).registerWebhook(repo.scmRepoId, { url, secret }))),
         repoPath: repo.scmRepoPath,
@@ -236,6 +239,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
       description: input.description,
       priority: input.priority,
       labelIds: labelId ? [labelId] : undefined,
+      creatorName: account.displayName,
     })
     const { row } = await upsertIssueMirror(deps, project, created)
     await writeAudit(db, {

@@ -1,7 +1,7 @@
 'use client'
 
 import type { ConnectionDto } from '@factorix/schemas'
-import { Bot, CheckCircle2, CircleAlert, GitBranch, Hash, KeyRound, Plug, Plus, SquareKanban, Vault } from 'lucide-react'
+import { Bot, CheckCircle2, CircleAlert, GitBranch, GitPullRequest, Hash, KeyRound, Plug, Plus, SquareKanban, Vault } from 'lucide-react'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from '@/modules/lib/api'
@@ -18,12 +18,32 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
     secret: 'Personal API key',
     placeholder: 'lin_api_...',
   },
+  jira: {
+    label: 'Jira',
+    hint: 'Tracker: projects, issues, comments, webhooks',
+    icon: <SquareKanban />,
+    secret: 'API token. On Data Center, a personal access token with the email left empty',
+  },
+  trello: {
+    label: 'Trello',
+    hint: 'Tracker: boards as teams, lists as statuses, cards as issues',
+    icon: <SquareKanban />,
+    secret: 'Token, made for the API key',
+  },
   gitlab: {
     label: 'GitLab',
     hint: 'Source: repositories, merge requests, CI',
     icon: <GitBranch />,
     secret: 'Personal access token with api and write_repository',
     placeholder: 'glpat-...',
+  },
+  github: {
+    label: 'GitHub',
+    hint: 'Source: repositories, pull requests, checks',
+    icon: <GitPullRequest />,
+    secret:
+      'Personal access token: classic with repo, or fine-grained with write on contents, pull requests, and webhooks, and read on checks, statuses, and actions',
+    placeholder: 'ghp_... or github_pat_...',
   },
   anthropic: { label: 'Anthropic', hint: 'API key for Claude agents', icon: <Bot />, secret: 'API key', placeholder: 'sk-ant-...' },
   openai: { label: 'OpenAI', hint: 'API key for Codex agents', icon: <Bot />, secret: 'API key', placeholder: 'sk-...' },
@@ -52,6 +72,12 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
     icon: <KeyRound />,
     secret: 'Environment as JSON',
   },
+  factorix: {
+    label: 'Factorix tickets',
+    hint: 'Built-in tracker: tickets written and kept in Factorix, for a team with no tracker to connect',
+    icon: <SquareKanban />,
+    secret: '',
+  },
   doppler: {
     label: 'Doppler',
     hint: 'Secret source: configs for previews. The token stays in Factorix',
@@ -62,6 +88,7 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
 }
 
 const usesJsonSecret = (kind: string) => kind === 'mcp_http' || kind === 'generic'
+const SCM_HOSTS: Partial<Record<ConnectionDto['kind'], string>> = { gitlab: 'https://gitlab.com', github: 'https://github.com' }
 
 function ConnectionDialog({
   connection,
@@ -81,6 +108,9 @@ function ConnectionDialog({
   const [command, setCommand] = useState('')
   const [args, setArgs] = useState('')
   const [host, setHost] = useState('https://gitlab.com')
+  const [email, setEmail] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [apiSecret, setApiSecret] = useState('')
   const [botName, setBotName] = useState('')
   const [botEmail, setBotEmail] = useState('')
   const [loading, setLoading] = useState(false)
@@ -92,7 +122,10 @@ function ConnectionDialog({
     setUrl(String(connection?.config.url ?? ''))
     setCommand(String(connection?.config.command ?? ''))
     setArgs(((connection?.config.args as string[] | undefined) ?? []).join(' '))
-    setHost(String(connection?.config.host ?? 'https://gitlab.com'))
+    setHost(String(connection?.config.host ?? SCM_HOSTS[connection?.kind ?? 'gitlab'] ?? (connection?.kind === 'jira' ? '' : 'https://gitlab.com')))
+    setEmail(String(connection?.config.email ?? ''))
+    setApiKey(String(connection?.config.apiKey ?? ''))
+    setApiSecret('')
     setBotName(String(connection?.config.botName ?? ''))
     setBotEmail(String(connection?.config.botEmail ?? ''))
   }, [open, connection])
@@ -101,14 +134,17 @@ function ConnectionDialog({
     event.preventDefault()
     setLoading(true)
     try {
-      const config: Record<string, unknown> =
-        kind === 'gitlab'
-          ? { host, ...(botName.trim() ? { botName: botName.trim() } : {}), ...(botEmail.trim() ? { botEmail: botEmail.trim() } : {}) }
-          : kind === 'mcp_http'
-            ? { url }
-            : kind === 'mcp_stdio'
-              ? { command, args: args.split(/\s+/).filter(Boolean) }
-              : {}
+      const config: Record<string, unknown> = SCM_HOSTS[kind]
+        ? { host, ...(botName.trim() ? { botName: botName.trim() } : {}), ...(botEmail.trim() ? { botEmail: botEmail.trim() } : {}) }
+        : kind === 'jira'
+          ? { host, ...(email.trim() ? { email: email.trim() } : {}) }
+          : kind === 'trello'
+            ? { apiKey: apiKey.trim(), ...(apiSecret.trim() ? { webhookSecret: apiSecret.trim() } : {}) }
+            : kind === 'mcp_http'
+              ? { url }
+              : kind === 'mcp_stdio'
+                ? { command, args: args.split(/\s+/).filter(Boolean) }
+                : {}
       let secretValue: unknown
       if (secret) secretValue = usesJsonSecret(kind) ? JSON.parse(secret) : secret
       const body = { name: name || KINDS[kind].label, config, secret: secretValue }
@@ -131,7 +167,12 @@ function ConnectionDialog({
           <Field label="Kind">
             <Select
               value={kind}
-              onChange={(value) => setKind(value as ConnectionDto['kind'])}
+              onChange={(value) => {
+                setKind(value as ConnectionDto['kind'])
+                const defaultHost = SCM_HOSTS[value as ConnectionDto['kind']]
+                if (defaultHost) setHost(defaultHost)
+                else if (value === 'jira') setHost('')
+              }}
               options={Object.entries(KINDS).map(([value, item]) => ({ value, label: item.label, hint: item.hint }))}
             />
           </Field>
@@ -139,12 +180,32 @@ function ConnectionDialog({
         <Field label="Name">
           <Input value={name} placeholder={meta.label} onChange={(event) => setName(event.target.value)} />
         </Field>
-        {kind === 'gitlab' ? (
+        {SCM_HOSTS[kind] ? (
           <Field label="Host">
             <Input required value={host} onChange={(event) => setHost(event.target.value)} />
           </Field>
         ) : null}
-        {kind === 'gitlab' ? (
+        {kind === 'trello' ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="API key">
+              <Input required value={apiKey} onChange={(event) => setApiKey(event.target.value)} />
+            </Field>
+            <Field label="API secret" hint="Trello signs webhooks with it. Leave it blank to rely on polling, or to keep the one stored.">
+              <Input type="password" autoComplete="off" value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} />
+            </Field>
+          </div>
+        ) : null}
+        {kind === 'jira' ? (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Site">
+              <Input required type="url" value={host} placeholder="https://acme.atlassian.net" onChange={(event) => setHost(event.target.value)} />
+            </Field>
+            <Field label="Account email">
+              <Input type="email" value={email} placeholder="you@acme.com" onChange={(event) => setEmail(event.target.value)} />
+            </Field>
+          </div>
+        ) : null}
+        {SCM_HOSTS[kind] ? (
           <div className="flex flex-col gap-1.5">
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <Field label="Bot name">
@@ -177,7 +238,7 @@ function ConnectionDialog({
             </Field>
           </div>
         ) : null}
-        {kind !== 'mcp_stdio' ? (
+        {kind !== 'mcp_stdio' && kind !== 'factorix' ? (
           <Field
             label={meta.secret}
             hint={connection?.hasSecret ? 'A secret is stored. Leave this blank to keep it.' : 'Encrypted at rest and never shown again.'}
@@ -287,7 +348,7 @@ export default function ConnectionsPage() {
             ) : undefined
           }
         >
-          Start with Linear, GitLab, and a model API key.
+          Start with GitLab or GitHub and a model API key. Add Linear too, or use Factorix's own tickets.
         </EmptyState>
       ) : (
         <div className="overflow-hidden rounded-lg border border-divider">
@@ -299,7 +360,7 @@ export default function ConnectionsPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 text-sm">
                     <span className="truncate">{connection.name}</span>
-                    {!connection.hasSecret && connection.kind !== 'mcp_stdio' ? <Chip>No secret</Chip> : null}
+                    {!connection.hasSecret && connection.kind !== 'mcp_stdio' && connection.kind !== 'factorix' ? <Chip>No secret</Chip> : null}
                   </div>
                   <div className="truncate text-xs text-ink-2">
                     {meta.label}, {connection.config.botName ? `commits as ${String(connection.config.botName)}, ` : ''}updated{' '}
@@ -348,7 +409,13 @@ export default function ConnectionsPage() {
             <p className="text-xs text-ink-2">
               {webhookFor.kind === 'gitlab'
                 ? 'Enable merge request, comment, and pipeline events on the project.'
-                : 'Enable issues, issue comments, and issue labels.'}
+                : webhookFor.kind === 'trello'
+                  ? 'Project setup registers this on the board. Trello signs with the API secret of its key, so webhooks are accepted once that secret is saved on the connection.'
+                  : webhookFor.kind === 'jira'
+                    ? 'Paste the secret into the webhook in Jira, limit it to the project, and enable issue created, updated, and deleted, and comment created and updated. Data Center cannot sign webhooks, so it relies on polling.'
+                    : webhookFor.kind === 'github'
+                      ? 'Send JSON, and enable pull requests, pull request reviews, pull request review comments, issue comments, check suites, and statuses.'
+                      : 'Enable issues, issue comments, and issue labels.'}
             </p>
           </div>
         ) : null}

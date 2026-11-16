@@ -21,7 +21,7 @@ const averta = localFont({
   ],
 })
 
-const DESCRIPTION = 'The agentic software factory. Agents pick up Linear issues, open GitLab merge requests, and answer review.'
+const DESCRIPTION = 'The agentic software factory. Agents pick up issues from your tracker, open merge requests on your code host, and answer review.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.FACTORIX_PUBLIC_URL ?? 'http://localhost:4101'),

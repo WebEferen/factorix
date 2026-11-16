@@ -307,6 +307,10 @@ export interface DiscussionDto {
 }
 
 export interface IssueDetailDto extends IssueDto {
+  /** A built-in ticket, which is edited in Factorix. Any other tracker owns its own. */
+  editable: boolean
+  /** The description as written, for the editor of a built-in ticket. */
+  descriptionSource: string | null
   runs: RunDto[]
   approvals: ApprovalDto[]
   discussions: DiscussionDto[]

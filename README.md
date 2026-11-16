@@ -6,10 +6,17 @@
 
 Factorix gives AI agents accounts, skills, and connections, then lets them take a ticket from assignment to a reviewed merge request. Trackers and code hosts plug in through an open contract, and your tracker and your repositories stay the source of truth. Every agent action is attributed and audited, and a person decides how much each project can do alone.
 
+<p align="center"><img src="docs/screenshots/issues.png" alt="Issues from every project in one list, with their status in the tracker and in the factory"></p>
+
+|                                                                                                     |                                                                                              |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| ![A ticket with its brief, instructions for the next run, and activity](docs/screenshots/issue.png) | ![Creating a project on built-in tickets](docs/screenshots/new-project.png)                  |
+| A ticket is the brief an agent reads. People add instructions and follow every step.                | A project joins a tracker, or Factorix's own tickets, to the repositories agents may change. |
+
 ```mermaid
 flowchart LR
-  L[Linear] <-- webhooks, GraphQL --> A
-  G[GitLab] <-- webhooks, REST --> A
+  L[Linear, Jira, Trello, or built-in tickets] <-- webhooks, API --> A
+  G[GitLab or GitHub] <-- webhooks, REST --> A
   B[Browser] --> W[Web] --> A[API and worker]
   A --- D[(Postgres)]
   A --- R[(Redis)]
@@ -20,10 +27,10 @@ flowchart LR
 
 ## What it does
 
-- **Open to any source.** Trackers and code hosts connect through an open contract for connectors, and Linear and GitLab ship with it. A project follows a team or project in the tracker. Open issues import in the background, along with recently closed ones, and text renders with that source's own formatting, references, and media.
+- **Open to any source.** Trackers and code hosts connect through an open contract for connectors, and Linear, Jira, Trello, GitLab, and GitHub ship with it. A team with no tracker uses Factorix's own tickets instead: pick Factorix tickets when creating a project, and write and edit them in Factorix. A project follows a team or project in the tracker. Open issues import in the background, along with recently closed ones, and text renders with that source's own formatting, references, and media.
 - **Runs agents in sandboxes.** Claude and Codex run through their SDKs in throwaway Docker containers, with skills, archetypes, and per-project network rules.
-- **Works across repositories.** A project sets which GitLab repositories agents may change. Each ticket changes only the ones it needs, with one merge request per repository, and the agent decides the merge order for that ticket. Merging checks every merge request first and stops at the first one that cannot land. A person then retries the rest, reverts what merged, or keeps it.
-- **Gives agents their own accounts, or one shared account.** Each agent can use its own GitLab and Linear connection, or the project's. You choose per agent.
+- **Works across repositories.** A project sets which GitLab or GitHub repositories agents may change. Each ticket changes only the ones it needs, with one merge request per repository, and the agent decides the merge order for that ticket. Merging checks every merge request first and stops at the first one that cannot land. A person then retries the rest, reverts what merged, or keeps it.
+- **Gives agents their own accounts, or one shared account.** Each agent can use its own code host and Linear connection, or the project's. You choose per agent.
 - **Cleans up after itself.** Package caches go when a run ends and a workspace goes when its issue finishes, so disk use follows open work.
 - **Closes the loop.** An engineer agent implements, a reviewer agent reviews, and review comments go back to the engineer. Plans and merges can wait for a person.
 - **Previews every change.** A project describes how to run its code, with services, install and seed steps, and secrets from Doppler or Factorix. Anyone can start a preview of an issue and use the running app inside Factorix, and agents can preview their own working copy before they finish. See [docs/environments.md](docs/environments.md).
@@ -65,10 +72,10 @@ Open http://localhost:4101 and create the first admin account. To try the whole 
 
 ### Connect your accounts
 
-1. Under Settings, Connections, add Linear with a personal API key.
-2. Add GitLab with a token that has `api` and `write_repository`.
+1. Under Settings, Connections, add your tracker: Linear with a personal API key, Jira with its site address, account email, and API token, or Trello with an API key and token.
+2. Add GitLab with a token that has `api` and `write_repository`, or GitHub with a classic token that has `repo`.
 3. Add an Anthropic key, an OpenAI key, or both.
-4. Under Projects, create a project. The wizard joins a Linear team or project to one or more GitLab repositories.
+4. Under Projects, create a project. The wizard joins a Linear team or project, a Jira project, or a Trello board to one or more GitLab or GitHub repositories.
 
 Linear and GitLab can only deliver webhooks to a public URL. Set `FACTORIX_PUBLIC_URL` to one, such as a tunnel, or rely on polling, which catches up every five minutes.
 
@@ -243,7 +250,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 | `packages/runtime`    | The contract between worker and runner                        |
 | `packages/runner`     | Runs in the sandbox and hosts the SDKs                        |
 | `packages/sandbox`    | Docker provider and the credential boundary                   |
-| `packages/connectors` | Linear and GitLab, with their markup, filters and sorts       |
+| `packages/connectors` | Trackers and code hosts, with markup, filters and sorts       |
 | `packages/db`         | Knex client, raw SQL migrations, row types                    |
 | `packages/schemas`    | Inputs and DTOs shared by API and web                         |
 
@@ -253,7 +260,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 - **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them from the organization menu, under All organizations. Their agents run on separate networks, and the model keys in `.env` serve only the first one. They still share the worker's run slots.
 - **Email and password only.** There is no SSO yet.
-- **Two connectors so far.** Linear and GitLab ship today. Other sources implement the same connector interfaces.
+- **Five connectors so far.** Linear, Jira, Trello, GitLab, and GitHub ship today. Jira and Trello have only run against stub servers. Trello has no priorities, and a list's place in the workflow is read from its name. Other sources implement the same connector interfaces.
 
 ## License
 

@@ -83,7 +83,7 @@ export interface OpenMergeRequestInput {
 }
 
 export interface ScmConnector {
-  readonly kind: 'gitlab'
+  readonly kind: 'gitlab' | 'github'
   viewer(): Promise<{ id: string; username: string; name: string }>
   listRepos(search?: string): Promise<ScmRepo[]>
   getRepo(id: string): Promise<ScmRepo>

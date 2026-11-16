@@ -1,12 +1,25 @@
 'use client'
 
 import type { AuditEntryDto, DiscussionDto, IssueDetailDto, MergeRequestDto, RunDto } from '@factorix/schemas'
-import { Ban, Bot, ExternalLink, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, MessageSquare, RotateCcw, Send } from 'lucide-react'
+import {
+  Ban,
+  Bot,
+  ExternalLink,
+  GitBranch,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  MessageSquare,
+  Pencil,
+  RotateCcw,
+  Send,
+} from 'lucide-react'
 import Link from 'next/link'
 import { use, useState } from 'react'
 import { toast } from 'sonner'
 import { AgentPicker, refreshIssueData } from '@/modules/issues/agent-picker'
 import { ApprovalCard } from '@/modules/issues/approval-card'
+import { EditIssueDialog } from '@/modules/issues/edit-issue-dialog'
 import { FACTORY_STATE_LABEL, FactoryStateIcon, PRIORITY_LABEL, PriorityIcon, TrackerStateIcon } from '@/modules/issues/icons'
 import { PreviewHeaderButton, PreviewPanel } from '@/modules/issues/preview-panel'
 import { api } from '@/modules/lib/api'
@@ -288,7 +301,7 @@ function IssueDetails({ issue, assigned, inFlight }: { issue: IssueDetailDto; as
       ) : null}
       <MergeRequests items={issue.mergeRequests} />
       {issue.trackerUrl ? (
-        <Property label="Linear">
+        <Property label="Tracker">
           <a href={issue.trackerUrl} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 text-link hover:underline">
             {issue.identifier}
             <ExternalLink className="size-3 shrink-0" />
@@ -303,6 +316,7 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
   const { id } = use(params)
   const { data, error, mutate } = useIssue(id)
   const issue = data?.issue
+  const [editing, setEditing] = useState(false)
   const action = async (path: string, message: string) => {
     try {
       await api.post(`/api/issues/${id}/${path}`)
@@ -342,6 +356,12 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
       <PageHeader crumbs={[{ label: issue.project.name, href: `/projects/${issue.projectId}` }, { label: issue.identifier }]}>
         <PreviewHeaderButton issueId={issue.id} />
         <RunWorkflowButton issueId={issue.id} projectId={issue.projectId} />
+        {issue.editable ? (
+          <Button size="sm" onClick={() => setEditing(true)}>
+            <Pencil />
+            Edit
+          </Button>
+        ) : null}
         {canRetry ? (
           <Button size="sm" onClick={() => void action('retry', 'Back in the factory')}>
             <RotateCcw />
@@ -355,6 +375,7 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
           </Button>
         ) : null}
       </PageHeader>
+      {issue.editable ? <EditIssueDialog issue={issue} open={editing} onOpenChange={setEditing} /> : null}
       <div className="flex min-h-0 flex-1 flex-col-reverse lg:flex-row">
         <PageBody className="lg:border-r lg:border-divider">
           <div className="mx-auto flex max-w-3xl flex-col gap-6 p-4 sm:p-6">

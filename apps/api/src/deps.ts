@@ -1,5 +1,14 @@
 import type { NotificationConnector, ScmConnector, SecretSourceConnector, TrackerConnector } from '@factorix/connectors'
-import { DopplerConnector, GitlabConnector, LinearConnector, SlackConnector, StoredSecretSource } from '@factorix/connectors'
+import {
+  DopplerConnector,
+  GithubConnector,
+  GitlabConnector,
+  JiraConnector,
+  LinearConnector,
+  SlackConnector,
+  StoredSecretSource,
+  TrelloConnector,
+} from '@factorix/connectors'
 import type { ConnectionRow, Db } from '@factorix/db'
 import type { ScriptedPlan } from '@factorix/runtime'
 import type { SandboxProvider } from '@factorix/sandbox'
@@ -23,10 +32,21 @@ export function storedSecrets(secret: string): StoredSecretSource {
 
 export const realConnectors: ConnectorFactory = {
   tracker(connection, secret) {
+    if (connection.kind === 'jira') {
+      const { host, email } = connection.config as { host?: string; email?: string }
+      if (!host) throw new Error(`${connection.name} has no Jira site address`)
+      return new JiraConnector({ token: secret, host, email: email || undefined })
+    }
+    if (connection.kind === 'trello') {
+      const { apiKey, apiUrl } = connection.config as { apiKey?: string; apiUrl?: string }
+      if (!apiKey) throw new Error(`${connection.name} has no Trello API key`)
+      return new TrelloConnector({ apiKey, token: secret, apiUrl })
+    }
     if (connection.kind !== 'linear') throw new Error(`${connection.name} is not a tracker connection`)
     return new LinearConnector({ apiKey: secret, apiUrl: connection.config.apiUrl as string | undefined })
   },
   scm(connection, secret) {
+    if (connection.kind === 'github') return new GithubConnector({ token: secret, host: connection.config.host as string | undefined })
     if (connection.kind !== 'gitlab') throw new Error(`${connection.name} is not a source control connection`)
     return new GitlabConnector({ token: secret, host: connection.config.host as string | undefined })
   },

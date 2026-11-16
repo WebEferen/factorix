@@ -21,7 +21,7 @@ export default function NewRunPage() {
   const [connection, setConnection] = useState(PUBLIC_REPO)
   const [prompt, setPrompt] = useState('')
   const [loading, setLoading] = useState(false)
-  const scm = connections?.connections.filter((item) => item.kind === 'gitlab') ?? []
+  const scm = connections?.connections.filter((item) => item.accountRole === 'scm') ?? []
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()

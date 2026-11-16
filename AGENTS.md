@@ -1,6 +1,6 @@
 # Factorix
 
-Agentic software factory. It follows issues from a tracker, runs agents in Docker sandboxes, and opens merge requests. Trackers and code hosts connect through open connector contracts, and Linear and GitLab ship today.
+Agentic software factory. It follows issues from a tracker, runs agents in Docker sandboxes, and opens merge requests. Trackers and code hosts connect through open connector contracts, and Linear, Jira, Trello, GitLab, and GitHub ship today.
 
 ## Layout
 
@@ -14,7 +14,7 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 - `packages/runtime`: the contract between worker and runner. `RunSpec`, `RunEvent`, `RunCommand`.
 - `packages/runner`: runs inside the sandbox and hosts the SDKs. The only package that depends on them.
 - `packages/sandbox`: `SandboxProvider` and the Docker implementation. `profiles.ts` is the credential boundary.
-- `packages/connectors`: `TrackerConnector` (Linear) and `ScmConnector` (GitLab).
+- `packages/connectors`: `TrackerConnector` (Linear, Jira, Trello) and `ScmConnector` (GitLab, GitHub). Built-in tickets are a `TrackerConnector` too, `FactorixTracker` in `apps/api/src/services/tickets.ts`, because they need the database.
 - `packages/db`: Knex client, raw SQL migrations, row types.
 - `packages/schemas`: zod inputs and DTO types shared by API and web.
 
@@ -49,6 +49,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 - What belongs to the whole installation, such as `platform_settings` and creating organizations, goes behind `requireInstallationAdmin`. An organization's admin (`requireAdmin`) never changes it.
 - An API token (`api_tokens`, sent as a bearer) reads as its account and changes only what its scopes allow. Tokens are refused by default: a route that is not a GET is open to a token only if it names a scope from `API_TOKEN_SCOPES` in its `config`, checked by `checkTokenScope`. Add a scope to a route only for something a leaked token may do. `requireSession`, which `requireAdmin` includes, stays on what no token may ever do.
 - The worker's sandbox is a `RoutingSandboxProvider`: a workspace and everything about its issue live on one machine, pinned in `workspace_runners` the first time it is made. Services take `deps.sandbox` and never pick a machine themselves. A container id from a runner carries its runner (`rn-<id>:`), so store ids as given.
+- Built-in tickets (`tickets`, `ticket_boards`) are a tracker like any other: `issues` stays the mirror everything reads, and an edit goes through `applyTrackerIssue`, the path a webhook takes. `trackerFor` returns them for a `factorix` connection, of which an organization has one.
 - `audit_log` is append-only, enforced by a database trigger. Write through `writeAudit`.
 - Publish domain events with `emit` inside the same transaction as the state change. The relay moves them to queues.
 - Query rows come back camelCase, and identifiers are snake-cased for you. Wrap JSONB writes in `json()`.
@@ -60,7 +61,7 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 
 - New archetype: create it on the Archetypes page. It needs no code, and its "Works as" role decides which pipeline steps its agents can take. `Other` agents stay out of the pipeline: assigned a ticket, they run once with read-only repositories and post a report on it.
 - New pipeline role or phase: add a template in `packages/core/src/phases`, a step in the pipeline definition, and the role to `ARCHETYPE_ROLES` in `packages/schemas`. The engine does not change.
-- New SCM or tracker: implement the connector interface and its webhook codec, then register it in `apps/api/src/deps.ts`. Add its markup, reference links, issue filters, issue sorts, and egress hosts to `TRACKER_SOURCES` or `SCM_SOURCES` in `packages/connectors`. The filter toolbar renders whatever the source declares.
+- New SCM or tracker: implement the connector interface and its webhook codec, then register it in `apps/api/src/deps.ts`, and its codec in `SCM_WEBHOOK_CODECS` or `TRACKER_WEBHOOK_CODECS`. Add its markup, reference links, issue filters, issue sorts, and egress hosts to `TRACKER_SOURCES` or `SCM_SOURCES` in `packages/connectors`. The filter toolbar renders whatever the source declares. A new kind also goes in `CONNECTION_KINDS`, a migration for the two kind checks, and the connections page.
 - New model runtime: add an adapter in `packages/runner/src/adapters`, with a capability entry in `packages/runtime`. The UI adapts from capabilities. For helpers, pass them to the SDK when it has its own, and otherwise implement `runHelper` and report what helpers spend in the run's usage.
 - New workflow block: add it to `WORKFLOW_BLOCKS` in `packages/schemas/src/workflows.ts`, a handler to `BLOCK_HANDLERS` in `apps/api/src/services/workflow-blocks.ts`, and an icon and summary in `apps/web/modules/workflows/blocks.tsx`. The palette and inspector render from the catalog.
 - New default egress host: a connector declares `egressHosts` on its source, and hosts every restricted project needs go in `PACKAGE_REGISTRY_HOSTS` in `packages/schemas`. Settings, Network extends or replaces the defaults for the organization, and a project adds its own under Extra allowed hosts. All of it goes through `egressGroups`, so the UI lists what the worker enforces. Declare only what an agent can use without the connection's credentials, since every host is also somewhere it could send data.

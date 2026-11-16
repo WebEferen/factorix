@@ -336,7 +336,7 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
           type: 'log',
           level: 'info',
           source: 'finalize',
-          message: 'GitLab refused the approval, which is expected when the same bot authored the merge request. The verdict still counts.',
+          message: 'The server refused the approval, which is expected when the same bot authored the merge request. The verdict still counts.',
         })
     }
     await syncDiscussions(db, scm, issue, mr).catch((error: Error) =>

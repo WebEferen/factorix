@@ -1,7 +1,20 @@
 import type { Autonomy, FactoryState, PipelineCursor, PipelineDefinition, RunState, TrackerStateKey } from '@factorix/core'
 import type { AgentHelper, PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
 
-export type ConnectionKind = 'linear' | 'gitlab' | 'anthropic' | 'openai' | 'mcp_stdio' | 'mcp_http' | 'generic' | 'slack' | 'doppler'
+export type ConnectionKind =
+  | 'linear'
+  | 'jira'
+  | 'trello'
+  | 'gitlab'
+  | 'github'
+  | 'anthropic'
+  | 'openai'
+  | 'mcp_stdio'
+  | 'mcp_http'
+  | 'generic'
+  | 'slack'
+  | 'doppler'
+  | 'factorix'
 
 export interface OrganizationRow {
   id: string
@@ -339,7 +352,7 @@ export interface ApprovalRow {
 export interface WebhookDeliveryRow {
   id: string
   connectionId: string
-  source: 'linear' | 'gitlab'
+  source: 'linear' | 'gitlab' | 'github' | 'jira' | 'trello'
   deliveryId: string
   eventType: string | null
   payload: unknown

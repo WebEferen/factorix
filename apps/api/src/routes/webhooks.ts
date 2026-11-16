@@ -1,15 +1,16 @@
-import { gitlabWebhookCodec, linearWebhookCodec } from '@factorix/connectors'
-import { type ConnectionRow, json } from '@factorix/db'
+import { SCM_WEBHOOK_CODECS, TRACKER_WEBHOOK_CODECS, type TrackerWebhookCodec } from '@factorix/connectors'
+import { type ConnectionRow, json, type WebhookDeliveryRow } from '@factorix/db'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { AppDeps } from '../deps'
 import { HttpError, isUniqueViolation } from '../lib/errors'
+import { readSettings } from '../services/settings'
 
 export function webhookRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { db, queues } = deps
 
   const authenticate = async (
     request: FastifyRequest,
-    source: 'linear' | 'gitlab',
+    source: WebhookDeliveryRow['source'],
   ): Promise<{ connection: ConnectionRow; rawBody: Buffer; payload: unknown }> => {
     const { connectionId } = request.params as { connectionId: string }
     const connection = /^[0-9a-f-]{36}$/.test(connectionId)
@@ -17,15 +18,19 @@ export function webhookRoutes(app: FastifyInstance, deps: AppDeps): void {
       : undefined
     if (!connection) throw new HttpError(404, 'not_found', 'Unknown webhook')
     const rawBody = request.body as Buffer
-    const codec = source === 'linear' ? linearWebhookCodec : gitlabWebhookCodec
-    if (!codec.verify(rawBody, request.headers, String(connection.config.webhookSecret ?? '')))
-      throw new HttpError(401, 'bad_signature', 'Webhook signature check failed')
+    const secret = String(connection.config.webhookSecret ?? '')
+    const tracker = TRACKER_WEBHOOK_CODECS[source as keyof typeof TRACKER_WEBHOOK_CODECS]
+    const callbackUrl = `${(await readSettings(deps)).publicUrl.replace(/\/$/, '')}/webhooks/${source}/${connection.id}`
+    const verified = tracker
+      ? tracker.verify(rawBody, request.headers, secret, callbackUrl)
+      : SCM_WEBHOOK_CODECS[source as keyof typeof SCM_WEBHOOK_CODECS].verify(rawBody, request.headers, secret)
+    if (!verified) throw new HttpError(401, 'bad_signature', 'Webhook signature check failed')
     return { connection, rawBody, payload: JSON.parse(rawBody.toString('utf8')) }
   }
 
   const record = async (
     connectionId: string,
-    source: 'linear' | 'gitlab',
+    source: WebhookDeliveryRow['source'],
     deliveryId: string,
     eventType: string | undefined,
     payload: unknown,
@@ -45,27 +50,40 @@ export function webhookRoutes(app: FastifyInstance, deps: AppDeps): void {
     scope.removeAllContentTypeParsers()
     scope.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body))
 
-    scope.post('/webhooks/linear/:connectionId', async (request) => {
-      const { connection, rawBody, payload } = await authenticate(request, 'linear')
-      const deliveryId = linearWebhookCodec.deliveryId(request.headers, rawBody)
-      const rowId = await record(connection.id, 'linear', deliveryId, (payload as { type?: string }).type, payload)
-      if (rowId)
-        await queues.trackerInbound.add('delivery', { connectionId: connection.id, deliveryId: rowId, payload }, { jobId: `linear-${rowId}` })
-      return { ok: true, duplicate: !rowId }
-    })
+    // Trello calls the address once before it accepts a webhook, and only checks that something answers.
+    scope.head('/webhooks/trello/:connectionId', async () => ({ ok: true }))
 
-    scope.post('/webhooks/gitlab/:connectionId', async (request) => {
-      const { connection, rawBody, payload } = await authenticate(request, 'gitlab')
-      const deliveryId = gitlabWebhookCodec.deliveryId(request.headers, rawBody)
-      const event = request.headers['x-gitlab-event'] as string | undefined
-      const rowId = await record(connection.id, 'gitlab', deliveryId, event, payload)
-      if (rowId)
-        await queues.scmInbound.add(
-          'delivery',
-          { connectionId: connection.id, deliveryId: rowId, payload, headers: { 'x-gitlab-event': event } },
-          { jobId: `gitlab-${rowId}` },
-        )
-      return { ok: true, duplicate: !rowId }
-    })
+    for (const source of ['linear', 'jira', 'trello'] as const) {
+      scope.post(`/webhooks/${source}/:connectionId`, async (request) => {
+        const { connection, rawBody, payload } = await authenticate(request, source)
+        const deliveryId = (TRACKER_WEBHOOK_CODECS[source] as TrackerWebhookCodec).deliveryId(request.headers, rawBody)
+        const { type, webhookEvent } = payload as { type?: string; webhookEvent?: string }
+        const rowId = await record(connection.id, source, deliveryId, type ?? webhookEvent, payload)
+        if (rowId)
+          await queues.trackerInbound.add(
+            'delivery',
+            { connectionId: connection.id, deliveryId: rowId, payload, source },
+            { jobId: `${source}-${rowId}` },
+          )
+        return { ok: true, duplicate: !rowId }
+      })
+    }
+
+    for (const source of ['gitlab', 'github'] as const) {
+      const eventHeader = `x-${source}-event`
+      scope.post(`/webhooks/${source}/:connectionId`, async (request) => {
+        const { connection, rawBody, payload } = await authenticate(request, source)
+        const deliveryId = SCM_WEBHOOK_CODECS[source].deliveryId(request.headers, rawBody)
+        const event = request.headers[eventHeader] as string | undefined
+        const rowId = await record(connection.id, source, deliveryId, event, payload)
+        if (rowId)
+          await queues.scmInbound.add(
+            'delivery',
+            { connectionId: connection.id, deliveryId: rowId, payload, source, headers: { [eventHeader]: event } },
+            { jobId: `${source}-${rowId}` },
+          )
+        return { ok: true, duplicate: !rowId }
+      })
+    }
   })
 }

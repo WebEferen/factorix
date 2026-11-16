@@ -152,7 +152,21 @@ function updateOf<Shape extends z.ZodRawShape>(schema: z.ZodObject<Shape>): z.Zo
   return z.object(shape) as unknown as z.ZodType<Partial<z.output<z.ZodObject<Shape>>>>
 }
 
-export const CONNECTION_KINDS = ['linear', 'gitlab', 'anthropic', 'openai', 'mcp_stdio', 'mcp_http', 'generic', 'slack', 'doppler'] as const
+export const CONNECTION_KINDS = [
+  'linear',
+  'jira',
+  'trello',
+  'gitlab',
+  'github',
+  'anthropic',
+  'openai',
+  'mcp_stdio',
+  'mcp_http',
+  'generic',
+  'slack',
+  'doppler',
+  'factorix',
+] as const
 export type ConnectionKind = (typeof CONNECTION_KINDS)[number]
 
 export const connectionInput = z.object({
@@ -228,6 +242,28 @@ export const createIssueInput = z.object({
   assignAgentId: z.uuid().nullable().optional(),
 })
 export type CreateIssueInput = z.infer<typeof createIssueInput>
+
+/** Only built-in tickets are edited here. Any other tracker owns its own. */
+export const updateIssueInput = updateOf(
+  z.object({
+    title: z.string().trim().min(1).max(500),
+    description: z.string().max(100_000).nullable(),
+    priority: z.number().int().min(0).max(4),
+    stateId: z.string().min(1).max(100),
+  }),
+)
+export type UpdateIssueInput = z.infer<typeof updateIssueInput>
+
+export const ticketBoardInput = z.object({
+  connectionId: z.uuid(),
+  key: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z][A-Z0-9]{0,9}$/, 'Use up to 10 letters and digits, starting with a letter'),
+  name: z.string().trim().min(1).max(120),
+})
+export type TicketBoardInput = z.infer<typeof ticketBoardInput>
 
 const many = z.preprocess(
   (value) => (value === undefined ? [] : Array.isArray(value) ? value : [value]),

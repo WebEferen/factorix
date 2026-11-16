@@ -1,8 +1,10 @@
+import { createHmac } from 'node:crypto'
 import type { TrackerIssue } from '@factorix/connectors'
 import { ISSUE_SORTS, type RuntimeDto } from '@factorix/schemas'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { relayDomainEvents } from './services/relay'
 import { refreshRuntimeModels } from './services/runtime-models'
+import { FactorixTracker } from './services/tickets'
 import { importProject, setTrackerState, syncProjectIssues } from './services/tracker-sync'
 import { STATES, TEAM_ID } from './testing/fakes'
 import { ApiClient, createHarness, type Harness, issuePayload, sendGitlabWebhook, sendLinearWebhook } from './testing/harness'
@@ -406,6 +408,139 @@ describe('API', () => {
       it('verifies GitLab webhooks with the shared token', async () => {
         expect((await sendGitlabWebhook(harness.app, gitlabId, 'wrong', 'Note Hook', { object_kind: 'note' })).statusCode).toBe(401)
         expect((await sendGitlabWebhook(harness.app, gitlabId, gitlabSecret, 'Note Hook', { object_kind: 'note' })).statusCode).toBe(200)
+      })
+
+      it('verifies GitHub webhooks by their signature and queues them with their source', async () => {
+        const { connection } = await admin.ok('POST', '/api/connections', { kind: 'github', name: 'GitHub', config: {}, secret: 'ghp_test' })
+        expect(connection).toMatchObject({ accountRole: 'scm', webhookUrl: `http://localhost:4101/webhooks/github/${connection.id}` })
+        const body = JSON.stringify({ action: 'opened', repository: { id: 42 }, pull_request: { number: 1 } })
+        const send = (secret: string) =>
+          harness.app.inject({
+            method: 'POST',
+            url: `/webhooks/github/${connection.id}`,
+            payload: body,
+            headers: {
+              'content-type': 'application/json',
+              'x-github-event': 'pull_request',
+              'x-github-delivery': 'gh-1',
+              'x-hub-signature-256': `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`,
+            },
+          })
+        expect((await send('wrong')).statusCode).toBe(401)
+        expect((await send(connection.webhookSecret)).json()).toEqual({ ok: true, duplicate: false })
+        const [row] = await harness.deps.db('webhook_deliveries').where({ connectionId: connection.id })
+        expect(row).toMatchObject({ source: 'github', eventType: 'pull_request' })
+        const job = await harness.deps.queues.scmInbound.getJob(`github-${row.id}`)
+        expect(job?.data).toMatchObject({ source: 'github', headers: { 'x-github-event': 'pull_request' } })
+        await job?.remove()
+      })
+
+      it('takes Jira and Trello webhooks, each signed its own way', async () => {
+        const jira = (
+          await admin.ok('POST', '/api/connections', { kind: 'jira', name: 'Jira', config: { host: 'https://acme.atlassian.net' }, secret: 't' })
+        ).connection
+        expect(jira).toMatchObject({ accountRole: 'tracker', webhookUrl: `http://localhost:4101/webhooks/jira/${jira.id}` })
+        const jiraBody = JSON.stringify({ webhookEvent: 'jira:issue_deleted', issue: { id: '10001' } })
+        const sendJira = (secret: string) =>
+          harness.app.inject({
+            method: 'POST',
+            url: `/webhooks/jira/${jira.id}`,
+            payload: jiraBody,
+            headers: {
+              'content-type': 'application/json',
+              'x-hub-signature': `sha256=${createHmac('sha256', secret).update(jiraBody).digest('hex')}`,
+            },
+          })
+        expect((await sendJira('wrong')).statusCode).toBe(401)
+        expect((await sendJira(jira.webhookSecret)).json()).toEqual({ ok: true, duplicate: false })
+        const [jiraRow] = await harness.deps.db('webhook_deliveries').where({ connectionId: jira.id })
+        expect(jiraRow).toMatchObject({ source: 'jira', eventType: 'jira:issue_deleted' })
+        const jiraJob = await harness.deps.queues.trackerInbound.getJob(`jira-${jiraRow.id}`)
+        expect(jiraJob?.data).toMatchObject({ source: 'jira' })
+        await jiraJob?.remove()
+
+        const config = { apiKey: 'key', webhookSecret: 'api-secret' }
+        const trello = (await admin.ok('POST', '/api/connections', { kind: 'trello', name: 'Trello', config, secret: 't' })).connection
+        expect((await harness.app.inject({ method: 'HEAD', url: `/webhooks/trello/${trello.id}` })).statusCode).toBe(200)
+        const trelloBody = JSON.stringify({ action: { id: 'a1', type: 'deleteCard', data: { card: { id: 'c1' } } } })
+        const sendTrello = (url: string) =>
+          harness.app.inject({
+            method: 'POST',
+            url: `/webhooks/trello/${trello.id}`,
+            payload: trelloBody,
+            headers: {
+              'content-type': 'application/json',
+              'x-trello-webhook': createHmac('sha1', 'api-secret').update(`${trelloBody}${url}`).digest('base64'),
+            },
+          })
+        expect((await sendTrello('https://elsewhere.example/hook')).statusCode).toBe(401)
+        expect((await sendTrello(trello.webhookUrl)).json()).toEqual({ ok: true, duplicate: false })
+        const trelloJob = await harness.deps.queues.trackerInbound.getJob(
+          `trello-${(await harness.deps.db('webhook_deliveries').where({ connectionId: trello.id }).first()).id}`,
+        )
+        expect(trelloJob?.data).toMatchObject({ source: 'trello' })
+        await trelloJob?.remove()
+      })
+
+      it('runs a project on built-in tickets when there is no tracker to connect', async () => {
+        const { connection } = await admin.ok('POST', '/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
+        expect(connection).toMatchObject({ hasSecret: false, webhookUrl: null, accountRole: null })
+        expect((await admin.request('POST', '/api/connections', { kind: 'factorix', name: 'Again' })).status).toBe(409)
+
+        const board = { connectionId: connection.id, key: 'shop', name: 'Shop' }
+        const { team } = await admin.ok('POST', '/api/tracker/teams', board)
+        expect(team).toMatchObject({ key: 'SHOP', name: 'Shop' })
+        expect((await admin.request('POST', '/api/tracker/teams', board)).status).toBe(409)
+        expect((await admin.request('POST', '/api/tracker/teams', { ...board, connectionId: linearId })).status).toBe(400)
+        expect((await admin.ok('GET', `/api/tracker/teams?connectionId=${connection.id}`)).teams).toEqual([team])
+        const { states } = await admin.ok('GET', `/api/tracker/states?connectionId=${connection.id}&teamId=${team.id}`)
+        expect(states.map((state: { id: string }) => state.id)).toContain('in_review')
+
+        const { project } = await admin.ok('POST', '/api/projects', {
+          name: 'Shop',
+          trackerConnectionId: connection.id,
+          trackerTeamId: team.id,
+          scmConnectionId: gitlabId,
+          repos: [{ scmRepoId: '43', scmRepoPath: 'g/s', scmCloneUrl: 'https://gitlab.com/g/s.git', defaultBranch: 'main' }],
+          stateMap: { in_progress: 'in_progress', in_review: 'in_review', done: 'done', blocked: 'blocked' },
+          trigger: { states: ['Todo'] },
+        })
+        await importProject(harness.deps, project.id)
+        const labels = (await admin.ok('GET', `/api/projects/${project.id}`)).project.agentLabels
+        expect(Object.keys(labels)).toContain('engineer-1')
+        const hooks = await admin.ok('POST', `/api/projects/${project.id}/webhooks`)
+        expect(hooks.results.map((result: { kind: string }) => result.kind)).toEqual(['gitlab'])
+
+        const first = (await admin.ok('POST', `/api/projects/${project.id}/issues`, { title: 'Add a cart', description: 'See SHOP-2', priority: 2 }))
+          .issue
+        const second = (await admin.ok('POST', `/api/projects/${project.id}/issues`, { title: 'Add checkout' })).issue
+        expect([first.identifier, second.identifier]).toEqual(['SHOP-1', 'SHOP-2'])
+        expect(first).toMatchObject({ trackerStateName: 'Todo', priority: 2, trackerUrl: null, factoryState: 'untracked' })
+        expect(first.authorName).toBeTruthy()
+
+        const detail = (await admin.ok('GET', `/api/issues/${first.id}`)).issue
+        expect(detail).toMatchObject({ editable: true, descriptionSource: 'See SHOP-2' })
+        expect(detail.description).toBe(`See [SHOP-2](/issues/${second.id})`)
+
+        const edited = (await admin.ok('PUT', `/api/issues/${first.id}`, { title: 'Add a basket', stateId: 'done' })).issue
+        expect(edited).toMatchObject({ title: 'Add a basket', trackerStateName: 'Done', closed: true, priority: 2 })
+        expect((await admin.request('PUT', `/api/issues/${first.id}`, { stateId: 'nope' })).status).toBe(400)
+
+        const { agents } = await admin.ok('GET', '/api/agents')
+        const engineer = agents.find((candidate: { handle: string }) => candidate.handle === 'engineer-1')
+        const assigned = (await admin.ok('POST', `/api/issues/${second.id}/assign`, { agentId: engineer.id })).issue
+        expect(assigned.factoryState).not.toBe('untracked')
+        const tracker = new FactorixTracker(harness.deps.db, { id: connection.id, orgId: project.orgId ?? '' })
+        expect((await tracker.getIssue(second.trackerIssueId))?.labels.map((label) => label.name)).toEqual(['engineer-1'])
+        await syncProjectIssues(harness.deps, (await harness.deps.db('projects').where({ id: project.id }).first()) as never, { full: true })
+        expect((await admin.ok('GET', `/api/issues/${second.id}`)).issue.labels.map((label: { name: string }) => label.name)).toEqual(['engineer-1'])
+
+        await setTrackerState(harness.deps, { issueId: second.id, key: 'in_progress' })
+        expect((await tracker.getIssue(second.trackerIssueId))?.stateName).toBe('In Progress')
+        await admin.ok('POST', `/api/issues/${second.id}/cancel`)
+
+        const linearIssue = (await admin.ok('GET', '/api/issues')).issues.find((issue: { projectId: string }) => issue.projectId === projectId)
+        expect((await admin.request('PUT', `/api/issues/${linearIssue.id}`, { title: 'No' })).status).toBe(409)
       })
 
       it('answers an unknown connection with 404 and a malformed id without touching the database', async () => {

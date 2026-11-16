@@ -128,9 +128,8 @@ export async function handleScmEvent(deps: Deps, connectionId: string, event: Sc
       const mr = event.iid ? await mergeRequestByIid(deps, connectionId, event.repoId, event.iid) : undefined
       const issue = mr ? await issueById(deps, mr.issueId) : event.ref ? await issueByBranch(deps, connectionId, event.repoId, event.ref) : undefined
       if (issue?.cursor?.waitingFor !== 'ci') return 'ignored'
-      // This repository finished. The others may not have, and a review must see all of them.
-      if ((await mergeRequestsOf(deps.db, issue.id)).length > 1) await checkCi(deps, issue.id)
-      else await settleCi(deps, issue.id)
+      // One pipeline finished. Other repositories, or other checks on the same commit, may not have, and a review must see all of them.
+      await checkCi(deps, issue.id)
       return 'processed'
     }
     case 'ignored':

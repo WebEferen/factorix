@@ -1,5 +1,5 @@
 import { type ConnectionRow, json } from '@factorix/db'
-import { connectionInput, connectionUpdateInput, NOTIFICATION_KINDS } from '@factorix/schemas'
+import { connectionInput, connectionUpdateInput, NOTIFICATION_KINDS, ticketBoardInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { connectionDto } from '../dto'
@@ -9,6 +9,7 @@ import { badRequest, conflict, isUniqueViolation, parseBody } from '../lib/error
 import { encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
 import { secretSourceFor } from '../services/environments'
 import { readSettings } from '../services/settings'
+import { FactorixTracker } from '../services/tickets'
 
 export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { db } = deps
@@ -45,6 +46,7 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
       })
       return { connection: connectionDto(row as ConnectionRow, (await readSettings(deps)).publicUrl, true) }
     } catch (error) {
+      if (isUniqueViolation(error, 'connections_factorix')) throw conflict('This organization already has its built-in tickets')
       if (isUniqueViolation(error)) throw conflict(`A connection named ${input.name} already exists`)
       throw error
     }
@@ -81,13 +83,14 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { account } = requireAdmin(request)
     const connection = await getConnection(db, account.orgId, (request.params as { id: string }).id)
     try {
-      if (connection.kind === 'linear') {
+      if (connection.kind === 'linear' || connection.kind === 'jira' || connection.kind === 'trello') {
         const viewer = await trackerFor(deps, connection).viewer()
-        return { ok: true, message: `Connected to Linear as ${viewer.name}` }
+        const label = { linear: 'Linear', jira: 'Jira', trello: 'Trello' }[connection.kind]
+        return { ok: true, message: `Connected to ${label} as ${viewer.name}` }
       }
-      if (connection.kind === 'gitlab') {
+      if (connection.kind === 'gitlab' || connection.kind === 'github') {
         const viewer = await scmFor(deps, connection).viewer()
-        return { ok: true, message: `Connected to GitLab as ${viewer.username}` }
+        return { ok: true, message: `Connected to ${connection.kind === 'gitlab' ? 'GitLab' : 'GitHub'} as ${viewer.username}` }
       }
       if (connection.kind === 'slack') {
         const viewer = await notifierFor(deps, connection).viewer()
@@ -119,6 +122,29 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.get('/api/tracker/teams', async (request) => ({
     teams: await (await trackerFromQuery(request, requireAuth(request).account.orgId)).listTeams(),
   }))
+
+  app.post('/api/tracker/teams', async (request) => {
+    const { account } = requireAdmin(request)
+    const input = parseBody(ticketBoardInput, request.body)
+    const connection = await getConnection(db, account.orgId, input.connectionId)
+    if (connection.kind !== 'factorix') throw badRequest('Teams of this tracker are created in the tracker itself')
+    try {
+      const team = await new FactorixTracker(db, connection).createBoard(input)
+      await writeAudit(db, {
+        orgId: account.orgId,
+        actorAccountId: account.id,
+        actorKind: 'human',
+        action: 'ticket_board.created',
+        targetType: 'connection',
+        targetId: connection.id,
+        metadata: { key: team.key, name: team.name },
+      })
+      return { team }
+    } catch (error) {
+      if (isUniqueViolation(error)) throw conflict(`A board with the prefix ${input.key} already exists`)
+      throw error
+    }
+  })
 
   app.get('/api/tracker/projects', async (request) => {
     const { teamId } = request.query as { teamId?: string }
