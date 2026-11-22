@@ -297,7 +297,7 @@ export function caseView(shell: Shell, data: { item: Case; events: CaseEvent[]; 
       let state = ''
       if (item.status === 'failed') state = `<p class="banner bad">${esc(item.error ?? 'This step stopped.')}</p>`
       else if (item.phase === 'todo')
-        state = `<p class="muted">Waits for ${esc(item.assigneeName ?? (item.assigneeId ? 'its assignee' : 'an admin'))} ${due}</p>`
+        state = `<p class="muted">Waits for ${esc(item.assigneeName ?? (item.assigneeId ? 'its assignee' : 'an admin'))}${due ? ` · ${due}` : ''}</p>`
       else
         state = `<p class="muted"><span class="spinner"></span> ${step.kind === 'agent' ? `An agent is working on it. ${outside(item.refUrl, 'Open the run')}` : step.kind === 'ticket' ? `Waits for ${outside(item.refUrl, item.outputs[step.id]?.ticket ?? 'the ticket')} to close` : 'Starting'} ${due}</p>`
       const form =
