@@ -89,3 +89,6 @@ export const TASK_SCHEMA: JsonSchema = {
 export interface TaskOutput {
   summary: string
 }
+
+/** What a plugin's run answers when the plugin names no shape of its own. */
+export const PLUGIN_SCHEMA = object({ answer: string })

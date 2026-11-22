@@ -6,7 +6,7 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
-          include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.ts'],
+          include: ['packages/*/src/**/*.test.ts', 'apps/*/src/**/*.test.ts', 'plugins/*/src/**/*.test.ts'],
           exclude: ['**/*.int.test.ts', '**/*.docker.test.ts', '**/node_modules/**'],
           environment: 'node',
         },
@@ -14,7 +14,7 @@ export default defineConfig({
       {
         test: {
           name: 'integration',
-          include: ['packages/*/src/**/*.int.test.ts', 'apps/*/src/**/*.int.test.ts'],
+          include: ['packages/*/src/**/*.int.test.ts', 'apps/*/src/**/*.int.test.ts', 'plugins/*/src/**/*.int.test.ts'],
           environment: 'node',
           testTimeout: 60_000,
           hookTimeout: 120_000,

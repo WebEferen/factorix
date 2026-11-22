@@ -4,6 +4,7 @@ import type { ApprovalRow, ConnectionRow, IssueInstructionRow, IssueRow, MrDiscu
 import {
   type AgentHelper,
   BRIDGE_SOCKET,
+  type JsonSchema,
   type McpServerSpec,
   type PermissionPolicy,
   type Phase,
@@ -30,6 +31,7 @@ export interface SpecRepo {
 
 /** One repository keeps the classic layout where the agent starts at its root. Several put the agent above them. */
 export function workingDirectory(repos: Pick<SpecRepo, 'name'>[]): string {
+  if (repos.length === 0) return '/workspace'
   return repos.length === 1 ? `/workspace/repos/${repos[0]?.name}` : '/workspace/repos'
 }
 
@@ -53,7 +55,20 @@ function scriptFolders(repos: SpecRepo[]): string[] {
   return repos.length > 1 ? repos.map((repo) => repo.name) : ['.']
 }
 
-export function defaultScript(phase: Phase, runId: string, repos: SpecRepo[]): ScriptedPlan {
+/** A value in the shape a schema asks for, so a scripted run answers a plugin the way the plugin asked. */
+function sampleOf(schema: JsonSchema): unknown {
+  if (Array.isArray(schema.enum)) return schema.enum[0]
+  if (schema.type === 'object')
+    return Object.fromEntries(Object.entries((schema.properties ?? {}) as Record<string, JsonSchema>).map(([key, value]) => [key, sampleOf(value)]))
+  if (schema.type === 'array') return []
+  if (schema.type === 'string') return 'Scripted answer.'
+  if (schema.type === 'integer' || schema.type === 'number') return 0
+  if (schema.type === 'boolean') return false
+  return null
+}
+
+export function defaultScript(phase: Phase, runId: string, repos: SpecRepo[], outputSchema?: JsonSchema): ScriptedPlan {
+  if (phase === 'plugin') return { steps: [{ say: 'Answering the plugin.' }], structuredOutput: outputSchema ? sampleOf(outputSchema) : undefined }
   const folders = scriptFolders(repos)
   const first = folders[0] as string
   switch (phase) {
@@ -309,6 +324,8 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
   const agent = run.agentSnapshot as unknown as AgentSnapshot
   const phase = run.phase as Phase
   const template = PHASES[phase]
+  // A plugin names the shape of its answer when it asks, and the request checked it then.
+  const outputSchema = (phase === 'plugin' ? (run.trigger.outputSchema as JsonSchema | undefined) : undefined) ?? template.outputSchema
   const context = await buildPhaseContext(deps, run, issue, input.repos, input.branch, input.ciFailures)
   if (input.resources?.length) context.resources = input.resources
   if (context.issue?.description) {
@@ -352,9 +369,9 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
     },
     policy: tools.length > 0 ? withFactorixTools(resolvePolicy(agent.policy, phase)) : resolvePolicy(agent.policy, phase),
     resume: input.resumeSessionRef ? { sessionRef: input.resumeSessionRef } : undefined,
-    outputSchema: template.outputSchema,
+    outputSchema,
     startSeq: run.lastRunnerSeq,
     files: input.files?.length ? input.files : undefined,
-    scripted: run.runtime === 'scripted' ? (input.scripted ?? defaultScript(phase, run.id, input.repos)) : undefined,
+    scripted: run.runtime === 'scripted' ? (input.scripted ?? defaultScript(phase, run.id, input.repos, outputSchema)) : undefined,
   }
 }

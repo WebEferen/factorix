@@ -9,10 +9,11 @@
   },
   "workspaces": [
     "apps/*",
-    "packages/*"
+    "packages/*",
+    "plugins/*"
   ],
   "scripts": {
-    "dev": "docker compose up -d --wait postgres redis && yarn migrate && concurrently -n api,worker,web \"yarn workspace @factorix/api dev\" \"yarn workspace @factorix/api dev:worker\" \"yarn workspace @factorix/web dev\"",
+    "dev": "docker compose up -d --wait postgres redis && yarn migrate && concurrently -n api,worker,web,plugins \"yarn workspace @factorix/api dev\" \"yarn workspace @factorix/api dev:worker\" \"yarn workspace @factorix/web dev\" \"yarn workspace @factorix/plugin-host dev\"",
     "start": "./install.sh",
     "lint": "biome check .",
     "format": "biome check --write .",

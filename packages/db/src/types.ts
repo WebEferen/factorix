@@ -113,7 +113,12 @@ export interface AgentRow {
 export interface PluginRow {
   id: string
   name: string
+  /** Where Factorix calls it. */
   url: string
+  /** Where people open its pages, when that differs from `url`. */
+  pageUrl: string | null
+  /** Ships in the repository's plugins/ folder and registers itself. */
+  bundled: boolean
   manifest: Record<string, unknown>
   secretCiphertext: Buffer
   secretNonce: Buffer
@@ -129,9 +134,18 @@ export interface OrganizationPluginRow {
   secretCiphertext: Buffer | null
   secretNonce: Buffer | null
   keyVersion: number
+  /** What the organization's admin allowed, out of what the manifest asked for. */
+  permissions: string[]
   enabledBy: string | null
   createdAt: Date
   updatedAt: Date
+}
+
+export interface PluginTicketRow {
+  pluginId: string
+  orgId: string
+  issueId: string
+  createdAt: Date
 }
 
 export interface RunnerRow {

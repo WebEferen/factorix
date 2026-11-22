@@ -22,6 +22,10 @@ x-app-env: &app-env
   FACTORIX_PREVIEW_MAX_RUNNING: ${FACTORIX_PREVIEW_MAX_RUNNING:-}
   FACTORIX_PREVIEW_IDLE_MINUTES: ${FACTORIX_PREVIEW_IDLE_MINUTES:-}
   FACTORIX_PREVIEW_MAX_HOURS: ${FACTORIX_PREVIEW_MAX_HOURS:-}
+  FACTORIX_PLUGINS_KEY: ${FACTORIX_PLUGINS_KEY:-}
+  FACTORIX_PLUGINS_URL: ${FACTORIX_PLUGINS_URL:-http://plugins.localhost:4110}
+  FACTORIX_PLUGINS_INTERNAL_URL: http://plugins:4110
+  FACTORIX_GATEWAY_URL: http://preview-gateway:4102
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
@@ -146,6 +150,43 @@ services:
     restart: unless-stopped
     networks: [fx-backend]
 
+  # Runs every plugin in plugins/ as its own process, each on its own subdomain of FACTORIX_PLUGINS_URL. It reaches the
+  # API to call back and its own database, never Factorix's.
+  plugins:
+    image: factorix/api:dev
+    pull_policy: never
+    command: [node_modules/.bin/tsx, apps/plugin-host/src/index.ts]
+    environment:
+      PORT: 4110
+      FACTORIX_PLUGINS_KEY: ${FACTORIX_PLUGINS_KEY:-}
+      FACTORIX_PLUGINS_URL: ${FACTORIX_PLUGINS_URL:-http://plugins.localhost:4110}
+      FACTORIX_INTERNAL_URL: http://api:4100
+      FACTORIX_PLUGINS_DATABASE_URL: postgres://plugins:plugins@plugins-db:5432/plugins
+    ports:
+      - ${FACTORIX_WEB_BIND:-127.0.0.1}:4110:4110
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      plugins-db: { condition: service_healthy }
+    restart: unless-stopped
+    networks: [fx-public, fx-plugins]
+
+  # Each bundled plugin that asks for a database gets one here.
+  plugins-db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: plugins
+      POSTGRES_PASSWORD: plugins
+      POSTGRES_DB: plugins
+    volumes:
+      - fx-plugins-db:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U plugins]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    networks: [fx-plugins]
+
   web:
     build:
       context: .
@@ -170,6 +211,7 @@ services:
     environment:
       FACTORIX_DOMAIN: ${FACTORIX_DOMAIN:-}
       FACTORIX_PREVIEW_DOMAIN: ${FACTORIX_PREVIEW_DOMAIN:-}
+      FACTORIX_PLUGINS_DOMAIN: ${FACTORIX_PLUGINS_DOMAIN:-plugins.${FACTORIX_DOMAIN:-localhost}}
       # Empty without an address, since Caddy refuses an `email` line with nothing after it.
       FACTORIX_ACME_EMAIL_DIRECTIVE: ${FACTORIX_ACME_EMAIL:+email ${FACTORIX_ACME_EMAIL}}
     volumes:
@@ -178,6 +220,7 @@ services:
     depends_on:
       web: { condition: service_started }
       preview-gateway: { condition: service_started }
+      plugins: { condition: service_started }
     restart: unless-stopped
 
   sandbox-image:
@@ -189,9 +232,11 @@ volumes:
   fx-postgres:
   fx-redis:
   fx-caddy:
+  fx-plugins-db:
 
 networks:
   fx-backend:
+  fx-plugins:
   fx-public:
   fx-agents:
     name: fx-agents

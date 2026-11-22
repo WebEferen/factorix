@@ -408,5 +408,7 @@ export async function finalizePhase(context: FinalizeContext): Promise<FinalizeR
   if (run.phase === 'review') return finalizeReview(context)
   if (run.phase === 'task') return finalizeTask(context)
   if (run.phase === 'prompt') return finalizePrompt(context)
+  // The plugin reads the answer from the run, so a run without one did not do what it was asked.
+  if (run.phase === 'plugin' && context.structuredOutput == null) throw new Error('The agent finished without an answer')
   return { result: 'completed' }
 }

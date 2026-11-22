@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import type { TrackerIssue } from '@factorix/connectors'
-import type { RunRow } from '@factorix/db'
+import { signPlugin, type TrackerIssue } from '@factorix/connectors'
+import { json, type RunRow } from '@factorix/db'
 import type { ScriptedPlan } from '@factorix/runtime'
 import { DockerSandboxProvider, dockerClientFromEnv } from '@factorix/sandbox'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
@@ -540,6 +540,74 @@ describe('factory end to end', () => {
     const kept = await finish()
     expect(kept).toMatchObject({ state: 'succeeded', hasDiff: true, resultBranch: null })
     await expect(remoteGit(`rev-parse --verify refs/heads/factorix/adhoc-${kept.id.slice(0, 8)}`)).rejects.toThrow()
+  })
+
+  it('answers a plugin in a run with no ticket and no repository', async () => {
+    script = () => undefined
+    const secret = 'e2e-plugin-secret-0123456789'
+    const sealed = harness.deps.secrets.encrypt(secret)
+    const manifest = {
+      protocol: 1,
+      name: 'Echo',
+      version: '1.0.0',
+      provides: [],
+      permissions: ['agents:run'],
+      connection: { fields: [] },
+      settings: { fields: [] },
+      pages: [{ key: 'home', label: 'Home', path: '/home', placement: 'sidebar' }],
+    }
+    const [plugin] = await harness.deps
+      .db('plugins')
+      .insert({
+        name: 'Echo',
+        url: 'http://echo.invalid/factorix',
+        manifest: json(manifest),
+        secretCiphertext: sealed.ciphertext,
+        secretNonce: sealed.nonce,
+      })
+      .returning('*')
+    const { org } = await admin.ok('GET', '/api/auth/me')
+    await harness.deps.db('organization_plugins').insert({ orgId: org.id, pluginId: plugin.id, permissions: ['agents:run'] })
+    const send = async (path: string, payload: unknown) => {
+      const body = JSON.stringify(payload)
+      const timestamp = String(Date.now())
+      const response = await harness.app.inject({
+        method: 'POST',
+        url: path,
+        payload: body,
+        headers: {
+          'content-type': 'application/json',
+          'x-factorix-timestamp': timestamp,
+          'x-factorix-signature': signPlugin(secret, timestamp, body),
+        },
+      })
+      return response.json().run
+    }
+
+    const { agents } = await admin.ok('GET', '/api/agents')
+    const engineer = agents.find((agent: { handle: string }) => agent.handle === 'engineer-1')
+    const outputSchema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['line', 'tags'],
+      properties: { line: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } },
+    }
+    const started = await send(`/webhooks/plugins/${plugin.id}/runs`, {
+      orgId: org.id,
+      agentId: engineer.id,
+      prompt: 'Write one line.',
+      outputSchema,
+    })
+    const finished = await waitFor(
+      async () => {
+        const run = await send(`/webhooks/plugins/${plugin.id}/runs/${started.id}`, { orgId: org.id })
+        return run.finished ? run : null
+      },
+      'the plugin run to end',
+      120_000,
+    )
+    expect(finished).toMatchObject({ state: 'succeeded', output: { line: 'Scripted answer.', tags: [] }, error: null })
+    expect((await admin.ok('GET', `/api/runs/${started.id}`)).run).toMatchObject({ phase: 'plugin', issueId: null })
   })
 
   describe('with several repositories', () => {

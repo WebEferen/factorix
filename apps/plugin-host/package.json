@@ -1,0 +1,20 @@
+{
+  "name": "@factorix/plugin-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/host.ts",
+  "scripts": {
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@factorix/connectors": "0.1.0",
+    "pg": "8.23.1",
+    "tsx": "4.23.15"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

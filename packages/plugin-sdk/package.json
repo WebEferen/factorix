@@ -1,0 +1,27 @@
+{
+  "name": "@moxxylabs/factorix-plugin-sdk",
+  "version": "0.2.0",
+  "description": "Build plugins for Factorix: trackers, pages, settings, and calls back into Factorix, served from your own server",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WebEferen/factorix.git",
+    "directory": "packages/plugin-sdk"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/package-dist.mjs",
+    "release": "yarn build && npm publish ./dist --access public",
+    "prepublishOnly": "node -e \"throw new Error('Publish the built package instead: yarn workspace @moxxylabs/factorix-plugin-sdk release')\"",
+    "example": "tsx examples/memory-tracker.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  }
+}

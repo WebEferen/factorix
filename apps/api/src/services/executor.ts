@@ -240,7 +240,7 @@ class RunExecution {
             },
           ]
         : []
-    if (targets.length === 0) throw new Error('This run has no repository to work on')
+    if (targets.length === 0 && this.run.phase !== 'plugin') throw new Error('This run has no repository to work on')
     this.repos = targets.map((repo) => ({
       ...repo,
       env: {

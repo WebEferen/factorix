@@ -1,0 +1,23 @@
+{
+  "name": "factorix-plugin-digest",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The daily digest: an agent writes what each person and agent finished, has in progress, and has next",
+  "type": "module",
+  "factorix": {
+    "main": "src/main.ts",
+    "database": true
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@moxxylabs/factorix-plugin-sdk": "0.2.0",
+    "pg": "8.23.1",
+    "tsx": "4.23.15"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}

@@ -85,6 +85,19 @@ function SettingsDialog({ plugin, onOpenChange, onDone }: { plugin: PluginDto | 
   return (
     <Dialog open={plugin !== null} onOpenChange={onOpenChange} title={plugin?.name ?? ''} description="Settings for this organization.">
       <form onSubmit={submit} className="flex flex-col gap-3">
+        {plugin && plugin.permissions.length > 0 ? (
+          <div className="rounded-md border border-divider p-3 text-sm">
+            <p className="mb-1 font-medium">{plugin.enabled ? 'Saving allows it to' : 'Turning it on allows it to'}</p>
+            <ul className="flex list-disc flex-col gap-1 pl-5 text-ink-2">
+              {plugin.permissions.map((permission) => (
+                <li key={permission.id}>
+                  {permission.description}
+                  {plugin.enabled && !permission.granted ? <span className="text-warning-ink"> (new)</span> : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {plugin ? <PluginFields fields={plugin.settingsFields} values={values} stored={plugin.secretSettings} onChange={setValues} /> : null}
         <div className="flex justify-end">
           <Button type="submit" variant="primary" loading={loading}>
@@ -111,8 +124,9 @@ export default function PluginsPage() {
       toast.error((caught as Error).message)
     }
   }
+  const pending = (plugin: PluginDto) => plugin.enabled && plugin.permissions.some((permission) => !permission.granted)
   const turnOn = (plugin: PluginDto) =>
-    plugin.settingsFields.length > 0
+    plugin.settingsFields.length > 0 || plugin.permissions.length > 0
       ? setEditing(plugin)
       : void act(() => api.put(`/api/plugins/${plugin.id}/organization`, { enabled: true }), `Turned on ${plugin.name}`)
   return (
@@ -154,7 +168,7 @@ export default function PluginsPage() {
                     plugin.description,
                     plugin.provides.includes('tracker') ? 'Tracker' : null,
                     plugin.pages.length > 0 ? plugin.pages.map((page) => page.label).join(', ') : null,
-                    plugin.url,
+                    plugin.bundled ? 'Comes with Factorix' : plugin.url,
                   ]
                     .filter(Boolean)
                     .join(' · ')}
@@ -169,8 +183,9 @@ export default function PluginsPage() {
                       </Link>
                     ))
                 : null}
+              {pending(plugin) ? <Chip tone="warning">Asks for more</Chip> : null}
               <Chip tone={plugin.enabled ? 'success' : 'neutral'}>{plugin.enabled ? 'On' : 'Off'}</Chip>
-              {admin && plugin.enabled && plugin.settingsFields.length > 0 ? (
+              {admin && plugin.enabled && (plugin.settingsFields.length > 0 || pending(plugin)) ? (
                 <Button size="sm" variant="ghost" onClick={() => setEditing(plugin)}>
                   Settings
                 </Button>
@@ -199,9 +214,15 @@ export default function PluginsPage() {
                   >
                     Refresh
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => void act(() => api.delete(`/api/plugins/${plugin.id}`), `Removed ${plugin.name}`)}>
-                    Remove
-                  </Button>
+                  {plugin.bundled ? null : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void act(() => api.delete(`/api/plugins/${plugin.id}`), `Removed ${plugin.name}`)}
+                    >
+                      Remove
+                    </Button>
+                  )}
                 </>
               ) : null}
             </div>

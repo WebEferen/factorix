@@ -44,6 +44,10 @@ export interface PluginDto {
   connectionFields: PluginFieldDto[]
   settingsFields: PluginFieldDto[]
   pages: { key: string; label: string; placement: 'sidebar' | 'settings' }[]
+  /** What it may ask of Factorix, and whether this organization allowed each. Saving its settings allows them all. */
+  permissions: { id: string; description: string; granted: boolean }[]
+  /** Ships with this installation and registers itself, so it cannot be removed. */
+  bundled: boolean
   /** Whether this organization has turned it on, and what it set. Secret settings are named, never returned. */
   enabled: boolean
   settings: Record<string, string>

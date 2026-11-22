@@ -246,6 +246,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 | `apps/egress-proxy`   | The only network path out of an agent container               |
 | `apps/cli`            | `fx`, the command line and MCP server                         |
 | `apps/remote-runner`  | Runs sandboxes on another machine for Factorix                |
+| `apps/plugin-host`    | Runs the plugins in `plugins/`, each on its own subdomain     |
 | `packages/core`       | Pure domain: state machines, pipeline engine, phases, prompts |
 | `packages/runtime`    | The contract between worker and runner                        |
 | `packages/runner`     | Runs in the sandbox and hosts the SDKs                        |
@@ -253,6 +254,8 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 | `packages/connectors` | Trackers and code hosts, with markup, filters and sorts       |
 | `packages/db`         | Knex client, raw SQL migrations, row types                    |
 | `packages/schemas`    | Inputs and DTOs shared by API and web                         |
+| `packages/plugin-sdk` | The SDK plugins are built with, published to npm              |
+| `plugins/*`           | Plugins that ship with Factorix, such as the daily digest     |
 
 [AGENTS.md](AGENTS.md) has the rules that keep it safe and how to extend it with a new phase, connector, or model runtime.
 
@@ -260,7 +263,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 - **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them from the organization menu, under All organizations. Their agents run on separate networks, and the model keys in `.env` serve only the first one. They still share the worker's run slots.
 - **Email and password only.** There is no SSO yet.
-- **Plugins are young.** A plugin can add a tracker, pages in the sidebar or under Settings, and settings of its own, from a server outside Factorix. It cannot add a code host, attachments, or workflow blocks yet.
+- **Plugins are young.** A plugin can add a tracker, pages in the sidebar or under Settings, and settings of its own, and with an organization's permission read ticket activity and ask its agents for work. It cannot add a code host, attachments, or workflow blocks yet. [docs/plugins.md](docs/plugins.md) shows how to build one.
 - **Five connectors so far.** Linear, Jira, Trello, GitLab, and GitHub ship today. Jira and Trello have only run against stub servers. Trello has no priorities, and a list's place in the workflow is read from its name. Other sources implement the same connector interfaces.
 
 ## License

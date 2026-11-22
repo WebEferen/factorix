@@ -8,6 +8,7 @@ import { type AppDeps, realConnectors } from './deps'
 import { loadEnv } from './env'
 import { createSecretBox } from './lib/crypto'
 import { createQueues, QUEUE_NAMES } from './queues'
+import { syncBundledPlugins } from './services/bundled-plugins'
 import { abandonActiveRuns, executeRun, newWorkerId, releaseActiveRuns } from './services/executor'
 import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from './services/maintenance'
 import { advanceIssue } from './services/pipeline'
@@ -26,6 +27,7 @@ const WORKFLOW_SWEEP_INTERVAL_MS = 15_000
 const REAP_INTERVAL_MS = 15 * 60_000
 const SETTINGS_INTERVAL_MS = 15_000
 const PREVIEW_SWEEP_INTERVAL_MS = 30_000
+const BUNDLED_PLUGINS_INTERVAL_MS = 60_000
 
 export interface WorkerHandle {
   runConcurrency(): number
@@ -187,8 +189,13 @@ export function startWorkers(
     deps.timings?.workflowSweepMs ?? WORKFLOW_SWEEP_INTERVAL_MS,
   )
 
+  const syncPlugins = () => void syncBundledPlugins(deps, log).catch((error: Error) => log(`could not reach the plugin host: ${error.message}`))
+  syncPlugins()
+  const pluginsTimer = setInterval(syncPlugins, BUNDLED_PLUGINS_INTERVAL_MS)
+
   const stopTimers = () => {
     clearInterval(previewTimer)
+    clearInterval(pluginsTimer)
     stopAllPumps()
     clearInterval(workflowTimer)
     clearInterval(relayTimer)

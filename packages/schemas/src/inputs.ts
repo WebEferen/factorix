@@ -202,6 +202,28 @@ export const pluginOrganizationInput = z.object({
   settings: z.record(z.string(), z.string()).optional(),
 })
 
+/** What a plugin sends when it calls Factorix. Every call names the organization it acts for. */
+export const pluginCallInput = z.object({ orgId: z.string().uuid() })
+
+export const pluginActivityInput = pluginCallInput.extend({ since: z.iso.datetime({ offset: true }) })
+
+export const pluginRunInput = pluginCallInput.extend({
+  agentId: z.string().uuid(),
+  prompt: z.string().trim().min(1).max(200_000),
+  /** The JSON Schema of the answer. Without one the agent answers `{ answer }`. */
+  outputSchema: z.record(z.string(), z.unknown()).optional(),
+})
+export type PluginRunInput = z.output<typeof pluginRunInput>
+
+export const pluginTicketInput = pluginCallInput.extend({
+  projectId: z.string().uuid(),
+  title: z.string().trim().min(1).max(255),
+  description: z.string().max(50_000).optional(),
+  priority: z.number().int().min(0).max(4).optional(),
+  agentId: z.string().uuid().optional(),
+})
+export type PluginTicketInput = z.output<typeof pluginTicketInput>
+
 export const connectionUpdateInput = updateOf(connectionInput.omit({ kind: true }))
 export type ConnectionUpdateInput = z.infer<typeof connectionUpdateInput>
 

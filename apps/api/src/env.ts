@@ -42,6 +42,17 @@ const schema = z.object({
   FACTORIX_PREVIEW_MAX_RUNNING: count(3, 1),
   FACTORIX_PREVIEW_IDLE_MINUTES: count(60),
   FACTORIX_PREVIEW_MAX_HOURS: count(24, 1),
+  /** Each bundled plugin's secret is derived from this. Without it bundled plugins stay off. */
+  FACTORIX_PLUGINS_KEY: z.string().optional(),
+  /** Where the API reaches the plugin host, as http://plugins:4110. */
+  FACTORIX_PLUGINS_INTERNAL_URL: z.preprocess((value) => (value === '' ? undefined : value), z.url({ protocol: /^https?$/ }).optional()),
+  /** What browsers use for bundled plugins' pages. Each plugin gets a subdomain of this address. */
+  FACTORIX_PLUGINS_URL: z.preprocess(
+    (value) => (value === '' ? undefined : value),
+    z.url({ protocol: /^https?$/ }).default('http://plugins.localhost:4110'),
+  ),
+  /** The preview gateway, which answers for previews when Caddy asks whether to issue a certificate. */
+  FACTORIX_GATEWAY_URL: z.preprocess((value) => (value === '' ? undefined : value), z.url({ protocol: /^https?$/ }).optional()),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
 })

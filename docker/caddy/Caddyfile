@@ -1,9 +1,9 @@
 # HTTPS for a server install, which `./install.sh --domain` sets up. Caddy runs on the host network, so it
-# reaches web and the preview gateway on the loopback ports they publish.
+# reaches web, the preview gateway, and the plugin host on the loopback ports they publish.
 {
 	{$FACTORIX_ACME_EMAIL_DIRECTIVE}
 	on_demand_tls {
-		ask http://127.0.0.1:4102/__factorix/tls
+		ask http://127.0.0.1:4100/__factorix/tls
 	}
 }
 
@@ -11,11 +11,20 @@
 	reverse_proxy 127.0.0.1:4101
 }
 
-# Each preview has its own random subdomain, and a certificate is issued on its first visit. The gateway
-# answers the ask above only for previews that are running.
+# Each preview has its own random subdomain, and a certificate is issued on its first visit. The API passes
+# the ask above to the gateway, which answers only for previews that are running.
 *.{$FACTORIX_PREVIEW_DOMAIN} {
 	tls {
 		on_demand
 	}
 	reverse_proxy 127.0.0.1:4102
+}
+
+# Each bundled plugin has its own subdomain, so no two plugins share an origin. The API answers the ask above
+# only for plugins that registered.
+*.{$FACTORIX_PLUGINS_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy 127.0.0.1:4110
 }

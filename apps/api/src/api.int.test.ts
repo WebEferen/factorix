@@ -1,9 +1,12 @@
 import { createHmac } from 'node:crypto'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { signPlugin, type TrackerIssue, verifyPlugin } from '@factorix/connectors'
+import { bundledPluginSecret, signPlugin, type TrackerIssue, verifyPlugin } from '@factorix/connectors'
+import { json } from '@factorix/db'
 import { ISSUE_SORTS, type RuntimeDto } from '@factorix/schemas'
+import { definePlugin, factorix } from '@moxxylabs/factorix-plugin-sdk'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
+import { syncBundledPlugins } from './services/bundled-plugins'
 import { relayDomainEvents } from './services/relay'
 import { refreshRuntimeModels } from './services/runtime-models'
 import { FactorixTracker } from './services/tickets'
@@ -605,6 +608,236 @@ describe('API', () => {
         }
       })
 
+      it('answers a plugin only with what the organization allowed it', async () => {
+        const secret = 'access-secret-0123456789'
+        const manifest = {
+          protocol: 1,
+          name: 'Reporter',
+          version: '1.0.0',
+          provides: [],
+          permissions: ['activity:read'],
+          connection: { fields: [] },
+          settings: { fields: [] },
+          pages: [{ key: 'home', label: 'Home', path: '/pages/home', placement: 'sidebar' }],
+        }
+        const server = createServer((req, res) => {
+          req.resume()
+          req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ result: manifest }))
+          })
+        })
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/factorix`
+        const send = (path: string, payload: unknown, key = secret) => {
+          const body = JSON.stringify(payload)
+          const timestamp = String(Date.now())
+          return harness.app.inject({
+            method: 'POST',
+            url: path,
+            payload: body,
+            headers: {
+              'content-type': 'application/json',
+              'x-factorix-timestamp': timestamp,
+              'x-factorix-signature': signPlugin(key, timestamp, body),
+            },
+          })
+        }
+        try {
+          const { plugin } = await admin.ok('POST', '/api/plugins', { url, secret })
+          expect(plugin.permissions).toEqual([{ id: 'activity:read', description: expect.stringContaining('tickets'), granted: false }])
+          const { org } = await admin.ok('GET', '/api/auth/me')
+          const since = new Date(Date.now() - 86_400_000).toISOString()
+          const activityPath = `/webhooks/plugins/${plugin.id}/activity`
+          expect((await send(activityPath, { orgId: org.id, since })).statusCode).toBe(404)
+
+          await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+          const issue = await harness.deps.db('issues').where({ orgId: org.id }).orderBy('createdAt').first()
+          await harness.deps
+            .db('issues')
+            .where({ id: issue.id })
+            .update({ assigneeName: 'Grace', assigneeTrackerId: 'u-grace', trackerStateType: 'started' })
+          expect((await send(activityPath, { orgId: org.id, since }, 'another-secret-000000')).statusCode).toBe(401)
+          const read = await send(activityPath, { orgId: org.id, since })
+          expect(read.statusCode).toBe(200)
+          expect(read.json().activity.issues).toContainEqual(
+            expect.objectContaining({ identifier: issue.identifier, assignee: { id: 'u-grace', name: 'Grace' }, statusType: 'started' }),
+          )
+          const tooOld = new Date(Date.now() - 40 * 86_400_000).toISOString()
+          expect((await send(activityPath, { orgId: org.id, since: tooOld })).statusCode).toBe(400)
+
+          const agentsPath = `/webhooks/plugins/${plugin.id}/agents`
+          expect((await send(agentsPath, { orgId: org.id })).statusCode).toBe(403)
+          manifest.permissions = ['activity:read', 'agents:run']
+          const refreshed = (await admin.ok('POST', `/api/plugins/${plugin.id}/refresh`)).plugin
+          expect(refreshed.permissions.map((permission: { granted: boolean }) => permission.granted)).toEqual([true, false])
+          expect((await send(agentsPath, { orgId: org.id })).statusCode).toBe(403)
+          await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+          const { agents } = (await send(agentsPath, { orgId: org.id })).json()
+          const engineer = agents.find((agent: { handle: string }) => agent.handle === 'engineer-1')
+          expect(engineer).toMatchObject({ status: 'active', runtime: expect.any(String) })
+
+          const runsPath = `/webhooks/plugins/${plugin.id}/runs`
+          const outputSchema = { type: 'object', additionalProperties: false, required: ['text'], properties: { text: { type: 'string' } } }
+          expect((await send(runsPath, { orgId: org.id, agentId: engineer.id, prompt: 'Say hi', outputSchema: { type: 'array' } })).statusCode).toBe(
+            400,
+          )
+          const started = await send(runsPath, { orgId: org.id, agentId: engineer.id, prompt: 'Say hi', outputSchema })
+          expect(started.statusCode).toBe(200)
+          const { run } = started.json()
+          expect(run).toMatchObject({
+            state: 'queued',
+            finished: false,
+            agentId: engineer.id,
+            output: null,
+            url: `http://localhost:4101/runs/${run.id}`,
+          })
+          expect(await harness.deps.db('runs').where({ id: run.id }).first()).toMatchObject({
+            phase: 'plugin',
+            issueId: null,
+            projectId: null,
+            trigger: { pluginId: plugin.id, prompt: 'Say hi', outputSchema },
+          })
+          expect((await send(`${runsPath}/${run.id}`, { orgId: org.id })).json().run).toMatchObject({ id: run.id, state: 'queued' })
+          expect((await send(`${runsPath}/00000000-0000-4000-8000-000000000000`, { orgId: org.id })).statusCode).toBe(404)
+          await send(runsPath, { orgId: org.id, agentId: engineer.id, prompt: 'Again' })
+          await send(runsPath, { orgId: org.id, agentId: engineer.id, prompt: 'And again' })
+          expect((await send(runsPath, { orgId: org.id, agentId: engineer.id, prompt: 'One too many' })).statusCode).toBe(409)
+
+          const opened = new URL((await admin.ok('POST', `/api/plugins/${plugin.id}/pages/home/open`)).url)
+          const [payload] = String(opened.searchParams.get('factorix')).split('.')
+          expect(JSON.parse(Buffer.from(String(payload), 'base64url').toString())).toMatchObject({ plugin: { id: plugin.id } })
+        } finally {
+          await harness.deps.db('runs').where({ phase: 'plugin' }).update({ state: 'cancelled' })
+          await new Promise((resolve) => server.close(resolve))
+        }
+      })
+
+      it('speaks the protocol the plugin SDK speaks', async () => {
+        const secret = 'sdk-secret-0123456789'
+        const sealed = harness.deps.secrets.encrypt(secret)
+        const manifest = {
+          ...definePlugin({
+            name: 'SDK check',
+            version: '1.0.0',
+            permissions: ['activity:read'],
+            pages: [{ key: 'p', label: 'P', render: () => '' }],
+          }).manifest,
+        }
+        const [plugin] = await harness.deps
+          .db('plugins')
+          .insert({
+            name: manifest.name,
+            url: 'http://sdk-check.invalid/factorix',
+            manifest: json(manifest),
+            secretCiphertext: sealed.ciphertext,
+            secretNonce: sealed.nonce,
+          })
+          .returning('*')
+        const { org } = await admin.ok('GET', '/api/auth/me')
+        await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+        const viaApp: typeof fetch = async (input, init) => {
+          const target = new URL(String(input))
+          const answer = await harness.app.inject({
+            method: 'POST',
+            url: target.pathname,
+            headers: init?.headers as Record<string, string>,
+            payload: String(init?.body ?? ''),
+          })
+          return new Response(answer.body, { status: answer.statusCode, headers: { 'content-type': 'application/json' } })
+        }
+        const fx = factorix({ url: 'http://factorix.test', secret, pluginId: plugin.id, fetch: viaApp })
+
+        const activity = await fx.activity(org.id, new Date(Date.now() - 86_400_000))
+        expect(activity).toMatchObject({ issues: expect.any(Array), merges: expect.any(Array), reports: expect.any(Array), truncated: false })
+        await expect(fx.agents(org.id)).rejects.toMatchObject({ status: 403 })
+        await expect(fx.settings('00000000-0000-4000-8000-000000000000')).rejects.toMatchObject({ status: 404 })
+        await expect(
+          factorix({ url: 'http://factorix.test', secret: 'not-the-secret-0000', pluginId: plugin.id, fetch: viaApp }).settings(org.id),
+        ).rejects.toMatchObject({
+          status: 401,
+        })
+
+        await harness.deps
+          .db('plugins')
+          .where({ id: plugin.id })
+          .update({ manifest: json({ ...manifest, permissions: ['activity:read', 'agents:run'] }) })
+        await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+        const engineer = (await fx.agents(org.id)).find((agent) => agent.handle === 'engineer-1')
+        const run = await fx.startRun(org.id, { agentId: String(engineer?.id), prompt: 'Say hi' })
+        expect(await fx.getRun(org.id, run.id)).toMatchObject({ id: run.id, state: 'queued', finished: false, output: null })
+        await harness.deps.db('runs').where({ id: run.id }).update({ state: 'cancelled' })
+        await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: false })
+      })
+
+      it('registers the plugins the plugin host runs, each with its own secret and origin', async () => {
+        const key = 'bundled-key-0123456789'
+        const manifest = {
+          protocol: 1,
+          name: 'Bundled board',
+          version: '1.0.0',
+          provides: [],
+          connection: { fields: [] },
+          settings: { fields: [] },
+          pages: [{ key: 'board', label: 'Board', path: '/pages/board', placement: 'sidebar' }],
+        }
+        let listed = [
+          { name: 'board', running: true },
+          { name: 'Not A Name', running: true },
+        ]
+        const host = createServer((req, res) => {
+          const chunks: Buffer[] = []
+          req.on('data', (chunk: Buffer) => chunks.push(chunk))
+          req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'application/json' })
+            if (req.method === 'GET' && req.url === '/__plugins') return void res.end(JSON.stringify({ plugins: listed }))
+            const signed = verifyPlugin(
+              bundledPluginSecret(key, 'board'),
+              String(req.headers['x-factorix-timestamp']),
+              String(req.headers['x-factorix-signature']),
+              Buffer.concat(chunks),
+            )
+            res.end(JSON.stringify(req.url === '/board/factorix' && signed ? { result: manifest } : { error: { message: 'bad signature' } }))
+          })
+        })
+        await new Promise<void>((resolve) => host.listen(0, '127.0.0.1', resolve))
+        const internal = `http://127.0.0.1:${(host.address() as AddressInfo).port}`
+        const env = {
+          ...harness.deps.env,
+          FACTORIX_PLUGINS_KEY: key,
+          FACTORIX_PLUGINS_INTERNAL_URL: internal,
+          FACTORIX_PLUGINS_URL: 'http://plugins.localhost:4110',
+        }
+        const deps = { ...harness.deps, env }
+        try {
+          await syncBundledPlugins(deps)
+          const find = async () =>
+            (await admin.ok('GET', '/api/plugins')).plugins.find((plugin: { url: string }) => plugin.url === `${internal}/board/factorix`)
+          const plugin = await find()
+          expect(plugin).toMatchObject({ name: 'Bundled board', bundled: true })
+          expect((await admin.ok('GET', '/api/plugins/origins')).origins).toContain('http://board.plugins.localhost:4110')
+          expect((await admin.request('DELETE', `/api/plugins/${plugin.id}`)).status).toBe(409)
+          await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+          const opened = new URL((await admin.ok('POST', `/api/plugins/${plugin.id}/pages/board/open`)).url)
+          expect(opened.origin + opened.pathname).toBe('http://board.plugins.localhost:4110/factorix/pages/board')
+
+          const before = await harness.deps.db('plugins').where({ id: plugin.id }).first()
+          await syncBundledPlugins(deps)
+          expect((await harness.deps.db('plugins').where({ id: plugin.id }).first()).updatedAt).toEqual(before.updatedAt)
+          manifest.version = '1.1.0'
+          await syncBundledPlugins(deps)
+          expect((await find()).version).toBe('1.1.0')
+
+          listed = []
+          await syncBundledPlugins(deps)
+          expect((await find()).bundled).toBe(false)
+          await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: false })
+          expect((await admin.request('DELETE', `/api/plugins/${plugin.id}`)).status).toBe(200)
+        } finally {
+          await new Promise((resolve) => host.close(resolve))
+        }
+      })
+
       it('runs a project on built-in tickets when there is no tracker to connect', async () => {
         const { connection } = await admin.ok('POST', '/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
         expect(connection).toMatchObject({ hasSecret: false, webhookUrl: null, accountRole: null })
@@ -664,6 +897,92 @@ describe('API', () => {
 
         const linearIssue = (await admin.ok('GET', '/api/issues')).issues.find((issue: { projectId: string }) => issue.projectId === projectId)
         expect((await admin.request('PUT', `/api/issues/${linearIssue.id}`, { title: 'No' })).status).toBe(409)
+      })
+
+      it('lets a plugin read members and create tickets only where the organization allowed it', async () => {
+        const secret = 'tickets-secret-0123456789'
+        const manifest = {
+          protocol: 1,
+          name: 'Processes',
+          version: '1.0.0',
+          provides: [],
+          permissions: [] as string[],
+          connection: { fields: [] },
+          settings: { fields: [] },
+          pages: [{ key: 'home', label: 'Home', path: '/pages/home', placement: 'sidebar' }],
+        }
+        const server = createServer((req, res) => {
+          req.resume()
+          req.on('end', () => {
+            res.writeHead(200, { 'content-type': 'application/json' })
+            res.end(JSON.stringify({ result: manifest }))
+          })
+        })
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/factorix`
+        const send = (path: string, payload: unknown) => {
+          const body = JSON.stringify(payload)
+          const timestamp = String(Date.now())
+          return harness.app.inject({
+            method: 'POST',
+            url: path,
+            payload: body,
+            headers: {
+              'content-type': 'application/json',
+              'x-factorix-timestamp': timestamp,
+              'x-factorix-signature': signPlugin(secret, timestamp, body),
+            },
+          })
+        }
+        try {
+          const { plugin } = await admin.ok('POST', '/api/plugins', { url, secret })
+          const { org } = await admin.ok('GET', '/api/auth/me')
+          await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+          const base = `/webhooks/plugins/${plugin.id}`
+          const shop = await harness.deps.db('projects').where({ orgId: org.id, name: 'Shop' }).first()
+          const ask = { orgId: org.id, projectId: shop.id, title: 'Order a laptop', description: 'For **Ada**.', priority: 2 }
+          expect((await send(`${base}/members`, { orgId: org.id })).statusCode).toBe(403)
+          expect((await send(`${base}/projects`, { orgId: org.id })).statusCode).toBe(403)
+          expect((await send(`${base}/tickets`, ask)).statusCode).toBe(403)
+
+          manifest.permissions = ['members:read', 'tickets:write']
+          await admin.ok('POST', `/api/plugins/${plugin.id}/refresh`)
+          expect((await send(`${base}/members`, { orgId: org.id })).statusCode).toBe(403)
+          await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
+
+          const { members } = (await send(`${base}/members`, { orgId: org.id })).json()
+          expect(members).toContainEqual(expect.objectContaining({ kind: 'agent', handle: 'engineer-1', status: 'active' }))
+          const person = members.find((member: { kind: string }) => member.kind === 'person')
+          expect(Object.keys(person).sort()).toEqual(['handle', 'id', 'kind', 'name', 'role', 'status'])
+
+          const { projects } = (await send(`${base}/projects`, { orgId: org.id })).json()
+          expect(projects).toContainEqual({ id: shop.id, name: 'Shop' })
+
+          expect((await send(`${base}/tickets`, { ...ask, projectId: '00000000-0000-4000-8000-000000000000' })).statusCode).toBe(404)
+          expect((await send(`${base}/tickets`, { ...ask, agentId: person.id })).statusCode).toBe(404)
+          expect((await send(`${base}/tickets`, { ...ask, title: '' })).statusCode).toBe(422)
+          const created = await send(`${base}/tickets`, ask)
+          expect(created.statusCode).toBe(200)
+          const { ticket } = created.json()
+          expect(ticket).toMatchObject({ identifier: expect.stringMatching(/^SHOP-\d+$/), title: 'Order a laptop', status: 'Todo', closed: false })
+          expect(await harness.deps.db('issues').where({ id: ticket.id }).first()).toMatchObject({ orgId: org.id, projectId: shop.id, priority: 2 })
+          expect(await harness.deps.db('audit_log').where({ targetId: ticket.id, action: 'issue.created' }).first()).toMatchObject({
+            metadata: { via: 'plugin', pluginId: plugin.id },
+          })
+
+          expect((await send(`${base}/tickets/${ticket.id}`, { orgId: org.id })).json().ticket).toEqual(ticket)
+          await admin.ok('PUT', `/api/issues/${ticket.id}`, { stateId: 'done' })
+          expect((await send(`${base}/tickets/${ticket.id}`, { orgId: org.id })).json().ticket).toMatchObject({ status: 'Done', closed: true })
+          const other = await harness.deps.db('issues').where({ orgId: org.id }).whereNot({ id: ticket.id }).first()
+          expect((await send(`${base}/tickets/${other.id}`, { orgId: org.id })).statusCode).toBe(404)
+
+          const engineer = members.find((member: { handle: string }) => member.handle === 'engineer-1')
+          const handed = (await send(`${base}/tickets`, { ...ask, title: 'Set up accounts', agentId: engineer.id })).json().ticket
+          expect(await harness.deps.db('issues').where({ id: handed.id }).first()).toMatchObject({ assignedAgentId: engineer.id })
+          await admin.ok('POST', `/api/issues/${handed.id}/cancel`)
+        } finally {
+          await new Promise((resolve) => server.close(resolve))
+        }
       })
 
       it('answers an unknown connection with 404 and a malformed id without touching the database', async () => {

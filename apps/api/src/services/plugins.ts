@@ -1,7 +1,9 @@
 import {
   fetchPluginManifest,
+  PLUGIN_PERMISSIONS,
   type PluginEndpoint,
   type PluginManifest,
+  type PluginPermission,
   parsePluginManifest,
   remoteTracker,
   splitPluginValues,
@@ -36,6 +38,11 @@ export async function enabledPlugin(db: Db, orgId: string, id: string): Promise<
   const enabled = await db<OrganizationPluginRow>('organization_plugins').where({ orgId, pluginId: plugin.id }).first()
   if (!enabled) throw badRequest(`${plugin.name} is not turned on for this organization`)
   return { plugin, enabled }
+}
+
+/** A permission holds only while the manifest still asks for it and the organization's admin allowed it. */
+export function pluginAllows(plugin: PluginRow, enabled: OrganizationPluginRow, permission: PluginPermission): boolean {
+  return manifestOf(plugin).permissions.includes(permission) && enabled.permissions.includes(permission)
 }
 
 export function secretsOf(
@@ -100,6 +107,12 @@ export function pluginDto(plugin: PluginRow, enabled: OrganizationPluginRow | un
     connectionFields: manifest.connection.fields,
     settingsFields: manifest.settings.fields,
     pages: manifest.pages.map(({ key, label, placement }) => ({ key, label, placement })),
+    permissions: manifest.permissions.map((id) => ({
+      id,
+      description: PLUGIN_PERMISSIONS[id],
+      granted: enabled?.permissions.includes(id) ?? false,
+    })),
+    bundled: plugin.bundled,
     enabled: Boolean(enabled),
     settings: enabled?.config ?? {},
     // The names of the stored secrets come from the row's own marker, never from decrypting them for a list.

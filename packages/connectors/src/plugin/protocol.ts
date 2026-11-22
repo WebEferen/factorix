@@ -17,12 +17,25 @@ export interface PluginField {
   hint?: string
 }
 
+/**
+ * What a plugin may ask of Factorix beyond its own connections and settings. Its manifest names them, an organization's
+ * admin sees them when turning it on, and only what that admin allowed is answered.
+ */
+export const PLUGIN_PERMISSIONS = {
+  'activity:read': 'Read what happened on tickets: titles, statuses, assignees, merged merge requests, and what agents reported',
+  'agents:run': "Ask this organization's agents for work in runs with no ticket and no repository, and read their answers",
+  'members:read': 'Read who is in this organization: the names, handles, and roles of its people and agents',
+  'tickets:write': "Read the names of this organization's projects, create tickets in them, hand those tickets to agents, and read their status",
+} as const
+export type PluginPermission = keyof typeof PLUGIN_PERMISSIONS
+
 export interface PluginManifest {
   protocol: number
   name: string
   version: string
   description?: string
   provides: 'tracker'[]
+  permissions: PluginPermission[]
   /** What an admin fills in to connect one account of the service behind the plugin. */
   connection: { fields: PluginField[] }
   /** What an organization's admin sets once for the whole plugin, on its card under Settings. */
@@ -43,9 +56,29 @@ export interface PluginPage {
 export interface PluginPageContext {
   exp: number
   page: string
+  /** The plugin's id in this installation, which its calls to Factorix name. */
+  plugin: { id: string }
   org: { id: string; name: string }
   account: { id: string; name: string; role: string }
   settings: Record<string, string>
+}
+
+/** A plugin that ships in this repository's `plugins/` folder is named after its folder. */
+export const BUNDLED_PLUGIN_NAME = /^[a-z][a-z0-9-]{0,30}$/
+
+/** Bundled plugins share no secret: each one's comes from the installation's plugins key and its own name. */
+export function bundledPluginSecret(key: string, name: string): string {
+  return createHmac('sha256', key).update(`factorix-plugin:${name}`).digest('hex')
+}
+
+/**
+ * Where Factorix calls a bundled plugin, through the plugin host on the internal network, and where people open its
+ * pages: a subdomain of its own under the public plugins address, so no two plugins share an origin.
+ */
+export function bundledPluginUrls(name: string, internalUrl: string, publicUrl: string): { url: string; pageUrl: string } {
+  const page = new URL(publicUrl)
+  page.hostname = `${name}.${page.hostname}`
+  return { url: `${new URL(internalUrl).origin}/${name}/factorix`, pageUrl: `${page.origin}/factorix` }
 }
 
 export function signPluginPage(secret: string, context: PluginPageContext): string {
@@ -100,12 +133,17 @@ export function parsePluginManifest(value: unknown): PluginManifest {
   const pages = (raw.pages ?? []) as Record<string, unknown>[]
   if (!Array.isArray(pages) || pages.length > 10) throw new Error('The plugin manifest lists its pages wrongly')
   if (provides.length === 0 && pages.length === 0) throw new Error('The plugin provides nothing this Factorix can use: no tracker and no pages')
+  const permissions = (raw.permissions ?? []) as unknown[]
+  if (!Array.isArray(permissions)) throw new Error('The plugin manifest lists its permissions wrongly')
+  const unknown = permissions.find((permission) => typeof permission !== 'string' || !Object.hasOwn(PLUGIN_PERMISSIONS, permission))
+  if (unknown !== undefined) throw new Error(`The plugin asks for ${String(unknown)}, which this Factorix does not know`)
   return {
     protocol: PLUGIN_PROTOCOL,
     name: raw.name,
     version: raw.version,
     ...(text(raw.description, 300) ? { description: raw.description } : {}),
     provides: [...provides],
+    permissions: [...new Set(permissions as PluginPermission[])],
     connection: { fields: parseFields((raw.connection as { fields?: unknown } | undefined)?.fields) },
     settings: { fields: parseFields((raw.settings as { fields?: unknown } | undefined)?.fields) },
     pages: pages.map((page) => {
@@ -151,4 +189,88 @@ export function splitPluginValues(
     else config[field.key] = value.trim()
   }
   return { config, secrets }
+}
+
+/** One ticket in a plugin's read of activity. Titles and names come from trackers and people, so they are data. */
+export interface PluginActivityIssue {
+  id: string
+  identifier: string
+  title: string
+  url: string | null
+  project: string
+  /** 0 for none, then 1 (most urgent) to 4. */
+  priority: number
+  status: string | null
+  statusType: string | null
+  /** Where the factory is with it, `untracked` while no agent has it. */
+  factoryState: string
+  /** The person it is assigned to in the tracker. */
+  assignee: { id: string | null; name: string } | null
+  /** The agent it is assigned to here. */
+  agent: { id: string; handle: string; name: string } | null
+  updatedAt: string
+}
+
+/** What happened in an organization since a moment, for `activity:read`. */
+export interface PluginActivity {
+  /** Tickets with an assignee or an agent that changed since then or are still open, most recently changed first. */
+  issues: PluginActivityIssue[]
+  /** Merge requests of those tickets merged since then. */
+  merges: { issueId: string; url: string; mergedAt: string }[]
+  /** What agents reported when their runs on those tickets succeeded since then. */
+  reports: { issueId: string; agent: string; phase: string; summary: string; finishedAt: string }[]
+  /** True when more tickets matched than one answer holds. */
+  truncated: boolean
+}
+
+export interface PluginAgent {
+  id: string
+  handle: string
+  name: string
+  status: string
+  runtime: string
+  model: string | null
+}
+
+/** A run a plugin started, for `agents:run`. `output` is the agent's answer in the shape the plugin asked for. */
+export interface PluginRun {
+  id: string
+  state: string
+  /** True once the run succeeded, failed, or was cancelled. */
+  finished: boolean
+  agentId: string
+  output: unknown
+  error: string | null
+  /** The run's page in Factorix. */
+  url: string
+  createdAt: string
+  finishedAt: string | null
+}
+
+/** A person or an agent of an organization, for `members:read`. */
+export interface PluginMember {
+  id: string
+  kind: 'person' | 'agent'
+  name: string
+  handle: string
+  role: string
+  status: string
+}
+
+/** A project a plugin can create a ticket in, for `tickets:write`. */
+export interface PluginTicketProject {
+  id: string
+  name: string
+}
+
+/** A ticket a plugin created, for `tickets:write`. */
+export interface PluginTicket {
+  id: string
+  identifier: string
+  title: string
+  url: string | null
+  status: string | null
+  statusType: string | null
+  /** True once its status is completed or canceled. */
+  closed: boolean
 }
