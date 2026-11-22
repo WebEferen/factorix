@@ -42,8 +42,8 @@ function NavGroup({
 }: {
   label: string
   href: string
-  newHref: string
-  newLabel: string
+  newHref?: string
+  newLabel?: string
   active: boolean
   onNavigate?: () => void
 }) {
@@ -57,16 +57,18 @@ function NavGroup({
       >
         {label}
       </Link>
-      <Tooltip label={newLabel}>
-        <Link
-          href={newHref}
-          onClick={onNavigate}
-          aria-label={newLabel}
-          className="rounded-sm text-ink-3 transition-colors duration-100 hover:text-ink"
-        >
-          <Plus className="size-3.5" />
-        </Link>
-      </Tooltip>
+      {newHref && newLabel ? (
+        <Tooltip label={newLabel}>
+          <Link
+            href={newHref}
+            onClick={onNavigate}
+            aria-label={newLabel}
+            className="rounded-sm text-ink-3 transition-colors duration-100 hover:text-ink"
+          >
+            <Plus className="size-3.5" />
+          </Link>
+        </Tooltip>
+      ) : null}
     </div>
   )
 }
@@ -117,6 +119,9 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
   const { data: inbox } = useInbox()
   const { data: projects, error: projectsError, mutate: reloadProjects } = useProjects()
   const { data: plugins } = usePlugins()
+  const pluginPages = (plugins?.plugins ?? [])
+    .filter((plugin) => plugin.enabled)
+    .flatMap((plugin) => plugin.pages.filter((page) => page.placement === 'sidebar').map((page) => ({ plugin, page })))
   const { openPalette, openNewIssue, openShortcuts } = useShell()
   const [theme, toggleTheme] = useTheme()
   const needsYou = (inbox?.approvals.length ?? 0) + (inbox?.failedIssues.length ?? 0)
@@ -243,22 +248,19 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
           <NavLink href="/projects" icon={<FolderKanban />} label="All projects" active={pathname === '/projects'} onNavigate={onNavigate} />
         ) : null}
 
-        {plugins?.plugins
-          .filter((plugin) => plugin.enabled)
-          .flatMap((plugin) =>
-            plugin.pages
-              .filter((page) => page.placement === 'sidebar')
-              .map((page) => (
-                <NavLink
-                  key={`${plugin.id}/${page.key}`}
-                  href={`/plugins/${plugin.id}/${page.key}`}
-                  icon={<Puzzle />}
-                  label={page.label}
-                  active={is(`/plugins/${plugin.id}/${page.key}`)}
-                  onNavigate={onNavigate}
-                />
-              )),
-          )}
+        {pluginPages.length > 0 ? (
+          <NavGroup label="Plugins" href="/settings/plugins" active={pathname === '/settings/plugins'} onNavigate={onNavigate} />
+        ) : null}
+        {pluginPages.map(({ plugin, page }) => (
+          <NavLink
+            key={`${plugin.id}/${page.key}`}
+            href={`/plugins/${plugin.id}/${page.key}`}
+            icon={<Puzzle />}
+            label={page.label}
+            active={is(`/plugins/${plugin.id}/${page.key}`)}
+            onNavigate={onNavigate}
+          />
+        ))}
 
         <div className="mt-auto pt-4">
           <NavLink href="/settings" icon={<Settings />} label="Settings" active={is('/settings')} onNavigate={onNavigate} />
