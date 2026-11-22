@@ -2,7 +2,7 @@
 
 A plugin adds something to Factorix from a server of its own: a tracker, pages in the sidebar or under Settings, settings an organization fills in, and, when an organization allows it, a read of what happened on tickets and requests to its agents. Its code never runs inside the API or the worker, and Factorix's database and session never reach it. Everything between the two is signed JSON over HTTP.
 
-The daily digest is the first plugin that ships with Factorix. It lives in [`plugins/digest`](../plugins/digest) and is a good one to read next to this page.
+Two plugins ship with Factorix. The daily digest lives in [`plugins/digest`](../plugins/digest) and is a good one to read next to this page. Company lives in [`plugins/company`](../plugins/company): it keeps who is in which department, and runs the company's processes with an engine of its own, where a form starts a case and people, approvals, agents, and tickets take it step by step.
 
 ## Two ways to run one
 
@@ -118,7 +118,7 @@ A page that changes something gives the page an `action`. It runs for a POST to 
 
 Escape every piece of text that came from a tracker, a person, or an agent, and consider a content security policy with a nonce, as the digest's page sends. Check `context.account.role === 'admin'` before letting someone change what the whole organization sees. After five minutes the token expires, and the SDK answers with a short note to open the page again from the sidebar.
 
-A page people keep open asks for the next token before that: `window.parent.postMessage({ type: 'factorix:token' }, '*')`. Factorix answers the frame it opened with `{ type: 'factorix:token', token }`, signed for whoever is signed in at that moment. Put the new token into the page's links and forms. A token is checked by its signature, so a page loses nothing by listening.
+A page people keep open asks for the next token before that: `window.parent.postMessage({ type: 'factorix:token' }, '*')`. Factorix answers the frame it opened with `{ type: 'factorix:token', token }`, signed for whoever is signed in at that moment. Put the new token into the page's links and forms, as the script in Company's `view.ts` does. A token is checked by its signature, so a page loses nothing by listening.
 
 The frame may write to the clipboard (`navigator.clipboard`), open links in a new tab (`target="_blank"`), and download files. It cannot navigate Factorix's window or read its cookies.
 

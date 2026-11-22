@@ -18,7 +18,7 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 - `packages/connectors`: `TrackerConnector` (Linear, Jira, Trello) and `ScmConnector` (GitLab, GitHub). Built-in tickets are a `TrackerConnector` too, `FactorixTracker` in `apps/api/src/services/tickets.ts`, because they need the database.
 - `packages/db`: Knex client, raw SQL migrations, row types.
 - `packages/plugin-sdk`: the SDK plugins are built with, published to npm as `@moxxylabs/factorix-plugin-sdk`.
-- `plugins/*`: plugins that ship with Factorix, such as `plugins/digest`. Each is a server of its own and imports only the SDK.
+- `plugins/*`: plugins that ship with Factorix: `plugins/digest`, and `plugins/company`, which runs company processes with an engine of its own (`engine.ts`) and reaches Factorix only for members, agent runs, and tickets. Each is a server of its own and imports only the SDK.
 - `packages/schemas`: zod inputs and DTO types shared by API and web.
 
 ## Commands

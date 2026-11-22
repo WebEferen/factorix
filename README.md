@@ -255,7 +255,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 | `packages/db`         | Knex client, raw SQL migrations, row types                    |
 | `packages/schemas`    | Inputs and DTOs shared by API and web                         |
 | `packages/plugin-sdk` | The SDK plugins are built with, published to npm              |
-| `plugins/*`           | Plugins that ship with Factorix, such as the daily digest     |
+| `plugins/*`           | Plugins that ship with Factorix: the daily digest and Company |
 
 [AGENTS.md](AGENTS.md) has the rules that keep it safe and how to extend it with a new phase, connector, or model runtime.
 
