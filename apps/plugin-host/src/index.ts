@@ -7,7 +7,6 @@ const env = process.env
 const port = Number(env.PORT || 4110)
 const hostname = env.HOST || '0.0.0.0'
 const key = env.FACTORIX_PLUGINS_KEY ?? ''
-const publicUrl = env.FACTORIX_PLUGINS_URL || 'http://plugins.localhost:4110'
 const factorixUrl = env.FACTORIX_INTERNAL_URL || 'http://localhost:4100'
 const dir = env.FACTORIX_PLUGINS_DIR || fileURLToPath(new URL('../../../plugins', import.meta.url))
 const adminUrl = env.FACTORIX_PLUGINS_DATABASE_URL || ''
@@ -49,14 +48,12 @@ const bundled = await plugins()
 const names = bundled.map((plugin) => plugin.name)
 const host = createPluginHost({
   plugins: bundled,
-  publicUrl,
   log,
   env: async (plugin, childPort) =>
     childEnv(plugin, {
       key,
       port: childPort,
       factorixUrl,
-      publicUrl,
       names,
       hostEnv: env,
       ...(plugin.database ? { databaseUrl: await ensureDatabase(plugin) } : {}),
@@ -64,7 +61,7 @@ const host = createPluginHost({
 })
 
 host.server.listen(port, hostname, () => {
-  log(`listening on ${port} for ${publicUrl}, with ${names.length ? names.join(', ') : 'no plugins'}`)
+  log(`listening on ${port}, with ${names.length ? names.join(', ') : 'no plugins'}`)
   host.start()
 })
 

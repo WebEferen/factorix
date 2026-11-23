@@ -29,7 +29,7 @@ try {
 const deps: Deps = { store: pgStore(pool), factorix: (pluginId) => factorix({ url: factorixUrl, secret, pluginId }), log }
 const port = Number(process.env.PORT ?? 8791)
 const server = await serve(companyPlugin(deps), { secret, port, hostname: process.env.HOST ?? '0.0.0.0' })
-log(`listening on ${process.env.HOST ?? '0.0.0.0'}:${port}, public at ${process.env.PLUGIN_PUBLIC_URL ?? 'an address the plugin host knows'}`)
+log(`listening on ${process.env.HOST ?? '0.0.0.0'}:${port}`)
 
 let sweeping = false
 const timer = setInterval(() => {

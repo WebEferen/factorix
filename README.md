@@ -246,7 +246,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 | `apps/egress-proxy`   | The only network path out of an agent container               |
 | `apps/cli`            | `fx`, the command line and MCP server                         |
 | `apps/remote-runner`  | Runs sandboxes on another machine for Factorix                |
-| `apps/plugin-host`    | Runs the plugins in `plugins/`, each on its own subdomain     |
+| `apps/plugin-host`    | Runs the plugins in `plugins/`, with pages under `/_plugin`   |
 | `packages/core`       | Pure domain: state machines, pipeline engine, phases, prompts |
 | `packages/runtime`    | The contract between worker and runner                        |
 | `packages/runner`     | Runs in the sandbox and hosts the SDKs                        |

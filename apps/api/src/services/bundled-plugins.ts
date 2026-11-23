@@ -11,12 +11,12 @@ type Deps = Pick<AppDeps, 'db' | 'env' | 'secrets'>
  * remove it.
  */
 export async function syncBundledPlugins(deps: Deps, log: (message: string) => void = () => {}): Promise<void> {
-  const { FACTORIX_PLUGINS_KEY: key, FACTORIX_PLUGINS_INTERNAL_URL: internalUrl, FACTORIX_PLUGINS_URL: publicUrl } = deps.env
+  const { FACTORIX_PLUGINS_KEY: key, FACTORIX_PLUGINS_INTERNAL_URL: internalUrl } = deps.env
   if (!key || !internalUrl) return
   const response = await fetch(`${new URL(internalUrl).origin}/__plugins`, { signal: AbortSignal.timeout(5000) })
   if (!response.ok) throw new Error(`the plugin host answered ${response.status}`)
   const listed = ((await response.json()) as { plugins?: { name?: unknown; running?: unknown }[] }).plugins ?? []
-  const factorixOrigin = new URL((await readSettings(deps)).publicUrl).origin
+  const { publicUrl } = await readSettings(deps)
 
   const urls: string[] = []
   for (const entry of listed) {
@@ -25,10 +25,6 @@ export async function syncBundledPlugins(deps: Deps, log: (message: string) => v
     const { url, pageUrl } = bundledPluginUrls(name, internalUrl, publicUrl)
     urls.push(url)
     if (entry.running !== true) continue
-    if (new URL(pageUrl).origin === factorixOrigin) {
-      log(`bundled plugin ${name} is left out: its pages would load from Factorix's own address. Set FACTORIX_PLUGINS_URL`)
-      continue
-    }
     const secret = bundledPluginSecret(key, name)
     try {
       const manifest = await fetchPluginManifest({ url, secret })

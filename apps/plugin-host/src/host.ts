@@ -10,8 +10,6 @@ export { LIST_PATH }
 
 export interface HostOptions {
   plugins: BundledPlugin[]
-  /** The public plugins address, such as http://plugins.localhost:4110. Each plugin's pages live on a subdomain of it. */
-  publicUrl: string
   /** A plugin's environment for one start. It may prepare things first, such as the plugin's database, and a throw counts as a failed start. */
   env(plugin: BundledPlugin, port: number): Promise<Record<string, string>>
   command?: (plugin: BundledPlugin) => { file: string; args: string[] }
@@ -28,6 +26,15 @@ export interface PluginHost {
 }
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
+/**
+ * Pages are served from Factorix's own address, so this policy is what keeps them apart from it: each runs without an
+ * origin, as in a frame without `allow-same-origin`, even when opened on its own. It goes out next to whatever policy
+ * the plugin sends, and browsers enforce both.
+ */
+export const PAGE_POLICY = "sandbox allow-scripts allow-forms allow-popups allow-downloads; frame-ancestors 'self'"
+/** A page must not receive Factorix's session, nor set or clear Factorix's cookies. */
+const PAGE_REQUEST_DROPS = ['cookie', 'authorization']
+const PAGE_RESPONSE_DROPS = ['set-cookie', 'clear-site-data']
 const DEFAULT_BACKOFF = { initialMs: 1000, maxMs: 30_000, resetAfterMs: 60_000 }
 const STOP_GRACE_MS = 5000
 
@@ -143,9 +150,11 @@ class PluginProcess {
   }
 }
 
-function forwardHeaders(request: IncomingMessage): IncomingHttpHeaders {
+function forwardHeaders(request: IncomingMessage, page: boolean): IncomingHttpHeaders {
   const headers: IncomingHttpHeaders = {}
-  for (const [name, value] of Object.entries(request.headers)) if (value !== undefined && !HOP_BY_HOP.has(name)) headers[name] = value
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (value !== undefined && !HOP_BY_HOP.has(name) && !(page && PAGE_REQUEST_DROPS.includes(name))) headers[name] = value
+  }
   if (!headers['x-forwarded-host'] && request.headers.host) headers['x-forwarded-host'] = request.headers.host
   if (!headers['x-forwarded-proto']) headers['x-forwarded-proto'] = 'http'
   const peer = request.socket.remoteAddress
@@ -170,16 +179,23 @@ export function createPluginHost(options: HostOptions): PluginHost {
   }
   const processes = new Map(options.plugins.map((plugin) => [plugin.name, new PluginProcess(plugin, settings)]))
   const names = new Set(processes.keys())
-  const publicHostname = new URL(options.publicUrl).hostname
 
-  const proxy = (request: IncomingMessage, response: ServerResponse, target: PluginProcess, path: string) => {
+  const proxy = (request: IncomingMessage, response: ServerResponse, target: PluginProcess, path: string, page: boolean) => {
     const unavailable = () => answer(response, 502, { error: { message: `The plugin ${target.plugin.name} is not running` } })
     if (!target.running) return unavailable()
     const upstream = httpRequest(
-      { host: '127.0.0.1', port: target.port, method: request.method, path, headers: forwardHeaders(request) },
+      { host: '127.0.0.1', port: target.port, method: request.method, path, headers: forwardHeaders(request, page) },
       (answered) => {
         const headers: IncomingHttpHeaders = {}
-        for (const [name, value] of Object.entries(answered.headers)) if (value !== undefined && !HOP_BY_HOP.has(name)) headers[name] = value
+        for (const [name, value] of Object.entries(answered.headers)) {
+          if (value !== undefined && !HOP_BY_HOP.has(name) && !(page && PAGE_RESPONSE_DROPS.includes(name))) headers[name] = value
+        }
+        if (page) {
+          const own = headers['content-security-policy']
+          headers['content-security-policy'] = [...(own === undefined ? [] : [own].flat()), PAGE_POLICY]
+          headers['referrer-policy'] = 'no-referrer'
+          headers['x-content-type-options'] = 'nosniff'
+        }
         response.writeHead(answered.statusCode ?? 502, headers)
         answered.pipe(response)
       },
@@ -192,11 +208,11 @@ export function createPluginHost(options: HostOptions): PluginHost {
   const states = () => [...processes.values()].map((process) => ({ name: process.plugin.name, running: process.running }))
 
   const server = createServer((request, response) => {
-    const route = routeOf({ method: request.method ?? 'GET', host: request.headers.host, url: request.url ?? '/' }, publicHostname, names)
+    const route = routeOf({ method: request.method ?? 'GET', url: request.url ?? '/' }, names)
     if (route.kind === 'list') return answer(response, 200, { plugins: states() })
     const target = route.kind === 'plugin' ? processes.get(route.name) : undefined
     if (!target || route.kind !== 'plugin') return answer(response, 404, { error: { message: 'Not found' } })
-    proxy(request, response, target, route.path)
+    proxy(request, response, target, route.path, route.page)
   })
 
   return {

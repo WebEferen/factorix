@@ -58,23 +58,6 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { origins: [...new Set(plugins.map((plugin) => new URL(plugin.pageUrl ?? plugin.url).origin))] }
   })
 
-  /**
-   * Caddy's on-demand TLS asks this before it requests a certificate. A bundled plugin's subdomain gets one, and every
-   * other name is the preview gateway's to answer, as before plugins had pages of their own.
-   */
-  app.get('/__factorix/tls', async (request, reply) => {
-    const domain = String((request.query as { domain?: unknown }).domain ?? '').toLowerCase()
-    reply.header('cache-control', 'no-store')
-    const pages = (await db<PluginRow>('plugins').whereNotNull('pageUrl').pluck('pageUrl')) as string[]
-    if (domain && pages.some((page) => new URL(page).hostname === domain)) return reply.code(200).send()
-    const gateway = deps.env.FACTORIX_GATEWAY_URL
-    if (!domain || !gateway) return reply.code(404).send()
-    const asked = await fetch(`${new URL(gateway).origin}/__factorix/tls?domain=${encodeURIComponent(domain)}`, {
-      signal: AbortSignal.timeout(5000),
-    }).catch(() => undefined)
-    return reply.code(asked?.status === 200 ? 200 : 404).send()
-  })
-
   app.post('/api/plugins', async (request) => {
     const { account } = requireInstallationAdmin(request)
     const input = parseBody(pluginInput, request.body)
@@ -194,8 +177,9 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
   })
 
   /**
-   * Where a plugin's page loads from, for one person and a few minutes. The page sits on the plugin's own address, so it
-   * never sees Factorix's session. What it knows about the person is in the signed part of this address.
+   * Where a plugin's page loads from, for one person and a few minutes. The page sits on the plugin's own address, or
+   * for a bundled plugin under Factorix's with a sandbox policy, so it never sees Factorix's session. What it knows
+   * about the person is in the signed part of this address.
    */
   app.post('/api/plugins/:id/pages/:key/open', async (request) => {
     const { account } = requireAuth(request)

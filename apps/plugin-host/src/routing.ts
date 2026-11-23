@@ -1,34 +1,22 @@
-export type Route = { kind: 'list' } | { kind: 'plugin'; name: string; path: string } | { kind: 'none' }
+import { BUNDLED_PLUGIN_PAGES } from '@factorix/connectors'
+
+/** `page` is a browser's request, passed on by the web from Factorix's own address. Anything else is Factorix calling. */
+export type Route = { kind: 'list' } | { kind: 'plugin'; name: string; path: string; page: boolean } | { kind: 'none' }
 
 export const LIST_PATH = '/__plugins'
 
-/** The plugin a host name belongs to, as `digest` for `digest.plugins.localhost:4110` under `http://plugins.localhost:4110`. */
-export function subdomainOf(hostHeader: string | undefined, publicHostname: string): string | null {
-  if (!hostHeader) return null
-  const hostname = hostHeader.replace(/:\d+$/, '').toLowerCase()
-  const suffix = `.${publicHostname.toLowerCase()}`
-  if (!hostname.endsWith(suffix)) return null
-  const label = hostname.slice(0, -suffix.length)
-  return label && !label.includes('.') ? label : null
-}
-
 /**
- * Pages load only from a plugin's own subdomain, so no two plugins share an origin. On any other host name a plugin is
- * reached by its first path segment, for Factorix's signed calls, and only with POST.
+ * A browser reaches a plugin under `/_plugin/<name>`, with any method, since its pages post forms back to themselves.
+ * Factorix's signed calls reach it by its first path segment, and only with POST.
  */
-export function routeOf(
-  request: { method: string; host: string | undefined; url: string },
-  publicHostname: string,
-  names: ReadonlySet<string>,
-): Route {
-  const label = subdomainOf(request.host, publicHostname)
-  if (label !== null) return names.has(label) ? { kind: 'plugin', name: label, path: request.url } : { kind: 'none' }
+export function routeOf(request: { method: string; url: string }, names: ReadonlySet<string>): Route {
   const queryAt = request.url.indexOf('?')
   const pathname = queryAt === -1 ? request.url : request.url.slice(0, queryAt)
   const query = queryAt === -1 ? '' : request.url.slice(queryAt)
   if (request.method === 'GET' && pathname === LIST_PATH) return { kind: 'list' }
-  if (request.method !== 'POST') return { kind: 'none' }
-  const match = /^\/([^/]+)(\/.*)?$/.exec(pathname)
+  const page = pathname.startsWith(`${BUNDLED_PLUGIN_PAGES}/`)
+  if (!page && request.method !== 'POST') return { kind: 'none' }
+  const match = /^\/([^/]+)(\/.*)?$/.exec(page ? pathname.slice(BUNDLED_PLUGIN_PAGES.length) : pathname)
   if (!match?.[1] || !names.has(match[1])) return { kind: 'none' }
-  return { kind: 'plugin', name: match[1], path: `${match[2] ?? '/'}${query}` }
+  return { kind: 'plugin', name: match[1], path: `${match[2] ?? '/'}${query}`, page }
 }

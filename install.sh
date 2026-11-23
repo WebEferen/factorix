@@ -4,12 +4,11 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash
 #
-# On a Linux server, give it a domain to serve Factorix over HTTPS there, with previews on *.preview.<domain>
-# and bundled plugins on *.plugins.<domain>:
+# On a Linux server, give it a domain to serve Factorix over HTTPS there, with previews on *.preview.<domain>:
 #
 #   curl -fsSL https://raw.githubusercontent.com/WebEferen/factorix/main/install.sh | bash -s -- --domain factorix.example.com
 #
-# Point an A record for the domain and wildcard ones for *.preview.<domain> and *.plugins.<domain> at the server first.
+# Point an A record for the domain and a wildcard one for *.preview.<domain> at the server first.
 #
 # Run it from a checkout to use that checkout. Otherwise it downloads Factorix to $FACTORIX_DIR, or ~/factorix.
 # Running it again is safe: an existing .env and its secret key are never replaced.
@@ -22,7 +21,6 @@ DOCKER=(docker)
 SUDO=()
 DOMAIN=''
 PREVIEW_DOMAIN=''
-PLUGINS_DOMAIN=''
 EMAIL=''
 MIN_MEMORY_MB=7500
 MIN_DISK_GB=40
@@ -36,12 +34,11 @@ warn() { printf 'Warning: %s\n' "$*" >&2; }
 
 usage() {
   cat <<'USAGE'
-Usage: install.sh [--domain HOST [--email ADDRESS] [--preview-domain HOST] [--plugins-domain HOST]]
+Usage: install.sh [--domain HOST [--email ADDRESS] [--preview-domain HOST]]
 
   --domain HOST           Serve Factorix over HTTPS at HOST. Linux servers only.
   --email ADDRESS         Contact address on the Let's Encrypt account. Optional.
   --preview-domain HOST   Previews live on *.HOST. Defaults to preview.<domain>.
-  --plugins-domain HOST   Bundled plugins live on *.HOST. Defaults to plugins.<domain>.
 
 Without options, Factorix runs on http://localhost:4101 for this machine only.
 USAGE
@@ -56,23 +53,19 @@ parse_args() {
       --email=*) EMAIL="${1#*=}"; shift ;;
       --preview-domain) PREVIEW_DOMAIN="${2:-}"; shift 2 || die "--preview-domain needs a host name." ;;
       --preview-domain=*) PREVIEW_DOMAIN="${1#*=}"; shift ;;
-      --plugins-domain) PLUGINS_DOMAIN="${2:-}"; shift 2 || die "--plugins-domain needs a host name." ;;
-      --plugins-domain=*) PLUGINS_DOMAIN="${1#*=}"; shift ;;
       -h | --help) usage; exit 0 ;;
       *) usage >&2; die "Unknown option: $1" ;;
     esac
   done
   if [ -z "$DOMAIN" ]; then
-    [ -z "$EMAIL$PREVIEW_DOMAIN$PLUGINS_DOMAIN" ] || die "--email, --preview-domain and --plugins-domain only apply with --domain."
+    [ -z "$EMAIL$PREVIEW_DOMAIN" ] || die "--email and --preview-domain only apply with --domain."
     return
   fi
   DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
   PREVIEW_DOMAIN="$(printf '%s' "${PREVIEW_DOMAIN:-preview.$DOMAIN}" | tr '[:upper:]' '[:lower:]')"
-  PLUGINS_DOMAIN="$(printf '%s' "${PLUGINS_DOMAIN:-plugins.$DOMAIN}" | tr '[:upper:]' '[:lower:]')"
   local host='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
   [[ "$DOMAIN" =~ $host ]] || die "$DOMAIN is not a host name such as factorix.example.com."
   [[ "$PREVIEW_DOMAIN" =~ $host ]] || die "$PREVIEW_DOMAIN is not a host name such as preview.example.com."
-  [[ "$PLUGINS_DOMAIN" =~ $host ]] || die "$PLUGINS_DOMAIN is not a host name such as plugins.example.com."
   [ -z "$EMAIL" ] || [[ "$EMAIL" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]] || die "--email needs an address such as ops@example.com."
   [ "$(uname -s)" = Linux ] || die "--domain sets up a Linux server. On this machine, run it without options."
 }
@@ -257,9 +250,9 @@ check_ports() {
 
 check_dns() {
   local name
-  for name in "$DOMAIN" "check.$PREVIEW_DOMAIN" "check.$PLUGINS_DOMAIN"; do
+  for name in "$DOMAIN" "check.$PREVIEW_DOMAIN"; do
     getent hosts "$name" >/dev/null 2>&1 ||
-      warn "$name does not resolve yet. HTTPS starts working once DNS points $DOMAIN, *.$PREVIEW_DOMAIN and *.$PLUGINS_DOMAIN at this server."
+      warn "$name does not resolve yet. HTTPS starts working once DNS points $DOMAIN and *.$PREVIEW_DOMAIN at this server."
   done
 }
 
@@ -281,14 +274,12 @@ setup_https() {
   check_ports
   check_dns
   open_firewall
-  say "Serving https://$DOMAIN, with previews on *.$PREVIEW_DOMAIN and plugins on *.$PLUGINS_DOMAIN"
+  say "Serving https://$DOMAIN, with previews on *.$PREVIEW_DOMAIN"
   set_env FACTORIX_DOMAIN "$DOMAIN"
   set_env FACTORIX_PREVIEW_DOMAIN "$PREVIEW_DOMAIN"
-  set_env FACTORIX_PLUGINS_DOMAIN "$PLUGINS_DOMAIN"
   [ -z "$EMAIL" ] || set_env FACTORIX_ACME_EMAIL "$EMAIL"
   set_env FACTORIX_PUBLIC_URL "https://$DOMAIN"
   set_env FACTORIX_PREVIEW_URL "https://$PREVIEW_DOMAIN"
-  set_env FACTORIX_PLUGINS_URL "https://$PLUGINS_DOMAIN"
   set_env COOKIE_SECURE true
   # Compose reads this from .env, so a plain `docker compose up -d` keeps HTTPS on.
   set_env COMPOSE_PROFILES https

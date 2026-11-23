@@ -53,7 +53,6 @@ describe('childEnv', () => {
     key: 'the-installation-plugins-key',
     port: 51234,
     factorixUrl: 'http://api:4100',
-    publicUrl: 'https://plugins.factorix.example.com',
     names: ['digest', 'digest-extra'],
     hostEnv: {
       PATH: '/usr/bin',
@@ -80,7 +79,6 @@ describe('childEnv', () => {
       PORT: '51234',
       HOST: '127.0.0.1',
       FACTORIX_URL: 'http://api:4100',
-      PLUGIN_PUBLIC_URL: 'https://digest.plugins.factorix.example.com',
       DATABASE_URL: 'postgres://plugins:plugins@plugins-db:5432/plugin_digest',
     })
   })

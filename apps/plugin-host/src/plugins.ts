@@ -1,6 +1,6 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
-import { BUNDLED_PLUGIN_NAME, bundledPluginSecret, bundledPluginUrls } from '@factorix/connectors'
+import { BUNDLED_PLUGIN_NAME, bundledPluginSecret } from '@factorix/connectors'
 
 export interface BundledPlugin {
   name: string
@@ -63,7 +63,6 @@ export interface ChildEnvInput {
   key: string
   port: number
   factorixUrl: string
-  publicUrl: string
   databaseUrl?: string
   /** Every bundled plugin's name, so `PLUGIN_A_B_X` reaches plugin `a-b` and not plugin `a`. */
   names: string[]
@@ -93,7 +92,6 @@ export function childEnv(plugin: Pick<BundledPlugin, 'name'>, input: ChildEnvInp
     PORT: String(input.port),
     HOST: '127.0.0.1',
     FACTORIX_URL: input.factorixUrl,
-    PLUGIN_PUBLIC_URL: new URL(bundledPluginUrls(plugin.name, input.publicUrl, input.publicUrl).pageUrl).origin,
     ...(input.databaseUrl ? { DATABASE_URL: input.databaseUrl } : {}),
   }
 }

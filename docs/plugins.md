@@ -86,14 +86,13 @@ The manifest Factorix reads is built from `definePlugin`. What each part does:
 
 The plugin host starts `main` with tsx, from the plugin's folder, with these variables and nothing else from its own environment:
 
-| Variable            | What it is                                                                                |
-| ------------------- | ----------------------------------------------------------------------------------------- |
-| `PLUGIN_SECRET`     | This plugin's secret. Signs everything between it and Factorix.                           |
-| `PORT`, `HOST`      | Where to listen. Always loopback: the host routes to it.                                  |
-| `FACTORIX_URL`      | Where to call Factorix.                                                                   |
-| `PLUGIN_PUBLIC_URL` | Its own public origin, as browsers see it.                                                |
-| `DATABASE_URL`      | Its own empty database, when `"database": true`.                                          |
-| `<KEY>`             | Installation config: the host's `PLUGIN_<NAME>_<KEY>` reaches plugin `<name>` as `<KEY>`. |
+| Variable        | What it is                                                                                |
+| --------------- | ----------------------------------------------------------------------------------------- |
+| `PLUGIN_SECRET` | This plugin's secret. Signs everything between it and Factorix.                           |
+| `PORT`, `HOST`  | Where to listen. Always loopback: the host routes to it.                                  |
+| `FACTORIX_URL`  | Where to call Factorix.                                                                   |
+| `DATABASE_URL`  | Its own empty database, when `"database": true`.                                          |
+| `<KEY>`         | Installation config: the host's `PLUGIN_<NAME>_<KEY>` reaches plugin `<name>` as `<KEY>`. |
 
 The SDK has `migrateUp(client, migrations)` for the plugin's own tables. Keep the organization's id on every row: one plugin serves every organization that turned it on.
 
@@ -118,9 +117,11 @@ A page that changes something gives the page an `action`. It runs for a POST to 
 
 Escape every piece of text that came from a tracker, a person, or an agent, and consider a content security policy with a nonce, as the digest's page sends. Check `context.account.role === 'admin'` before letting someone change what the whole organization sees. After five minutes the token expires, and the SDK answers with a short note to open the page again from the sidebar.
 
-A page people keep open asks for the next token before that: `window.parent.postMessage({ type: 'factorix:token' }, '*')`. Factorix answers the frame it opened with `{ type: 'factorix:token', token }`, signed for whoever is signed in at that moment. Put the new token into the page's links and forms, as the script in Company's `view.ts` does. A token is checked by its signature, so a page loses nothing by listening.
+A page people keep open asks for the next token before that: `window.parent.postMessage({ type: 'factorix:token', token }, '*')`, with the token it holds now. Factorix answers the frame it opened with `{ type: 'factorix:token', token }`, signed for whoever is signed in at that moment. A bundled plugin's page runs without an origin, so Factorix answers it only when the token it sent is the last one it was given. Put the new token into the page's links and forms, as the script in Company's `view.ts` does. A token is checked by its signature, so a page loses nothing by listening.
 
 The frame may write to the clipboard (`navigator.clipboard`), open links in a new tab (`target="_blank"`), and download files. It cannot navigate Factorix's window or read its cookies.
+
+A bundled plugin's pages open under `/_plugin/<name>` on Factorix's own address. The plugin host sends them with a `sandbox` content security policy, so each one runs without an origin even when opened on its own: no cookies, no `localStorage`, and a `fetch` to its own server is cross-origin. Forms and links work as usual. The host also keeps Factorix's cookies out of the request and drops `Set-Cookie` and `Clear-Site-Data` from the answer.
 
 ### 5. Asking Factorix for more
 
@@ -179,7 +180,7 @@ Put tests next to the code as `src/*.test.ts`, and tests that need the plugin's 
   FACTORIX_PLUGINS_DATABASE_URL=postgres://factorix:factorix@localhost:55432/postgres
   ```
 
-  Pages open at `http://<name>.plugins.localhost:4110`.
+  Pages open at `http://localhost:4101/_plugin/<name>`.
 - `yarn start` (and the server) runs the `plugins` and `plugins-db` containers. `install.sh` writes `FACTORIX_PLUGINS_KEY` to `.env`.
 - A plugin shows up under Settings, Plugins within a minute of starting. A changed manifest is read again within a minute too.
 
@@ -187,15 +188,13 @@ Put tests next to the code as `src/*.test.ts`, and tests that need the plugin's 
 
 Settings live at three levels:
 
-1. **The installation** (`.env`, the people who run Factorix): `FACTORIX_PLUGINS_KEY`, `FACTORIX_PLUGINS_URL`, and anything a bundled plugin reads from its environment through `PLUGIN_<NAME>_<KEY>`. In Docker, pass those to the `plugins` service in a `docker-compose.override.yml`.
+1. **The installation** (`.env`, the people who run Factorix): `FACTORIX_PLUGINS_KEY`, and anything a bundled plugin reads from its environment through `PLUGIN_<NAME>_<KEY>`. In Docker, pass those to the `plugins` service in a `docker-compose.override.yml`.
 2. **An organization** (Settings, Plugins, its admins): turn the plugin on, allow what it asks for, and fill in its settings fields. Anything the plugin keeps per organization in its own pages, like the digest's schedule, is set there too.
 3. **A connection** (Settings, Connections), for a plugin that provides a tracker: one account of the service behind it.
 
 ## On a server
 
-`./install.sh --domain factorix.example.com` serves bundled plugins on `*.plugins.factorix.example.com` (change it with `--plugins-domain`). Point a wildcard DNS record for that name at the server, next to the one for previews. Caddy asks the API before it requests each certificate, and the API answers yes only for plugins that registered.
-
-Every bundled plugin has its own subdomain because its pages run in a frame that keeps its own cookies and storage: two plugins on one origin could read each other's.
+Bundled plugins need no DNS record of their own: their pages come from Factorix's address, which the web passes to the plugin host. `install.sh` writes `FACTORIX_PLUGINS_KEY`, and that is all they need.
 
 ## Installing an external plugin
 

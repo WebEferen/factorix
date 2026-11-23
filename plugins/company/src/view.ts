@@ -162,7 +162,7 @@ function apply(next) {
   }
   for (const input of document.querySelectorAll('input[name="factorix"]')) input.value = next
 }
-function ask() { if (window.parent !== window) window.parent.postMessage({ type: 'factorix:token' }, '*') }
+function ask() { if (window.parent !== window) window.parent.postMessage({ type: 'factorix:token', token }, '*') }
 function plan() { setTimeout(ask, Math.max(5000, expOf(token) - Date.now() - 60000)) }
 window.addEventListener('message', (event) => {
   if (event.source !== window.parent || !event.data || event.data.type !== 'factorix:token' || typeof event.data.token !== 'string') return

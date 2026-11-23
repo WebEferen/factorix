@@ -71,14 +71,19 @@ export function bundledPluginSecret(key: string, name: string): string {
   return createHmac('sha256', key).update(`factorix-plugin:${name}`).digest('hex')
 }
 
+/** Where bundled plugins' pages live on Factorix's own address. A plugin name cannot start with `_`, so it never clashes. */
+export const BUNDLED_PLUGIN_PAGES = '/_plugin'
+
 /**
  * Where Factorix calls a bundled plugin, through the plugin host on the internal network, and where people open its
- * pages: a subdomain of its own under the public plugins address, so no two plugins share an origin.
+ * pages: under Factorix's own address, which the web passes to the plugin host. The host serves them with a sandbox
+ * policy, so each page runs without an origin and reaches neither Factorix's session nor another plugin.
  */
-export function bundledPluginUrls(name: string, internalUrl: string, publicUrl: string): { url: string; pageUrl: string } {
-  const page = new URL(publicUrl)
-  page.hostname = `${name}.${page.hostname}`
-  return { url: `${new URL(internalUrl).origin}/${name}/factorix`, pageUrl: `${page.origin}/factorix` }
+export function bundledPluginUrls(name: string, internalUrl: string, factorixUrl: string): { url: string; pageUrl: string } {
+  return {
+    url: `${new URL(internalUrl).origin}/${name}/factorix`,
+    pageUrl: `${new URL(factorixUrl).origin}${BUNDLED_PLUGIN_PAGES}/${name}/factorix`,
+  }
 }
 
 export function signPluginPage(secret: string, context: PluginPageContext): string {

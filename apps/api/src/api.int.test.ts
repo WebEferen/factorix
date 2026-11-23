@@ -812,7 +812,6 @@ describe('API', () => {
           ...harness.deps.env,
           FACTORIX_PLUGINS_KEY: key,
           FACTORIX_PLUGINS_INTERNAL_URL: internal,
-          FACTORIX_PLUGINS_URL: 'http://plugins.localhost:4110',
         }
         const deps = { ...harness.deps, env }
         try {
@@ -821,11 +820,12 @@ describe('API', () => {
             (await admin.ok('GET', '/api/plugins')).plugins.find((plugin: { url: string }) => plugin.url === `${internal}/board/factorix`)
           const plugin = await find()
           expect(plugin).toMatchObject({ name: 'Bundled board', bundled: true })
-          expect((await admin.ok('GET', '/api/plugins/origins')).origins).toContain('http://board.plugins.localhost:4110')
+          const factorix = new URL(env.FACTORIX_PUBLIC_URL).origin
+          expect((await admin.ok('GET', '/api/plugins/origins')).origins).toContain(factorix)
           expect((await admin.request('DELETE', `/api/plugins/${plugin.id}`)).status).toBe(409)
           await admin.ok('PUT', `/api/plugins/${plugin.id}/organization`, { enabled: true })
           const opened = new URL((await admin.ok('POST', `/api/plugins/${plugin.id}/pages/board/open`)).url)
-          expect(opened.origin + opened.pathname).toBe('http://board.plugins.localhost:4110/factorix/pages/board')
+          expect(opened.origin + opened.pathname).toBe(`${factorix}/_plugin/board/factorix/pages/board`)
 
           const before = await harness.deps.db('plugins').where({ id: plugin.id }).first()
           await syncBundledPlugins(deps)
