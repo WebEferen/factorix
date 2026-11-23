@@ -19,7 +19,7 @@
   },
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/package-dist.mjs",
-    "release": "yarn build && npm publish ./dist --access public",
+    "release": "yarn build && npm publish ./dist --access public --registry https://registry.npmjs.org",
     "prepublishOnly": "node -e \"throw new Error('Publish the built package instead: yarn workspace @moxxy/factorix-plugin-sdk release')\"",
     "example": "tsx examples/memory-tracker.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
