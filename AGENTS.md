@@ -85,4 +85,6 @@ docker compose build migrate web   # rebuild the running stack: api, worker, and
 
 ## Conventions
 
+`@moxxy/factorix` and `@moxxy/factorix-plugin-sdk` are released by `.github/workflows/release.yml` every day, one patch version up when what they ship changed (`scripts/release.mjs`). For a bigger step, set the version by hand: one npm does not have yet goes out as it is.
+
 Strict TypeScript, ESM, no build step for internal packages. Biome: 2 spaces, single quotes, no semicolons, 150 columns. Tests sit next to code: `*.test.ts`, `*.int.test.ts`, `*.docker.test.ts`. Branches are `<team>-<n>-<slug>`, merges are squashed. UI follows the tokens in `apps/web/app/globals.css` and the primitives in `apps/web/modules/ui`.

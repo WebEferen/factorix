@@ -222,4 +222,4 @@ Limits today: a plugin provides a tracker, pages, settings, workflow blocks and 
 
 ## Publishing the SDK
 
-From the Factorix repository: `yarn workspace @moxxy/factorix-plugin-sdk release`. It builds `dist/` with its own `package.json` and publishes that folder. Inside the repository nothing is built: plugins read the SDK's sources.
+The Release workflow does it every day when the SDK changed, one patch version up. By hand, from the Factorix repository: `yarn workspace @moxxy/factorix-plugin-sdk release`. It builds `dist/` with its own `package.json` and publishes that folder. Inside the repository nothing is built: plugins read the SDK's sources.
