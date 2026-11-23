@@ -14,10 +14,10 @@
     "migrate": "tsx src/migrate-cli.ts"
   },
   "dependencies": {
-    "knex": "3.3.0",
-    "pg": "8.23.1",
     "@factorix/core": "0.1.0",
-    "@factorix/runtime": "0.1.0"
+    "@factorix/runtime": "0.1.0",
+    "knex": "3.3.0",
+    "pg": "8.23.1"
   },
   "devDependencies": {
     "@types/pg": "8.23.1",

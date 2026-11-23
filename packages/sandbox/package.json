@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "dockerode": "5.0.1",
-    "@factorix/runtime": "0.1.0"
+    "@factorix/runtime": "0.1.0",
+    "dockerode": "5.0.1"
   },
   "devDependencies": {
     "@types/dockerode": "4.0.2"
