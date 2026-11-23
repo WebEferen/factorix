@@ -163,6 +163,12 @@ describe('API', () => {
         payload: { email: SETUP.email, password: SETUP.password },
       })
       expect(response.statusCode).toBe(403)
+      const sandboxed = await harness.app.inject({
+        method: 'POST',
+        url: '/api/auth/logout',
+        headers: { origin: 'null', host: 'factorix.example' },
+      })
+      expect(sandboxed.statusCode).toBe(403)
     })
   })
 

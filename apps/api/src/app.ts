@@ -45,7 +45,8 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
     const origin = request.headers.origin
     if (!origin) return
     const host = request.headers['x-forwarded-host'] ?? request.headers.host
-    if (new URL(origin).host === host) return
+    // A page without an origin, as a bundled plugin's is, sends `null`, which names no host.
+    if (URL.canParse(origin) && new URL(origin).host === host) return
     // The environment's address stays allowed, so a wrong override cannot lock anyone out of fixing it.
     const allowed = [deps.env.FACTORIX_PUBLIC_URL, (await readSettings(deps)).publicUrl].map((url) => new URL(url).origin)
     if (!allowed.includes(origin)) throw new HttpError(403, 'bad_origin', 'Cross-origin requests are not allowed')
