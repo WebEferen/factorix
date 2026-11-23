@@ -235,13 +235,22 @@ describe('runners', () => {
     }
     const ask = (path: string, body?: Buffer) =>
       new Promise<{ status: number; got: string; cookie: string; size: number }>((resolve, reject) => {
+        let status: number | undefined
+        let size = 0
         const request = httpRequest({ host: '127.0.0.1', port: gatewayPort, path, method: body ? 'POST' : 'GET', headers }, (response) => {
-          let size = 0
+          status = response.statusCode
           response.on('data', (chunk: Buffer) => (size += chunk.length))
-          response.on('end', () =>
-            resolve({ status: response.statusCode ?? 0, got: String(response.headers['x-got']), cookie: String(response.headers['x-cookie']), size }),
-          )
+          response.on('end', () => {
+            clearTimeout(stalled)
+            resolve({ status: response.statusCode ?? 0, got: String(response.headers['x-got']), cookie: String(response.headers['x-cookie']), size })
+          })
         })
+        // Names the request that stalled and how far it got, which a timeout of the whole test does not.
+        const stalled = setTimeout(async () => {
+          const waiting = await harness.deps.redis.llen(runnerKeys.down(runnerId))
+          reject(new Error(`${path} stalled: status ${status ?? 'none'}, ${size} bytes in, ${waiting} frames still queued for the runner`))
+          request.destroy()
+        }, 10_000)
         request.on('error', reject)
         request.end(body)
       })
@@ -260,10 +269,15 @@ describe('runners', () => {
           )
         })
         let text = ''
+        const stalled = setTimeout(() => {
+          socket.destroy()
+          reject(new Error(`the upgrade stalled after ${JSON.stringify(text)}`))
+        }, 10_000)
         socket.on('data', (chunk: Buffer) => {
           text += chunk
           if (text.includes('\r\n\r\n') && !text.includes('echo')) socket.write('hello')
           if (text.includes('echo hello')) {
+            clearTimeout(stalled)
             socket.destroy()
             resolve(text)
           }
