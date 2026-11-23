@@ -40,7 +40,7 @@ export interface PluginManifest {
   permissions: PluginPermission[]
   /** What an admin fills in to connect one account of the service behind the plugin. */
   connection: { fields: PluginField[] }
-  /** What an organization's admin sets once for the whole plugin, on its card under Settings. */
+  /** What an organization's admin sets once for the whole plugin, on its card under Integrations, Plugins. */
   settings: { fields: PluginField[] }
   /** Pages the plugin serves itself, shown inside Factorix in a frame. */
   pages: PluginPage[]

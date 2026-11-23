@@ -208,7 +208,7 @@ export default function NewProjectPage() {
           {missing ? (
             <div className="rounded-md border border-divider p-4">
               <p className="text-sm">A project needs a GitLab or GitHub connection first.</p>
-              <Link href="/settings/connections" className="mt-3 inline-block">
+              <Link href="/integrations/connections" className="mt-3 inline-block">
                 <Button variant="primary">Go to connections</Button>
               </Link>
             </div>

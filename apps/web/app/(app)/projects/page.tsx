@@ -54,13 +54,13 @@ export default function ProjectsPage() {
             </p>
             <Card>
               <ol>
-                <Step done={has('linear', 'jira', 'trello', 'factorix')} href="/settings/connections" action="Connect">
+                <Step done={has('linear', 'jira', 'trello', 'factorix')} href="/integrations/connections" action="Connect">
                   Connect Linear, Jira, or Trello, or skip this and use built-in tickets
                 </Step>
-                <Step done={has('gitlab', 'github')} href="/settings/connections" action="Connect">
+                <Step done={has('gitlab', 'github')} href="/integrations/connections" action="Connect">
                   Connect GitLab or GitHub
                 </Step>
-                <Step done={has('anthropic', 'openai')} href="/settings/connections" action="Add key">
+                <Step done={has('anthropic', 'openai')} href="/integrations/connections" action="Add key">
                   Add an Anthropic or OpenAI key
                 </Step>
                 <Step done={false} href="/projects/new" action="Create">

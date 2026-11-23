@@ -2,7 +2,7 @@
 
 import type { IssueDto } from '@factorix/schemas'
 import { Command } from 'cmdk'
-import { Bot, CircleDot, FolderKanban, Inbox, Moon, Play, Plus, Settings, Shapes, Sparkles, Workflow } from 'lucide-react'
+import { Blocks, Bot, CircleDot, FolderKanban, Inbox, Moon, Play, Plus, Settings, Shapes, Sparkles, Workflow } from 'lucide-react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -140,6 +140,9 @@ function Palette({ open, onOpenChange, onNewIssue }: { open: boolean; onOpenChan
                 <PaletteItem icon={<Bot />} label="Agents" hint="G A" onSelect={() => go('/agents')} />
                 <PaletteItem icon={<Sparkles />} label="Skills" onSelect={() => go('/skills')} />
                 <PaletteItem icon={<Shapes />} label="Archetypes" onSelect={() => go('/archetypes')} />
+                <PaletteItem icon={<Blocks />} label="Connections" onSelect={() => go('/integrations/connections')} />
+                <PaletteItem icon={<Blocks />} label="Integrations" onSelect={() => go('/integrations/services')} />
+                <PaletteItem icon={<Blocks />} label="Plugins" onSelect={() => go('/integrations/plugins')} />
                 <PaletteItem icon={<Settings />} label="Settings" hint="G S" onSelect={() => go('/settings')} />
                 <PaletteItem icon={<Settings />} label="General settings" onSelect={() => go('/settings/general')} />
                 <PaletteItem icon={<Settings />} label="Network" onSelect={() => go('/settings/network')} />

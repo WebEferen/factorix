@@ -1,21 +1,21 @@
 # Plugins
 
-A plugin adds something to Factorix from a server of its own: a tracker, pages in the sidebar or under Settings, settings an organization fills in, and, when an organization allows it, a read of what happened on tickets and requests to its agents. Its code never runs inside the API or the worker, and Factorix's database and session never reach it. Everything between the two is signed JSON over HTTP.
+A plugin adds something to Factorix from a server of its own: a tracker, pages in the sidebar or under Integrations, Plugins, settings an organization fills in, and, when an organization allows it, a read of what happened on tickets and requests to its agents. Its code never runs inside the API or the worker, and Factorix's database and session never reach it. Everything between the two is signed JSON over HTTP.
 
 Two plugins ship with Factorix. The daily digest lives in [`plugins/digest`](../plugins/digest) and is a good one to read next to this page. Company lives in [`plugins/company`](../plugins/company): it keeps who is in which department, and runs the company's processes with an engine of its own, where a form starts a case and people, approvals, agents, and tickets take it step by step.
 
 ## Two ways to run one
 
-|                      | Bundled                                          | External                                                                    |
-| -------------------- | ------------------------------------------------ | --------------------------------------------------------------------------- |
-| Where the code lives | `plugins/<name>` in this repository              | Any repository, any language                                                |
-| Who runs it          | The `plugins` container, one process per plugin  | Whoever owns it, behind HTTPS                                               |
-| Installing           | Nothing to do: the worker registers it           | An installation admin enters its address and secret under Settings, Plugins |
-| Secret               | Derived from `FACTORIX_PLUGINS_KEY` and its name | Chosen by whoever runs it, at least 16 characters                           |
-| Pages                | `https://<name>.plugins.<domain>`                | Its own address                                                             |
-| Database             | Its own Postgres database, on request            | Its own                                                                     |
+|                      | Bundled                                          | External                                                                        |
+| -------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------- |
+| Where the code lives | `plugins/<name>` in this repository              | Any repository, any language                                                    |
+| Who runs it          | The `plugins` container, one process per plugin  | Whoever owns it, behind HTTPS                                                   |
+| Installing           | Nothing to do: the worker registers it           | An installation admin enters its address and secret under Integrations, Plugins |
+| Secret               | Derived from `FACTORIX_PLUGINS_KEY` and its name | Chosen by whoever runs it, at least 16 characters                               |
+| Pages                | `https://<name>.plugins.<domain>`                | Its own address                                                                 |
+| Database             | Its own Postgres database, on request            | Its own                                                                         |
 
-Either way, each organization turns a plugin on for itself under Settings, Plugins, and sees what it may do before it does.
+Either way, each organization turns a plugin on for itself under Integrations, Plugins, and sees what it may do before it does.
 
 ## Building a bundled plugin
 
@@ -76,8 +76,8 @@ await serve(plugin, { secret: String(process.env.PLUGIN_SECRET), port: Number(pr
 
 The manifest Factorix reads is built from `definePlugin`. What each part does:
 
-- `settings.fields`: what an organization's admin fills in on the plugin's row under Settings, Plugins. Factorix renders the form. A `secret` field is stored encrypted and never shown again.
-- `connection.fields`: for a plugin that provides a tracker, what an admin fills in when connecting one account under Settings, Connections.
+- `settings.fields`: what an organization's admin fills in on the plugin's row under Integrations, Plugins. Factorix renders the form. A `secret` field is stored encrypted and never shown again.
+- `connection.fields`: for a plugin that provides a tracker, what an admin fills in when connecting one account under Integrations, Connections.
 - `pages`: `sidebar` puts an entry in the main menu, `settings` a link on the plugin's row.
 - `permissions`: what the plugin may ask of Factorix (below).
 - `tracker`: a tracker Factorix follows like Linear or Jira. See the SDK README.
@@ -247,15 +247,15 @@ Put tests next to the code as `src/*.test.ts`, and tests that need the plugin's 
 
   Pages open at `http://localhost:4101/_plugin/<name>`.
 - `yarn start` (and the server) runs the `plugins` and `plugins-db` containers. `install.sh` writes `FACTORIX_PLUGINS_KEY` to `.env`.
-- A plugin shows up under Settings, Plugins within a minute of starting. A changed manifest is read again within a minute too.
+- A plugin shows up under Integrations, Plugins within a minute of starting. A changed manifest is read again within a minute too.
 
 ## Configuring a plugin
 
 Settings live at three levels:
 
 1. **The installation** (`.env`, the people who run Factorix): `FACTORIX_PLUGINS_KEY`, and anything a bundled plugin reads from its environment through `PLUGIN_<NAME>_<KEY>`. In Docker, pass those to the `plugins` service in a `docker-compose.override.yml`.
-2. **An organization** (Settings, Plugins, its admins): turn the plugin on, allow what it asks for, and fill in its settings fields. Anything the plugin keeps per organization in its own pages, like the digest's schedule, is set there too.
-3. **A connection** (Settings, Connections), for a plugin that provides a tracker: one account of the service behind it.
+2. **An organization** (Integrations, Plugins, its admins): turn the plugin on, allow what it asks for, and fill in its settings fields. Anything the plugin keeps per organization in its own pages, like the digest's schedule, is set there too.
+3. **A connection** (Integrations, Connections), for a plugin that provides a tracker: one account of the service behind it.
 
 ## On a server
 
@@ -264,7 +264,7 @@ Bundled plugins need no DNS record of their own: their pages come from Factorix'
 ## Installing an external plugin
 
 1. Run it behind HTTPS, at an address Factorix's API and your people's browsers both reach. Connection secrets travel to it.
-2. An installation admin opens Settings, Plugins, chooses Install plugin, and enters the address (the SDK serves it at `/factorix`) and the secret it was started with.
+2. An installation admin opens Integrations, Plugins, chooses Install plugin, and enters the address (the SDK serves it at `/factorix`) and the secret it was started with.
 3. Each organization's admin turns it on. After releasing a version with a changed manifest, press Refresh on its row.
 
 ## What a plugin sees

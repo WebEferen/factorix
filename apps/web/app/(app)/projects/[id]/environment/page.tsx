@@ -132,8 +132,8 @@ function SecretSetDialog({
         {sources.length === 0 ? (
           <p className="text-sm text-ink-2">
             Add a Doppler or Environment secret connection in{' '}
-            <Link className="text-link hover:underline" href="/settings/connections">
-              Connections
+            <Link className="text-link hover:underline" href="/integrations/services">
+              Integrations
             </Link>{' '}
             first.
           </p>
@@ -228,8 +228,8 @@ function ImportDialog({
               {options.length === 0 ? (
                 <p className="text-sm text-ink-2">
                   There is no {sourceLabel(set.source)} connection here, so this set stays out. Add one in{' '}
-                  <Link className="text-link hover:underline" href="/settings/connections">
-                    Connections
+                  <Link className="text-link hover:underline" href="/integrations/services">
+                    Integrations
                   </Link>{' '}
                   and import again.
                 </p>

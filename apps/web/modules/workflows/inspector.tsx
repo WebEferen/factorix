@@ -620,8 +620,8 @@ function ConfigField({
             usable.length === 0 ? (
               <>
                 None yet. Add a {owner?.name ?? 'Slack'} connection in{' '}
-                <Link href="/settings/connections" className="text-link hover:underline">
-                  Settings
+                <Link href="/integrations/services" className="text-link hover:underline">
+                  Integrations
                 </Link>
                 .
               </>

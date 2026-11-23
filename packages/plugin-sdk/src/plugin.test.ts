@@ -104,7 +104,7 @@ describe('a page with a form', () => {
     expect((await client.openPage('notes', {}, { form: { note: 'x' } })).status).toBe(404)
     const expired = await client.openPage('admin', { exp: Date.now() - 1 }, { form: { note: 'late' } })
     expect(expired.status).toBe(401)
-    expect(await expired.text()).toContain('Open Admin again under Settings, Plugins')
+    expect(await expired.text()).toContain('Open Admin again under Integrations, Plugins')
     expect(seen).toHaveLength(1)
   })
 })

@@ -2,6 +2,7 @@
 
 import type { MeDto } from '@factorix/schemas'
 import {
+  Blocks,
   Building2,
   Check,
   ChevronsUpDown,
@@ -249,7 +250,7 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
         ) : null}
 
         {pluginPages.length > 0 ? (
-          <NavGroup label="Plugins" href="/settings/plugins" active={pathname === '/settings/plugins'} onNavigate={onNavigate} />
+          <NavGroup label="Plugins" href="/integrations/plugins" active={pathname === '/integrations/plugins'} onNavigate={onNavigate} />
         ) : null}
         {pluginPages.map(({ plugin, page }) => (
           <NavLink
@@ -262,7 +263,8 @@ export function Sidebar({ me, onNavigate }: { me: MeDto; onNavigate?: () => void
           />
         ))}
 
-        <div className="mt-auto pt-4">
+        <div className="mt-auto flex flex-col gap-0.5 pt-4">
+          <NavLink href="/integrations" icon={<Blocks />} label="Integrations" active={is('/integrations')} onNavigate={onNavigate} />
           <NavLink href="/settings" icon={<Settings />} label="Settings" active={is('/settings')} onNavigate={onNavigate} />
         </div>
       </nav>

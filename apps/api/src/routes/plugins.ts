@@ -243,7 +243,7 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
         throw new HttpError(
           403,
           'not_allowed',
-          `${plugin.name} may not use ${permission} here. An admin of the organization allows it under Settings, Plugins`,
+          `${plugin.name} may not use ${permission} here. An admin of the organization allows it under Integrations, Plugins`,
         )
       }
       return { plugin, enabled, body }

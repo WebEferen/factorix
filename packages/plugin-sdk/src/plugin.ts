@@ -27,7 +27,7 @@ export interface PageDefinition {
   label: string
   /** Where the page lives under your plugin's address. Defaults to `/pages/<key>`. */
   path?: string
-  /** `sidebar` puts it in the main menu, `settings` on the plugin's row under Settings. */
+  /** `sidebar` puts it in the main menu, `settings` on the plugin's row under Integrations, Plugins. */
   placement?: 'sidebar' | 'settings'
   /** Returns the HTML of the page, or a whole response. `token` is the signed context, to send back with the page's own requests. */
   render(context: PageContext, request: Request, token: string): string | Response | Promise<string | Response>
@@ -254,7 +254,7 @@ export function createHandler(plugin: Plugin, options: HandlerOptions): (request
     const token = url.searchParams.get('factorix') ?? request.headers.get('x-factorix-page') ?? ''
     const context = readPageToken(options.secret, token)
     if (!context || context.page !== page.key) {
-      const where = (page.placement ?? 'sidebar') === 'settings' ? 'under Settings, Plugins' : 'in the sidebar'
+      const where = (page.placement ?? 'sidebar') === 'settings' ? 'under Integrations, Plugins' : 'in the sidebar'
       return new Response(`This page opens from inside Factorix, and each opening lasts a few minutes. Open ${page.label} again ${where}.`, {
         status: 401,
         headers: { 'content-type': 'text/plain; charset=utf-8' },

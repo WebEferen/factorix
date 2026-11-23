@@ -72,7 +72,7 @@ Open http://localhost:4101 and create the first admin account. To try the whole 
 
 ### Connect your accounts
 
-1. Under Settings, Connections, add your tracker: Linear with a personal API key, Jira with its site address, account email, and API token, or Trello with an API key and token.
+1. Under Integrations, Connections, add your tracker: Linear with a personal API key, Jira with its site address, account email, and API token, or Trello with an API key and token.
 2. Add GitLab with a token that has `api` and `write_repository`, or GitHub with a classic token that has `repo`.
 3. Add an Anthropic key, an OpenAI key, or both.
 4. Under Projects, create a project. The wizard joins a Linear team or project, a Jira project, or a Trello board to one or more GitLab or GitHub repositories.
@@ -83,7 +83,7 @@ Linear and GitLab can only deliver webhooks to a public URL. Set `FACTORIX_PUBLI
 
 By default every agent shares the project's Linear and GitLab accounts, told apart by comment prefixes, commit trailers, and the audit log. That is one account to pay for.
 
-To give an agent its own, add another connection under Settings, Connections, then pick it under Accounts on the agent. Its commits, merge requests, reviews, and comments then use that account. It needs access to the project's repositories, and a GitLab account on another server is ignored with a warning in the run log. Merges, webhooks, polling, and status changes stay on the project's account.
+To give an agent its own, add another connection under Integrations, Connections, then pick it under Accounts on the agent. Its commits, merge requests, reviews, and comments then use that account. It needs access to the project's repositories, and a GitLab account on another server is ignored with a warning in the run log. Merges, webhooks, polling, and status changes stay on the project's account.
 
 GitLab may refuse a bot's approval of a merge request the same account opened, and the verdict still counts. A separate account for the reviewer avoids that.
 
@@ -192,7 +192,7 @@ These are set only in the environment:
 | ------------------------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `FACTORIX_SECRET_KEY`                 | required                        | Encrypts stored connection secrets. Losing it makes them unreadable.                                      |
 | `FACTORIX_WEB_BIND`                   | `127.0.0.1`                     | The address ports 4101 and 4102 bind to.                                                                  |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | none                            | Fallback model keys. A connection under Settings takes priority.                                          |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | none                            | Fallback model keys. A connection under Integrations takes priority.                                      |
 | `FACTORIX_SANDBOX_IMAGE`              | `factorix/sandbox-base:dev`     | The image agents and git steps run in. It stays out of the web UI because the git steps hold the token.   |
 | `FACTORIX_PREVIEW_URL`                | `http://preview.localhost:4102` | The base address previews get a subdomain of. The web image is built with it, so rebuild `web` after one. |
 
@@ -263,7 +263,7 @@ yarn prepare-mr        # everything a merge request needs, short of Docker tests
 
 - **Organizations share the machine.** One installation holds several organizations, each with its own projects, agents, connections, and members. An installation admin creates them from the organization menu, under All organizations. Their agents run on separate networks, and the model keys in `.env` serve only the first one. They still share the worker's run slots.
 - **Email and password only.** There is no SSO yet.
-- **Plugins are young.** A plugin can add a tracker, pages in the sidebar or under Settings, and settings of its own, and with an organization's permission read ticket activity and ask its agents for work. It cannot add a code host, attachments, or workflow blocks yet. [docs/plugins.md](docs/plugins.md) shows how to build one.
+- **Plugins are young.** A plugin can add a tracker, pages in the sidebar or under Integrations, Plugins, and settings of its own, and with an organization's permission read ticket activity and ask its agents for work. It cannot add a code host, attachments, or workflow blocks yet. [docs/plugins.md](docs/plugins.md) shows how to build one.
 - **Five connectors so far.** Linear, Jira, Trello, GitLab, and GitHub ship today. Jira and Trello have only run against stub servers. Trello has no priorities, and a list's place in the workflow is read from its name. Other sources implement the same connector interfaces.
 
 ## License

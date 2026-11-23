@@ -110,7 +110,7 @@ Put the three values in a `.env` beside the file to keep them across restarts. `
 
 ## Rotate secrets
 
-Tokens: edit the connection under Settings. New runs use the new value.
+Tokens: edit the connection under Integrations. New runs use the new value.
 
 Webhook secrets live on the connection. If one leaks, recreate the connection and register webhooks again.
 

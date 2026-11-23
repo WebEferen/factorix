@@ -426,8 +426,8 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
             <h2 className="text-sm font-semibold">Accounts</h2>
             <p className="mt-0.5 text-xs text-ink-2">
               Agents share the project’s accounts unless you pick one here. To give this agent its own, add a connection for it under{' '}
-              <Link href="/settings/connections" className="text-link hover:underline">
-                Settings, Connections
+              <Link href="/integrations/connections" className="text-link hover:underline">
+                Integrations, Connections
               </Link>
               .
             </p>

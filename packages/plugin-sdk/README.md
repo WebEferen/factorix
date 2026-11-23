@@ -19,7 +19,7 @@ A Factorix plugin is a small server you run. Factorix calls it at one address, s
 | You can add           | What it does                                                                                                                                             |
 | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **A tracker**         | Factorix follows issues from your service the way it follows Linear or Jira: it syncs them, assigns agents through labels, moves statuses, and comments. |
-| **Pages**             | Entries in Factorix's sidebar or under Settings that open your own HTML, with forms that post back to your plugin.                                       |
+| **Pages**             | Entries in Factorix's sidebar or under Integrations, Plugins that open your own HTML, with forms that post back to your plugin.                          |
 | **Settings**          | Fields an organization's admin fills in for your plugin. Factorix renders them from your manifest.                                                       |
 | **Workflow blocks**   | Steps that organizations drop into their workflows, run by your plugin.                                                                                  |
 | **Workflow triggers** | Events in your plugin that start workflows.                                                                                                              |
@@ -92,9 +92,9 @@ PLUGIN_SECRET=$(openssl rand -hex 24) npx tsx plugin.ts
 ## Install it in Factorix
 
 1. Run the plugin where Factorix can reach it, behind HTTPS. Connection secrets travel to this address, and people's browsers open its pages there too.
-2. An installation admin opens **Settings → Plugins**, chooses **Install plugin**, and enters the plugin's address (ending in `/factorix`) and its secret.
+2. An installation admin opens **Integrations → Plugins**, chooses **Install plugin**, and enters the plugin's address (ending in `/factorix`) and its secret.
 3. An organization's admin turns the plugin on, reviews the permissions it asks for, and fills in its settings.
-4. For a tracker, add a connection under **Settings → Connections** with the kind **Plugin**, then create a project on it.
+4. For a tracker, add a connection under **Integrations → Connections** with the kind **Plugin**, then create a project on it.
 
 When you release a version with a changed manifest, press **Refresh** on the plugin's row so Factorix reads it again.
 

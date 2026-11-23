@@ -16,7 +16,7 @@ export function fakeWorld(options: { now?: Date } = {}) {
   const fake = fakeFactorix({
     activity: () => {
       guard()
-      if (state.refused) throw new FactorixError(403, 'Digest may not read activity. An admin allows it under Settings, Plugins')
+      if (state.refused) throw new FactorixError(403, 'Digest may not read activity. An admin allows it under Integrations, Plugins')
       return { issues, merges: [], reports: [], truncated: false }
     },
     agents: () => {
