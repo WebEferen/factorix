@@ -107,7 +107,7 @@ A review normally opens one thread per finding on the diff. Under Project settin
 `fx` hands work to agents and follows it without the browser:
 
 ```sh
-npm install -g @moxxylabs/factorix
+npm install -g @moxxy/factorix
 ```
 
 From a checkout, `yarn cli:build` writes the same file to `apps/cli/dist/fx.mjs`.

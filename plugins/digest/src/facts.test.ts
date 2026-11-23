@@ -1,4 +1,4 @@
-import type { Activity, ActivityIssue } from '@moxxylabs/factorix-plugin-sdk'
+import type { Activity, ActivityIssue } from '@moxxy/factorix-plugin-sdk'
 import { describe, expect, it } from 'vitest'
 import { factsFrom, linksOf } from './facts'
 

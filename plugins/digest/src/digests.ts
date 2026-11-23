@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { type Agent, type FactorixClient, FactorixError } from '@moxxylabs/factorix-plugin-sdk'
+import { type Agent, type FactorixClient, FactorixError } from '@moxxy/factorix-plugin-sdk'
 import { contentFrom, digestPrompt, NOTHING, OUTPUT_SCHEMA } from './content'
 import { type DigestFacts, factsFrom } from './facts'
 import { type Days, isTimezone, nextScheduleTime, TIME } from './schedule'

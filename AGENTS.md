@@ -7,7 +7,7 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 - `apps/api`: Fastify API (`src/server.ts`) and BullMQ worker (`src/worker.ts`). Both share `src/services`.
 - `apps/web`: Next.js App Router UI. Calls the API through rewrites, so everything is same-origin.
 - `apps/egress-proxy`: the only network path out of an agent or preview container. Swaps run tokens for real model keys and MCP server headers.
-- `apps/cli`: `fx`, a command line and stdio MCP server over the API, published to npm as `@moxxylabs/factorix`. It ships as one bundled file with no dependencies and authenticates with a personal API token.
+- `apps/cli`: `fx`, a command line and stdio MCP server over the API, published to npm as `@moxxy/factorix`. It ships as one bundled file with no dependencies and authenticates with a personal API token.
 - `apps/remote-runner`: runs on another machine and serves a `DockerSandboxProvider` to the workers over the runner protocol. It only dials out.
 - `apps/plugin-host`: runs every plugin in `plugins/` as its own process and routes to them. Browsers reach their pages through the web under `/_plugin/<name>`, served with a sandbox policy that leaves each page without an origin.
 - `apps/preview-gateway`: the only way into a preview. Swaps a one-time ticket for a cookie scoped to one preview host. A preview on a runner is reached through a tunnel over the runner's link (`TunnelStream` in `packages/runtime`), never by a port on the runner.
@@ -17,7 +17,7 @@ Agentic software factory. It follows issues from a tracker, runs agents in Docke
 - `packages/sandbox`: `SandboxProvider` and the Docker implementation. `profiles.ts` is the credential boundary.
 - `packages/connectors`: `TrackerConnector` (Linear, Jira, Trello) and `ScmConnector` (GitLab, GitHub). Built-in tickets are a `TrackerConnector` too, `FactorixTracker` in `apps/api/src/services/tickets.ts`, because they need the database.
 - `packages/db`: Knex client, raw SQL migrations, row types.
-- `packages/plugin-sdk`: the SDK plugins are built with, published to npm as `@moxxylabs/factorix-plugin-sdk`.
+- `packages/plugin-sdk`: the SDK plugins are built with, published to npm as `@moxxy/factorix-plugin-sdk`.
 - `plugins/*`: plugins that ship with Factorix: `plugins/digest`, and `plugins/company`, which runs company processes with an engine of its own (`engine.ts`) and reaches Factorix only for members, agent runs, and tickets. Each is a server of its own and imports only the SDK.
 - `packages/schemas`: zod inputs and DTO types shared by API and web.
 

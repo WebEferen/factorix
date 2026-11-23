@@ -1,5 +1,5 @@
-import { factorix, migrateUp } from '@moxxylabs/factorix-plugin-sdk'
-import { serve } from '@moxxylabs/factorix-plugin-sdk/node'
+import { factorix, migrateUp } from '@moxxy/factorix-plugin-sdk'
+import { serve } from '@moxxy/factorix-plugin-sdk/node'
 import pg from 'pg'
 import { type Deps, sweep } from './engine'
 import { companyPlugin } from './plugin'

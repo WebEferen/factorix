@@ -38,7 +38,7 @@ The folder name is the plugin's name: lower case letters, digits, and dashes. `p
   "type": "module",
   "factorix": { "main": "src/main.ts", "database": false },
   "scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" },
-  "dependencies": { "@moxxylabs/factorix-plugin-sdk": "0.2.0", "tsx": "4.23.15" }
+  "dependencies": { "@moxxy/factorix-plugin-sdk": "0.2.0", "tsx": "4.23.15" }
 }
 ```
 
@@ -48,7 +48,7 @@ A bundled plugin imports only the SDK, never `@factorix/*`. That keeps it a plug
 
 ```ts
 // src/plugin.ts
-import { definePlugin } from '@moxxylabs/factorix-plugin-sdk'
+import { definePlugin } from '@moxxy/factorix-plugin-sdk'
 
 export const plugin = definePlugin({
   name: 'Hello',
@@ -68,7 +68,7 @@ export const plugin = definePlugin({
 
 ```ts
 // src/main.ts
-import { serve } from '@moxxylabs/factorix-plugin-sdk/node'
+import { serve } from '@moxxy/factorix-plugin-sdk/node'
 import { plugin } from './plugin'
 
 await serve(plugin, { secret: String(process.env.PLUGIN_SECRET), port: Number(process.env.PORT), hostname: process.env.HOST })
@@ -136,7 +136,7 @@ A plugin names what it needs in `permissions`, and the organization's admin sees
 | `workflows:blocks` | Blocks and triggers in the organization's workflows, and what each block is given when it runs: its fields with templates filled, the ticket's identifier, title, and link, and the workflow's name. `finishStep` ends only steps of the plugin's own blocks, and `fireTrigger` starts only workflows built on its triggers. |
 
 ```ts
-import { factorix } from '@moxxylabs/factorix-plugin-sdk'
+import { factorix } from '@moxxy/factorix-plugin-sdk'
 
 const fx = factorix({ url: process.env.FACTORIX_URL, secret: process.env.PLUGIN_SECRET, pluginId: context.plugin.id })
 
@@ -228,7 +228,7 @@ await fx.fireTrigger(orgId, { trigger: 'reacted', data: { emoji: 'tada', who: 'K
 
 ### 7. Tests
 
-`@moxxylabs/factorix-plugin-sdk/testing` runs a plugin without a network:
+`@moxxy/factorix-plugin-sdk/testing` runs a plugin without a network:
 
 - `factorixClient(plugin)` calls it the way Factorix does, signatures included: `manifest()`, `openPage(key, context, { form })` to open a page or post a form to it, `tracker(connection)`, `runBlock(key, call)`, and `blockOptions(key, field)`.
 - `fakeFactorix({ activity, agents, runs, run, settings, 'workflow-steps', 'workflow-triggers' })` stands in for Factorix's side. Pass its `fetch` to `factorix({ ..., fetch })` and read back the signed `calls` the plugin made.

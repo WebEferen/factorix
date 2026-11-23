@@ -1,4 +1,4 @@
-import type { BlockCall } from '@moxxylabs/factorix-plugin-sdk'
+import type { BlockCall } from '@moxxy/factorix-plugin-sdk'
 import { describe, expect, it } from 'vitest'
 import { type Actor, cancelCase, decide, poll, retryCase, startCase, startForWorkflow, sweep } from './engine'
 import { agentPrompt, type Definition, fill, formLines, keyFrom, type Process, problemsOf, readForm } from './model'

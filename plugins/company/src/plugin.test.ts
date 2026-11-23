@@ -1,4 +1,4 @@
-import { factorixClient } from '@moxxylabs/factorix-plugin-sdk/testing'
+import { factorixClient } from '@moxxy/factorix-plugin-sdk/testing'
 import { describe, expect, it } from 'vitest'
 import { companyPlugin } from './plugin'
 import { ADA, BOT, fakeWorld, MO, ORG, PROJECT } from './testing'

@@ -1,5 +1,5 @@
-import { type Agent, FactorixError, factorix, type Member, type Run, type Ticket } from '@moxxylabs/factorix-plugin-sdk'
-import { fakeFactorix } from '@moxxylabs/factorix-plugin-sdk/testing'
+import { type Agent, FactorixError, factorix, type Member, type Run, type Ticket } from '@moxxy/factorix-plugin-sdk'
+import { fakeFactorix } from '@moxxy/factorix-plugin-sdk/testing'
 import type { Deps } from './engine'
 import type { Definition, Process } from './model'
 import { memoryStore } from './store'

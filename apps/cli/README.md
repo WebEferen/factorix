@@ -3,7 +3,7 @@
 The command line and MCP server for [Factorix](https://github.com/WebEferen/factorix). It hands work to agents and follows it without the browser.
 
 ```sh
-npm install -g @moxxylabs/factorix
+npm install -g @moxxy/factorix
 ```
 
 Needs Node 22 or newer. Create a token in Factorix under Settings, API tokens, then:

@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { type Agent, definePlugin, type PageContext, type Plugin } from '@moxxylabs/factorix-plugin-sdk'
+import { type Agent, definePlugin, type PageContext, type Plugin } from '@moxxy/factorix-plugin-sdk'
 import { type Deps, DigestError, refreshOrg, saveSchedule, scheduleOf, startDigest } from './digests'
 import { NOTICES, renderPage } from './page'
 

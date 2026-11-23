@@ -1,4 +1,4 @@
-import type { Migration } from '@moxxylabs/factorix-plugin-sdk'
+import type { Migration } from '@moxxy/factorix-plugin-sdk'
 import type { Case, CaseEvent, CaseStatus, Definition, Department, Placement, Process, StepPhase } from './model'
 
 export interface CaseFilter {

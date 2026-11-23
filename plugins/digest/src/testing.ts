@@ -1,5 +1,5 @@
-import { type ActivityIssue, FactorixError, factorix, type Run } from '@moxxylabs/factorix-plugin-sdk'
-import { fakeFactorix } from '@moxxylabs/factorix-plugin-sdk/testing'
+import { type ActivityIssue, FactorixError, factorix, type Run } from '@moxxy/factorix-plugin-sdk'
+import { fakeFactorix } from '@moxxy/factorix-plugin-sdk/testing'
 import type { Deps } from './digests'
 import { memoryStore } from './store'
 

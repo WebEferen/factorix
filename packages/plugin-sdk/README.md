@@ -14,8 +14,8 @@ Plugins that ship with Factorix live in its `plugins/` folder, one folder each, 
 ## A plugin in one file
 
 ```ts
-import { definePlugin } from '@moxxylabs/factorix-plugin-sdk'
-import { serve } from '@moxxylabs/factorix-plugin-sdk/node'
+import { definePlugin } from '@moxxy/factorix-plugin-sdk'
+import { serve } from '@moxxy/factorix-plugin-sdk/node'
 
 const plugin = definePlugin({
   name: 'Acme board',
@@ -35,10 +35,10 @@ const plugin = definePlugin({
 await serve(plugin, { secret: process.env.PLUGIN_SECRET, port: 8787 })
 ```
 
-Outside the Factorix repository, `npm install @moxxylabs/factorix-plugin-sdk`. `tracker` returns an object with the methods of the `Tracker` type. `examples/memory-tracker.ts` is a complete one that keeps its issues in memory. From the Factorix repository:
+Outside the Factorix repository, `npm install @moxxy/factorix-plugin-sdk`. `tracker` returns an object with the methods of the `Tracker` type. `examples/memory-tracker.ts` is a complete one that keeps its issues in memory. From the Factorix repository:
 
 ```sh
-PLUGIN_SECRET=$(openssl rand -hex 24) yarn workspace @moxxylabs/factorix-plugin-sdk example
+PLUGIN_SECRET=$(openssl rand -hex 24) yarn workspace @moxxy/factorix-plugin-sdk example
 ```
 
 `createHandler(plugin, { secret })` gives the same thing as a `(Request) => Promise<Response>` function, for any runtime that is not plain Node.
@@ -59,7 +59,7 @@ After you release a new version with a changed manifest, press Refresh on the pl
 Without events Factorix polls a tracker every few minutes. To tell it sooner, implement `registerWebhook`, remember the `url` it is given, and send events there:
 
 ```ts
-import { factorix } from '@moxxylabs/factorix-plugin-sdk'
+import { factorix } from '@moxxy/factorix-plugin-sdk'
 
 const fx = factorix({ url: 'https://factorix.example.com', secret: process.env.PLUGIN_SECRET })
 await fx.sendEvent(callbackUrl, { kind: 'issue.upserted', issue: { id: 'issue-12' } }, deliveryId)
@@ -93,7 +93,7 @@ The page runs in a sandboxed frame on your own address. It cannot read Factorix'
 `factorix()` signs calls back to Factorix. Each one acts for one organization, which has to have turned the plugin on, and needs the plugin's id: a page has it as `context.plugin.id`, and a plugin with work to do outside a page keeps it from there.
 
 ```ts
-import { factorix, FactorixError } from '@moxxylabs/factorix-plugin-sdk'
+import { factorix, FactorixError } from '@moxxy/factorix-plugin-sdk'
 
 const fx = factorix({ url: process.env.FACTORIX_URL, secret: process.env.PLUGIN_SECRET, pluginId: context.plugin.id })
 const { settings, secrets } = await fx.settings(orgId) // secret settings are never in the page token
@@ -158,7 +158,7 @@ definePlugin({
 A plugin that needs to store something uses its own database. The SDK has a small runner for migrations that go both ways:
 
 ```ts
-import { migrateDown, migrateUp } from '@moxxylabs/factorix-plugin-sdk'
+import { migrateDown, migrateUp } from '@moxxy/factorix-plugin-sdk'
 
 const migrations = [{ id: '0001_boards', up: 'CREATE TABLE boards (id text PRIMARY KEY, org_id text NOT NULL)', down: 'DROP TABLE boards' }]
 await migrateUp(client, migrations) // on start
@@ -170,7 +170,7 @@ await migrateDown(client, migrations, 1) // roll the newest one back
 ## Testing
 
 ```ts
-import { checkTracker, factorixClient, fakeFactorix } from '@moxxylabs/factorix-plugin-sdk/testing'
+import { checkTracker, factorixClient, fakeFactorix } from '@moxxy/factorix-plugin-sdk/testing'
 
 const client = factorixClient(plugin)
 await checkTracker(client.tracker({ config: { site: 'https://acme.test' }, secrets: { token: 't' } }))
@@ -222,4 +222,4 @@ Limits today: a plugin provides a tracker, pages, settings, workflow blocks and 
 
 ## Publishing the SDK
 
-From the Factorix repository: `yarn workspace @moxxylabs/factorix-plugin-sdk release`. It builds `dist/` with its own `package.json` and publishes that folder. Inside the repository nothing is built: plugins read the SDK's sources.
+From the Factorix repository: `yarn workspace @moxxy/factorix-plugin-sdk release`. It builds `dist/` with its own `package.json` and publishes that folder. Inside the repository nothing is built: plugins read the SDK's sources.

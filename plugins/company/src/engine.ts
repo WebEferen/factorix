@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { type BlockAnswer, type BlockCall, type FactorixClient, FactorixError, type Member } from '@moxxylabs/factorix-plugin-sdk'
+import { type BlockAnswer, type BlockCall, type FactorixClient, FactorixError, type Member } from '@moxxy/factorix-plugin-sdk'
 import {
   type Assignee,
   agentPrompt,

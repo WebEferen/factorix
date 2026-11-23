@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto'
-import { type Agent, definePlugin, type Member, type PageContext, type Plugin, type TicketProject } from '@moxxylabs/factorix-plugin-sdk'
+import { type Agent, definePlugin, type Member, type PageContext, type Plugin, type TicketProject } from '@moxxy/factorix-plugin-sdk'
 import {
   type Actor,
   CASE_FINISHED,

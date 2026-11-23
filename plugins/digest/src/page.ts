@@ -1,4 +1,4 @@
-import type { Agent } from '@moxxylabs/factorix-plugin-sdk'
+import type { Agent } from '@moxxy/factorix-plugin-sdk'
 import type { DigestMemberContent } from './content'
 import { digestCopy, escapeHtml as esc, lineHtml, SECTIONS } from './copy'
 import { linksOf } from './facts'

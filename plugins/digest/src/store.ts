@@ -1,4 +1,4 @@
-import type { Migration } from '@moxxylabs/factorix-plugin-sdk'
+import type { Migration } from '@moxxy/factorix-plugin-sdk'
 import type { DigestContent } from './content'
 import type { DigestFacts } from './facts'
 import type { ScheduleTime } from './schedule'

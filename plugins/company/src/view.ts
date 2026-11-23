@@ -1,4 +1,4 @@
-import type { Agent, Member, TicketProject } from '@moxxylabs/factorix-plugin-sdk'
+import type { Agent, Member, TicketProject } from '@moxxy/factorix-plugin-sdk'
 import {
   type Assignee,
   type Case,

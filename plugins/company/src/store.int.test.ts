@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { migrateDown, migrateUp } from '@moxxylabs/factorix-plugin-sdk'
+import { migrateDown, migrateUp } from '@moxxy/factorix-plugin-sdk'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import type { Case, Process } from './model'

@@ -1,4 +1,4 @@
-import type { Activity, ActivityIssue } from '@moxxylabs/factorix-plugin-sdk'
+import type { Activity, ActivityIssue } from '@moxxy/factorix-plugin-sdk'
 
 export interface DigestTicket {
   identifier: string
