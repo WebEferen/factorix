@@ -1,6 +1,6 @@
 {
   "name": "@moxxy/factorix-plugin-sdk",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Build plugins for Factorix: trackers, pages, settings, and calls back into Factorix, served from your own server",
   "license": "MIT",
   "repository": {
