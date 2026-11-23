@@ -18,7 +18,8 @@ import { CircleAlert } from 'lucide-react'
 import { createContext, memo, useContext } from 'react'
 import { cn } from '../lib/format'
 import { Tooltip } from '../ui'
-import { BLOCK_ICONS, type BlockFlowNode, type BlockNames, CATEGORY_TONES, STEP_STATUS, summarizeBlock } from './blocks'
+import { type BlockFlowNode, type BlockNames, blockIcon, CATEGORY_TONES, STEP_STATUS, summarizeBlock } from './blocks'
+import { useBlockCatalog } from './catalog'
 
 export interface CanvasInfo {
   names: BlockNames
@@ -46,7 +47,8 @@ const STEP_BORDERS: Record<string, string> = {
 
 const BlockNode = memo(function BlockNode({ id, data, selected }: NodeProps<BlockFlowNode>) {
   const { names, problems, steps, connected } = useContext(CanvasContext)
-  const spec = blockSpec(data.type)
+  const catalog = useBlockCatalog()
+  const spec = blockSpec(data.type, catalog)
   if (!spec) return null
   const nodeProblems = problems.get(id)
   const step = steps?.get(id)
@@ -67,7 +69,7 @@ const BlockNode = memo(function BlockNode({ id, data, selected }: NodeProps<Bloc
       {isTriggerBlock(data.type) ? null : <Handle type="target" position={Position.Top} />}
       <div className="flex items-center gap-2 px-2.5 pt-2.5">
         <span className={cn('flex size-6 shrink-0 items-center justify-center rounded-md [&_svg]:size-3.5', CATEGORY_TONES[spec.category])}>
-          {BLOCK_ICONS[data.type]}
+          {blockIcon(data.type)}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold">{spec.title}</span>
         {nodeProblems && !step ? (
@@ -83,7 +85,7 @@ const BlockNode = memo(function BlockNode({ id, data, selected }: NodeProps<Bloc
           </Tooltip>
         ) : null}
       </div>
-      <div className="truncate px-2.5 pt-1 pb-2.5 text-xs text-ink-2">{summarizeBlock(data.type, data.config, names) || ' '}</div>
+      <div className="truncate px-2.5 pt-1 pb-2.5 text-xs text-ink-2">{summarizeBlock(data.type, data.config, names, catalog) || ' '}</div>
       {outputs.length > 1 ? (
         <div className="flex border-t border-divider">
           {outputs.map((output) => (

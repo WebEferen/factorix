@@ -9,6 +9,11 @@ export type WorkflowEvent =
   | { kind: 'label.added'; label: string }
   | { kind: 'agent.finished'; result: AgentResult }
   | { kind: 'merge_request'; event: MergeRequestEvent; url?: string | null }
+  /**
+   * From outside the tracker, like a Slack message or a plugin. It starts runs with no ticket. `filters` names the
+   * trigger's fields that narrow which events start it, for a plugin's trigger.
+   */
+  | { kind: 'external'; type: string; data: Record<string, string>; filters?: readonly string[] }
 
 type Config = Record<string, unknown>
 
@@ -36,8 +41,27 @@ export function triggerMatches(node: { type: string; config: Config }, event: Wo
       return config.result === event.result
     case 'trigger.merge_request':
       return event.kind === 'merge_request' && (blank(config.event) || config.event === event.event)
+    case 'trigger.slack.message':
+    case 'trigger.slack.mention': {
+      if (event.kind !== 'external' || event.type !== node.type || !same(config.connectionId, event.data.connectionId)) return false
+      const text = String(event.data.text ?? '').toLowerCase()
+      // 'any' and 'dm' are SLACK_ANYWHERE and SLACK_DIRECT. A trigger with no place set starts on nothing.
+      const place = config.channel === 'any' || (config.channel === 'dm' ? event.data.channelType === 'im' : config.channel === event.data.channel)
+      const from = Array.isArray(config.from) ? config.from : []
+      return (
+        place &&
+        (from.length === 0 || from.includes(event.data.user)) &&
+        (blank(config.contains) || text.includes(String(config.contains).trim().toLowerCase()))
+      )
+    }
     default:
-      return false
+      // A plugin's trigger: every one of its fields filled in has to match the event's value under the same key.
+      return (
+        event.kind === 'external' &&
+        event.type === node.type &&
+        node.type.startsWith('trigger.plugin.') &&
+        (event.filters ?? []).every((key) => blank(config[key]) || same(config[key], event.data[key]))
+      )
   }
 }
 

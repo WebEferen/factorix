@@ -103,6 +103,43 @@ describe('triggerMatches', () => {
   ] as const)('%s %j on %j is %s', (type, config, event, expected) => {
     expect(triggerMatches({ type, config }, event)).toBe(expected)
   })
+
+  it('reads a Slack message by connection, place, and text', () => {
+    const message = (data: Record<string, string>) =>
+      ({
+        kind: 'external',
+        type: 'trigger.slack.message',
+        data: { connectionId: 'c1', channel: 'C1', channelType: 'channel', text: 'Please Deploy it', ...data },
+      }) as const
+    const direct = message({ channel: 'D9', channelType: 'im' })
+    const slack = (config: Record<string, unknown>) => ({ type: 'trigger.slack.message', config: { connectionId: 'c1', ...config } })
+    expect(triggerMatches(slack({ channel: 'C1', contains: 'deploy' }), message({}))).toBe(true)
+    expect(triggerMatches(slack({ channel: 'C2' }), message({}))).toBe(false)
+    expect(triggerMatches(slack({ channel: 'C1', contains: 'rollback' }), message({}))).toBe(false)
+    expect(triggerMatches(slack({ channel: 'C1' }), message({ connectionId: 'c2' }))).toBe(false)
+    expect(triggerMatches({ type: 'trigger.slack.mention', config: { connectionId: 'c1', channel: 'any' } }, message({}))).toBe(false)
+
+    expect(triggerMatches(slack({}), message({}))).toBe(false)
+    expect(triggerMatches(slack({ channel: 'dm' }), direct)).toBe(true)
+    expect(triggerMatches(slack({ channel: 'dm' }), message({}))).toBe(false)
+    expect(triggerMatches(slack({ channel: 'C1' }), direct)).toBe(false)
+    expect(triggerMatches(slack({ channel: 'any' }), direct)).toBe(true)
+    expect(triggerMatches(slack({ channel: 'any' }), message({}))).toBe(true)
+
+    expect(triggerMatches(slack({ channel: 'C1', from: ['U7', 'U8'] }), message({ user: 'U8' }))).toBe(true)
+    expect(triggerMatches(slack({ channel: 'C1', from: ['U7'] }), message({ user: 'U8' }))).toBe(false)
+    expect(triggerMatches(slack({ channel: 'C1', from: [] }), message({ user: 'U8' }))).toBe(true)
+  })
+
+  it('reads a plugin event by the fields filled in', () => {
+    const type = 'trigger.plugin.0b9b1f52-6a4c-4c1e-9a43-8d5f3d6b2a10.case_finished'
+    const event = { kind: 'external', type, data: { process: 'p1', status: 'completed' }, filters: ['process', 'status', 'owner'] } as const
+    expect(triggerMatches({ type, config: {} }, event)).toBe(true)
+    expect(triggerMatches({ type, config: { process: 'p1', processLabel: 'Purchase request', status: '' } }, event)).toBe(true)
+    expect(triggerMatches({ type, config: { status: 'rejected' } }, event)).toBe(false)
+    expect(triggerMatches({ type, config: { owner: 'ada' } }, event)).toBe(false)
+    expect(triggerMatches({ type: 'trigger.manual', config: {} }, event)).toBe(false)
+  })
 })
 
 describe('waitMatches', () => {

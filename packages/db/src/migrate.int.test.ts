@@ -82,4 +82,40 @@ describe('migrations', () => {
       rmSync(before, { recursive: true })
     }
   })
+
+  it('move the Slack block to its own type in drafts, published copies, and runs', async () => {
+    const migrations = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations')
+    const before = mkdtempSync(join(tmpdir(), 'fx-migrations-'))
+    for (const file of readdirSync(migrations)) if (file < '0037') copyFileSync(join(migrations, file), join(before, file))
+    const name = `fx_test_${randomBytes(6).toString('hex')}`
+    const admin = createDb(inject('databaseUrl'), { max: 1 })
+    await admin.raw(`CREATE DATABASE ${name}`)
+    const url = new URL(inject('databaseUrl'))
+    url.pathname = `/${name}`
+    const db = createDb(url.toString(), { max: 2 })
+    try {
+      await migrate(db, before)
+      const [org] = await db('organizations').insert({ name: 'Acme', slug: 'acme' }).returning('id')
+      const node = (id: string, type: string) => ({ id, type, position: { x: 0, y: 0 }, config: { message: 'notify.send' } })
+      const definition = { nodes: [node('t', 'trigger.manual'), node('s', 'notify.send')], edges: [{ id: 'e', source: 't', target: 's' }] }
+      const empty = { nodes: [], edges: [] }
+      await db('workflows').insert([
+        { orgId: org.id, name: 'Tell', definition: json(definition), publishedDefinition: json(definition) },
+        { orgId: org.id, name: 'Empty', definition: json(empty) },
+      ])
+
+      expect(await migrate(db)).toContain('0037_slack_block.sql')
+      const [tell, untouched] = await db('workflows').orderBy('name', 'desc')
+      expect(tell.definition.nodes.map((item: { type: string }) => item.type)).toEqual(['trigger.manual', 'slack.send_message'])
+      expect(tell.definition.nodes[1].config).toEqual({ message: 'notify.send' })
+      expect(tell.definition.edges).toEqual(definition.edges)
+      expect(tell.publishedDefinition.nodes[1].type).toBe('slack.send_message')
+      expect(untouched).toMatchObject({ definition: empty, publishedDefinition: null })
+    } finally {
+      await db.destroy()
+      await admin.raw(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`)
+      await admin.destroy()
+      rmSync(before, { recursive: true })
+    }
+  })
 })

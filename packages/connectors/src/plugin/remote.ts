@@ -3,8 +3,12 @@ import {
   PLUGIN_PROTOCOL,
   PLUGIN_SIGNATURE_HEADER,
   PLUGIN_TIMESTAMP_HEADER,
+  type PluginBlock,
+  type PluginBlockAnswer,
+  type PluginBlockCall,
   type PluginConnection,
   type PluginManifest,
+  parsePluginBlockAnswer,
   parsePluginManifest,
   signPlugin,
 } from './protocol'
@@ -53,6 +57,26 @@ export async function callPlugin(endpoint: PluginEndpoint, method: string, param
 
 export async function fetchPluginManifest(endpoint: PluginEndpoint): Promise<PluginManifest> {
   return parsePluginManifest(await callPlugin(endpoint, 'manifest', [], null))
+}
+
+export async function runPluginBlock(endpoint: PluginEndpoint, block: PluginBlock, call: PluginBlockCall): Promise<PluginBlockAnswer> {
+  return parsePluginBlockAnswer(block, await callPlugin(endpoint, 'workflow.block', [call], null))
+}
+
+/** The choices of a `dynamic` field, as the plugin lists them for one organization. */
+export async function pluginBlockOptions(
+  endpoint: PluginEndpoint,
+  input: { block: string; field: string; org: { id: string } },
+): Promise<{ value: string; label: string }[]> {
+  const answer = await callPlugin(endpoint, 'workflow.options', [input], null)
+  if (!Array.isArray(answer)) throw new Error('The plugin listed the choices wrongly')
+  return answer
+    .slice(0, 500)
+    .flatMap((item: { value?: unknown; label?: unknown }) =>
+      typeof item?.value === 'string' && item.value.length <= 200
+        ? [{ value: item.value, label: String(item.label ?? item.value).slice(0, 200) }]
+        : [],
+    )
 }
 
 const TRACKER_METHODS = [

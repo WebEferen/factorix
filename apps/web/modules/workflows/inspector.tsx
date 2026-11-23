@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  type BlockCatalog,
   type BlockField,
   blockSpec,
   CONDITION_FIELDS,
@@ -16,10 +17,21 @@ import {
 import { Braces, CircleAlert, Plus, Trash2, X } from 'lucide-react'
 import Link from 'next/link'
 import { type KeyboardEvent, type ReactNode, type RefObject, useId, useMemo, useRef, useState } from 'react'
-import { useAgents, useConnections, useIssueFilterSpecs, useNotificationChannels, useProjects, useRuntimes, useSkills } from '../lib/data'
+import {
+  useAgents,
+  useConnections,
+  useIssueFilterSpecs,
+  useNotificationChannels,
+  useNotificationPeople,
+  usePluginFieldOptions,
+  useProjects,
+  useRuntimes,
+  useSkills,
+} from '../lib/data'
 import { cn } from '../lib/format'
 import { Button, Field, Input, Menu, MenuContent, MenuItem, MenuTrigger, type Option, Select, Textarea, Toggle } from '../ui'
-import { BLOCK_ICONS, CATEGORY_TONES } from './blocks'
+import { blockIcon, CATEGORY_TONES } from './blocks'
+import { useBlockCatalog } from './catalog'
 
 const NONE = '__none__'
 
@@ -70,7 +82,7 @@ interface Variable {
   label: string
 }
 
-function upstreamVariables(nodeId: string, definition: WorkflowDefinition): Variable[] {
+function upstreamVariables(nodeId: string, definition: WorkflowDefinition, catalog: BlockCatalog): Variable[] {
   const seen = new Set<string>()
   const walk = (id: string) => {
     for (const edge of definition.edges) {
@@ -84,7 +96,7 @@ function upstreamVariables(nodeId: string, definition: WorkflowDefinition): Vari
   return definition.nodes
     .filter((node) => seen.has(node.id))
     .flatMap((node) => {
-      const spec = blockSpec(node.type)
+      const spec = blockSpec(node.type, catalog)
       return (spec?.provides ?? [])
         .filter((item) => !item.when || item.when.in.includes(String(node.config[item.when.key] ?? '')))
         .map((item) => ({ path: `steps.${node.id}.${item.key}`, label: `${spec?.title}: ${item.label}` }))
@@ -252,23 +264,122 @@ function ChannelField({
   const { data, error, isLoading } = useNotificationChannels(connectionId || null)
   const value = String(config.channel ?? '')
   const channels = data?.channels ?? []
-  const options = keepCurrent(
-    channels.map((channel) => ({ value: channel.id, label: `#${channel.name}`, hint: channel.private ? 'Private' : undefined })),
-    value,
-    config.channelName ? `#${config.channelName}` : value,
+  const places = field.options ?? []
+  const options = withNone(
+    keepCurrent(
+      [
+        ...places.map((place) => ({ value: place.value, label: place.label })),
+        ...channels.map((channel) => ({ value: channel.id, label: `#${channel.name}`, hint: channel.private ? 'Private' : undefined })),
+      ],
+      value,
+      config.channelName ? `#${config.channelName}` : value,
+    ),
+    field.required,
+    'Any channel',
   )
   return (
     <Field
       label={field.label}
       error={error ? `Could not list channels: ${(error as Error).message}` : undefined}
-      hint={connectionId ? 'Private channels show up after you invite the bot to them.' : 'Pick a connection first.'}
+      hint={
+        connectionId
+          ? [field.hint, 'Private channels show up after you invite the bot to them.'].filter(Boolean).join(' ')
+          : 'Pick a connection first.'
+      }
     >
       <Select
-        value={value}
+        value={value || (field.required ? '' : NONE)}
         disabled={!connectionId}
         placeholder={isLoading ? 'Loading channels' : 'Select a channel'}
         options={options}
-        onChange={(channel) => onConfig({ channel, channelName: channels.find((item) => item.id === channel)?.name ?? config.channelName })}
+        onChange={(channel) =>
+          channel === NONE
+            ? onConfig({ channel: undefined, channelName: undefined })
+            : onConfig({
+                channel,
+                channelName:
+                  channels.find((item) => item.id === channel)?.name ??
+                  (places.some((place) => place.value === channel) ? undefined : config.channelName),
+              })
+        }
+      />
+    </Field>
+  )
+}
+
+/** People a trigger starts on. Their names sit beside the ids, so the block's summary reads without asking Slack. */
+function PeopleField({
+  field,
+  connectionId,
+  config,
+  onConfig,
+}: {
+  field: BlockField
+  connectionId: string
+  config: Record<string, unknown>
+  onConfig: (patch: Record<string, unknown>) => void
+}) {
+  const { data, error, isLoading } = useNotificationPeople(connectionId || null)
+  const people = data?.people ?? []
+  const picked = Array.isArray(config[field.key]) ? (config[field.key] as unknown[]).map(String) : []
+  const names = Array.isArray(config[`${field.key}Names`]) ? (config[`${field.key}Names`] as unknown[]).map(String) : []
+  const nameOf = (id: string) => people.find((person) => person.id === id)?.name ?? names[picked.indexOf(id)] ?? id
+  const update = (ids: string[]) =>
+    onConfig({ [field.key]: ids.length > 0 ? ids : undefined, [`${field.key}Names`]: ids.length > 0 ? ids.map(nameOf) : undefined })
+  return (
+    <Field
+      label={field.label}
+      error={error ? `Could not list people: ${(error as Error).message}` : undefined}
+      hint={connectionId ? field.hint : 'Pick a connection first.'}
+    >
+      <div className="flex flex-col gap-1.5">
+        {picked.map((id) => (
+          <div key={id} className="flex items-center gap-1.5">
+            <span className="min-w-0 flex-1 truncate text-sm text-ink">{nameOf(id)}</span>
+            <Button variant="ghost" size="icon" aria-label={`Remove ${nameOf(id)}`} onClick={() => update(picked.filter((item) => item !== id))}>
+              <X />
+            </Button>
+          </div>
+        ))}
+        <Select
+          value=""
+          disabled={!connectionId}
+          placeholder={isLoading ? 'Loading people' : picked.length > 0 ? 'Add another person' : 'Anyone'}
+          options={people.filter((person) => !picked.includes(person.id)).map((person) => ({ value: person.id, label: person.name }))}
+          onChange={(id) => update([...picked, id])}
+        />
+      </div>
+    </Field>
+  )
+}
+
+/** A plugin's field whose choices the plugin lists per organization. The label is kept beside the value for the block's summary. */
+function PluginSelectField({
+  field,
+  type,
+  config,
+  onConfig,
+}: {
+  field: BlockField
+  type: string
+  config: Record<string, unknown>
+  onConfig: (patch: Record<string, unknown>) => void
+}) {
+  const { data, error, isLoading } = usePluginFieldOptions(type, field.key)
+  const value = String(config[field.key] ?? '')
+  const listed = data?.options ?? []
+  const labelKey = `${field.key}Label`
+  return (
+    <Field label={field.label} hint={field.hint} error={error ? `Could not list the choices: ${(error as Error).message}` : undefined}>
+      <Select
+        value={value || NONE}
+        placeholder={isLoading ? 'Loading' : 'Select'}
+        options={keepCurrent(withNone(listed, field.required), value, String(config[labelKey] ?? value))}
+        onChange={(next) =>
+          next === NONE
+            ? onConfig({ [field.key]: undefined, [labelKey]: undefined })
+            : onConfig({ [field.key]: next, [labelKey]: listed.find((option) => option.value === next)?.label ?? config[labelKey] })
+        }
       />
     </Field>
   )
@@ -358,10 +469,14 @@ function ConfigField({
   const { data: skills } = useSkills()
   const { data: runtimes } = useRuntimes()
   const { statuses, labels } = useTrackerOptions(projectId)
+  const catalog = useBlockCatalog()
   const raw = node.config[field.key]
   const value = raw === undefined || raw === null ? '' : String(raw)
   const set = (next: unknown) => onConfig({ [field.key]: next })
-  const variables = useMemo<Variable[]>(() => [...WORKFLOW_VARIABLES, ...upstreamVariables(node.id, definition)], [node.id, definition])
+  const variables = useMemo<Variable[]>(
+    () => [...WORKFLOW_VARIABLES, ...upstreamVariables(node.id, definition, catalog)],
+    [node.id, definition, catalog],
+  )
   const pick = (next: string) => set(next === NONE ? undefined : next)
 
   switch (field.kind) {
@@ -373,6 +488,8 @@ function ConfigField({
       return <RulesField rules={(raw ?? []) as Rule[]} onChange={set} statuses={statuses} labels={labels} />
     case 'channel':
       return <ChannelField field={field} connectionId={String(node.config.connectionId ?? '')} config={node.config} onConfig={onConfig} />
+    case 'people':
+      return <PeopleField field={field} connectionId={String(node.config.connectionId ?? '')} config={node.config} onConfig={onConfig} />
     case 'number':
       return (
         <Field label={field.label} hint={field.hint}>
@@ -398,6 +515,7 @@ function ConfigField({
         </Field>
       )
     case 'select':
+      if (field.dynamic) return <PluginSelectField field={field} type={node.type} config={node.config} onConfig={onConfig} />
       return (
         <Field label={field.label} hint={field.hint}>
           <Select value={value} options={withNone(field.options ?? [], field.required || field.initial !== undefined)} onChange={pick} />
@@ -492,14 +610,16 @@ function ConfigField({
         </Field>
       )
     case 'connection': {
-      const usable = (connections?.connections ?? []).filter((connection) => (NOTIFICATION_KINDS as readonly string[]).includes(connection.kind))
+      const owner = blockSpec(node.type, catalog)?.owner
+      const kinds: readonly string[] = owner?.kind === 'integration' ? [owner.id] : NOTIFICATION_KINDS
+      const usable = (connections?.connections ?? []).filter((connection) => kinds.includes(connection.kind))
       return (
         <Field
           label={field.label}
           hint={
             usable.length === 0 ? (
               <>
-                None yet. Add a Slack connection in{' '}
+                None yet. Add a {owner?.name ?? 'Slack'} connection in{' '}
                 <Link href="/settings/connections" className="text-link hover:underline">
                   Settings
                 </Link>
@@ -560,18 +680,18 @@ export function BlockInspector({
   onConfig: (patch: Record<string, unknown>) => void
   onDelete: () => void
 }) {
-  const spec = blockSpec(node.type)
+  const spec = blockSpec(node.type, useBlockCatalog())
   if (!spec) return null
   const fields = spec.fields.filter((field) => !field.when || field.when.in.includes(String(node.config[field.when.key] ?? '')))
   return (
     <fieldset disabled={readOnly} className="flex min-w-0 flex-col gap-4 p-4">
       <div className="flex items-start gap-2.5">
         <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-md [&_svg]:size-4', CATEGORY_TONES[spec.category])}>
-          {BLOCK_ICONS[node.type]}
+          {blockIcon(node.type)}
         </span>
         <div className="min-w-0">
           <h2 className="text-sm font-semibold">{spec.title}</h2>
-          <p className="text-xs text-ink-2">{spec.description}</p>
+          <p className="text-xs text-ink-2">{spec.owner?.kind === 'plugin' ? `${spec.description} From ${spec.owner.name}.` : spec.description}</p>
         </div>
       </div>
       <ProblemList messages={problems} />

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export type BlockCategory = 'trigger' | 'logic' | 'agent' | 'tracker' | 'notify'
+export type BlockCategory = 'trigger' | 'logic' | 'agent' | 'tracker' | 'integration' | 'plugin'
 
 export interface BlockOutput {
   id: string
@@ -23,6 +23,7 @@ export type BlockFieldKind =
   | 'label'
   | 'connection'
   | 'channel'
+  | 'people'
   | 'rules'
 
 export interface BlockField {
@@ -32,7 +33,13 @@ export interface BlockField {
   required?: boolean
   placeholder?: string
   hint?: string
-  options?: { value: string; label: string }[]
+  /**
+   * `needsTicket` marks a choice that works on the run's ticket, so no ticketless trigger may lead to a block that makes it.
+   * A channel field offers these beside the connection's channels.
+   */
+  options?: { value: string; label: string; needsTicket?: boolean }[]
+  /** The options come from a plugin, per organization, so they are not checked here. */
+  dynamic?: boolean
   /** Starting value for a new block. */
   initial?: unknown
   min?: number
@@ -49,12 +56,62 @@ export interface BlockSpec {
   outputs: BlockOutput[]
   /** What the block hands to later blocks, listed as variables. `when` limits one to certain values of a field. */
   provides?: { key: string; label: string; when?: { key: string; in: string[] } }[]
+  /**
+   * The integration or plugin a block belongs to. The editor lists it under that name, and only while the organization
+   * has it: a connection of that kind for an integration, the plugin turned on for a plugin.
+   */
+  owner?: { kind: 'integration' | 'plugin'; id: string; name: string }
+  /** A trigger that starts a run with no ticket, like a message in a chat. */
+  ticketless?: boolean
+  /** A block that works on the run's ticket, so no ticketless trigger may lead to it. */
+  needsTicket?: boolean
+}
+
+/** Blocks the organization can add beyond Factorix's own: those of its integrations and plugins. */
+export type BlockCatalog = Record<string, BlockSpec>
+
+/** A plugin's block is `plugin.<plugin id>.<block key>`, so a workflow names the plugin it depends on. */
+export const PLUGIN_BLOCK_TYPE = /^plugin\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.([a-z][a-z0-9_]{0,39})$/
+
+export function pluginBlockType(pluginId: string, key: string): string {
+  return `plugin.${pluginId}.${key}`
+}
+
+export function parsePluginBlockType(type: string): { pluginId: string; key: string } | null {
+  const match = PLUGIN_BLOCK_TYPE.exec(type)
+  return match?.[1] && match[2] ? { pluginId: match[1], key: match[2] } : null
+}
+
+/** A plugin's trigger is `trigger.plugin.<plugin id>.<key>`, and starts a run with no ticket. */
+export const PLUGIN_TRIGGER_TYPE = /^trigger\.plugin\.([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.([a-z][a-z0-9_]{0,39})$/
+
+export function pluginTriggerType(pluginId: string, key: string): string {
+  return `trigger.plugin.${pluginId}.${key}`
+}
+
+export function parsePluginTriggerType(type: string): { pluginId: string; key: string } | null {
+  const match = PLUGIN_TRIGGER_TYPE.exec(type)
+  return match?.[1] && match[2] ? { pluginId: match[1], key: match[2] } : null
 }
 
 const NEXT: BlockOutput = { id: 'next', label: 'Next' }
 const FAILED: BlockOutput = { id: 'failed', label: 'Failed', failure: true }
 
 const STATUS_FIELD_HINT = 'Leave empty for any status.'
+
+const SLACK = { kind: 'integration', id: 'slack', name: 'Slack' } as const
+/** Values a Slack channel field takes beside a channel's id. Slack's ids are upper case, so they never collide. */
+export const SLACK_DIRECT = 'dm'
+export const SLACK_ANYWHERE = 'any'
+export const SLACK_REPLY = 'reply'
+const SLACK_PLACE_HINT = 'Pick one channel unless the workflow is meant for everyone who can reach the app.'
+const SLACK_FROM = { key: 'from', label: 'From', kind: 'people', hint: 'Leave empty for anyone who can post there.' } as const
+const SLACK_MESSAGE = [
+  { key: 'text', label: 'Message' },
+  { key: 'user', label: 'Author, as a Slack ID' },
+  { key: 'channel', label: 'Channel ID' },
+  { key: 'thread', label: 'Thread to reply in' },
+]
 
 export const WORKFLOW_BLOCKS = {
   'trigger.manual': {
@@ -173,6 +230,7 @@ export const WORKFLOW_BLOCKS = {
   },
   'logic.condition': {
     category: 'logic',
+    needsTicket: true,
     title: 'Condition',
     description: 'Splits the flow based on the ticket.',
     fields: [
@@ -216,6 +274,7 @@ export const WORKFLOW_BLOCKS = {
   },
   'logic.wait_for': {
     category: 'logic',
+    needsTicket: true,
     title: 'Wait for event',
     description: 'Pauses this branch until something happens to the ticket.',
     fields: [
@@ -253,6 +312,7 @@ export const WORKFLOW_BLOCKS = {
   },
   'agent.run': {
     category: 'agent',
+    needsTicket: true,
     title: 'Run agent',
     description: 'Hands the ticket to an agent and continues when the work is done.',
     fields: [{ key: 'agentId', label: 'Agent', kind: 'agent', hint: "Leave empty for the project's default engineer." }],
@@ -262,9 +322,15 @@ export const WORKFLOW_BLOCKS = {
   'agent.prompt': {
     category: 'agent',
     title: 'Ask agent',
-    description: 'Gives an agent a prompt about the ticket and continues with its answer. The agent reads the code and changes nothing.',
+    description: 'Gives an agent a prompt and continues with its answer. The agent reads the code and changes nothing.',
     fields: [
       { key: 'agentId', label: 'Agent', kind: 'agent', hint: "Leave empty for the ticket's agent, or the project's default engineer." },
+      {
+        key: 'projectId',
+        label: 'Project',
+        kind: 'project',
+        hint: "Whose code the agent reads when the run has no ticket. Leave empty for the workflow's project, or for no code at all.",
+      },
       {
         key: 'prompt',
         label: 'Prompt',
@@ -281,7 +347,7 @@ export const WORKFLOW_BLOCKS = {
         initial: 'comment',
         required: true,
         options: [
-          { value: 'comment', label: 'Post it on the ticket' },
+          { value: 'comment', label: 'Post it on the ticket', needsTicket: true },
           { value: 'none', label: 'Only pass it to later blocks' },
         ],
       },
@@ -295,6 +361,7 @@ export const WORKFLOW_BLOCKS = {
   },
   'tracker.comment': {
     category: 'tracker',
+    needsTicket: true,
     title: 'Comment on ticket',
     description: 'Posts a comment on the ticket in the tracker.',
     fields: [{ key: 'body', label: 'Comment', kind: 'longTemplate', required: true, placeholder: 'Picked up {{issue.identifier}}.' }],
@@ -302,6 +369,7 @@ export const WORKFLOW_BLOCKS = {
   },
   'tracker.set_status': {
     category: 'tracker',
+    needsTicket: true,
     title: 'Set status',
     description: 'Moves the ticket to a status.',
     fields: [{ key: 'status', label: 'Status', kind: 'status', required: true }],
@@ -309,6 +377,7 @@ export const WORKFLOW_BLOCKS = {
   },
   'tracker.label': {
     category: 'tracker',
+    needsTicket: true,
     title: 'Change labels',
     description: 'Adds or removes a label on the ticket.',
     fields: [
@@ -356,13 +425,69 @@ export const WORKFLOW_BLOCKS = {
       { key: 'url', label: 'Ticket link' },
     ],
   },
-  'notify.send': {
-    category: 'notify',
-    title: 'Send notification',
-    description: 'Sends a message to a channel, like Slack.',
+  'trigger.slack.message': {
+    category: 'trigger',
+    owner: SLACK,
+    ticketless: true,
+    title: 'Message posted',
+    description:
+      'Starts when someone posts in a Slack channel the app is in, or writes to it directly. The Slack connection needs its events set up.',
     fields: [
       { key: 'connectionId', label: 'Connection', kind: 'connection', required: true },
-      { key: 'channel', label: 'Channel', kind: 'channel', required: true },
+      {
+        key: 'channel',
+        label: 'Where',
+        kind: 'channel',
+        required: true,
+        hint: SLACK_PLACE_HINT,
+        options: [
+          { value: SLACK_DIRECT, label: 'Direct messages to the app' },
+          { value: SLACK_ANYWHERE, label: 'Anywhere the app is' },
+        ],
+      },
+      SLACK_FROM,
+      { key: 'contains', label: 'Containing', kind: 'text', placeholder: 'deploy', hint: 'Leave empty for any message.' },
+    ],
+    outputs: [NEXT],
+    provides: SLACK_MESSAGE,
+  },
+  'trigger.slack.mention': {
+    category: 'trigger',
+    owner: SLACK,
+    ticketless: true,
+    title: 'App mentioned',
+    description:
+      'Starts when someone mentions the Slack app in a channel. A direct message to the app is no mention: Message posted starts on those. The Slack connection needs its events set up.',
+    fields: [
+      { key: 'connectionId', label: 'Connection', kind: 'connection', required: true },
+      {
+        key: 'channel',
+        label: 'Where',
+        kind: 'channel',
+        required: true,
+        hint: SLACK_PLACE_HINT,
+        options: [{ value: SLACK_ANYWHERE, label: 'Any channel the app is in' }],
+      },
+      SLACK_FROM,
+    ],
+    outputs: [NEXT],
+    provides: SLACK_MESSAGE,
+  },
+  'slack.send_message': {
+    category: 'integration',
+    owner: SLACK,
+    title: 'Send message',
+    description: 'Posts a message to a Slack channel, or answers the Slack message that started the run.',
+    fields: [
+      { key: 'connectionId', label: 'Connection', kind: 'connection', required: true },
+      {
+        key: 'channel',
+        label: 'Channel',
+        kind: 'channel',
+        required: true,
+        options: [{ value: SLACK_REPLY, label: 'Reply to the message that started the run' }],
+        hint: 'A reply goes in the thread of a channel message, and straight below a direct message.',
+      },
       {
         key: 'message',
         label: 'Message',
@@ -370,9 +495,18 @@ export const WORKFLOW_BLOCKS = {
         required: true,
         placeholder: '**{{issue.identifier}}** {{issue.title}}\n{{issue.url}}',
       },
+      {
+        key: 'thread',
+        label: 'Reply in thread',
+        kind: 'template',
+        hint: 'Leave empty to post a new message, or a reply in its own thread. A Slack trigger provides its thread.',
+      },
     ],
     outputs: [NEXT, FAILED],
-    provides: [{ key: 'url', label: 'Message link' }],
+    provides: [
+      { key: 'url', label: 'Message link' },
+      { key: 'thread', label: 'Thread to reply in' },
+    ],
   },
 } as const satisfies Record<string, BlockSpec>
 
@@ -385,20 +519,29 @@ export const BLOCK_CATEGORIES: { id: BlockCategory; label: string }[] = [
   { id: 'logic', label: 'Logic' },
   { id: 'agent', label: 'Agents' },
   { id: 'tracker', label: 'Tickets' },
-  { id: 'notify', label: 'Notifications' },
 ]
 
-export function blockSpec(type: string): BlockSpec | undefined {
-  return Object.hasOwn(WORKFLOW_BLOCKS, type) ? (WORKFLOW_BLOCKS as Record<string, BlockSpec>)[type] : undefined
+/** The blocks of the integrations an organization has connected, by connection kind. */
+export function integrationBlocks(kinds: readonly string[]): BlockCatalog {
+  return Object.fromEntries(
+    Object.entries(WORKFLOW_BLOCKS as Record<string, BlockSpec>).filter(
+      ([, spec]) => spec.owner?.kind === 'integration' && kinds.includes(spec.owner.id),
+    ),
+  )
+}
+
+export function blockSpec(type: string, extra: BlockCatalog = {}): BlockSpec | undefined {
+  if (Object.hasOwn(WORKFLOW_BLOCKS, type)) return (WORKFLOW_BLOCKS as Record<string, BlockSpec>)[type]
+  return Object.hasOwn(extra, type) ? extra[type] : undefined
 }
 
 export function isTriggerBlock(type: string): boolean {
-  return blockSpec(type)?.category === 'trigger'
+  return blockSpec(type)?.category === 'trigger' || PLUGIN_TRIGGER_TYPE.test(type)
 }
 
-export function initialBlockConfig(type: string): Record<string, unknown> {
+export function initialBlockConfig(type: string, extra: BlockCatalog = {}): Record<string, unknown> {
   const config: Record<string, unknown> = {}
-  for (const field of blockSpec(type)?.fields ?? []) if (field.initial !== undefined) config[field.key] = field.initial
+  for (const field of blockSpec(type, extra)?.fields ?? []) if (field.initial !== undefined) config[field.key] = field.initial
   return config
 }
 
@@ -467,7 +610,11 @@ export const workflowDefinition = z.object({
     .array(
       z.object({
         id: z.string().regex(NODE_ID),
-        type: z.enum(BLOCK_TYPES as [BlockType, ...BlockType[]]),
+        type: z.union([
+          z.enum(BLOCK_TYPES as [BlockType, ...BlockType[]]),
+          z.string().regex(PLUGIN_BLOCK_TYPE),
+          z.string().regex(PLUGIN_TRIGGER_TYPE),
+        ]),
         position: z.object({ x: z.number(), y: z.number() }),
         config: z.record(z.string(), z.unknown()),
       }),
@@ -495,6 +642,7 @@ export interface WorkflowIssue {
 }
 
 export const MAX_TEMPLATE_LENGTH = 4000
+const MAX_PEOPLE = 100
 
 function fieldApplies(field: BlockField, config: Record<string, unknown>): boolean {
   return !field.when || field.when.in.includes(String(config[field.when.key] ?? ''))
@@ -515,8 +663,11 @@ function fieldIssue(field: BlockField, config: Record<string, unknown>): string 
     if (field.min !== undefined && number < field.min) return `${field.label} must be at least ${field.min}`
     if (field.max !== undefined && number > field.max) return `${field.label} must be at most ${field.max}`
   }
-  if (field.options && !field.options.some((option) => option.value === String(value))) return `${field.label} has an unknown value`
+  if (field.options && !field.dynamic && field.kind !== 'channel' && !field.options.some((option) => option.value === String(value)))
+    return `${field.label} has an unknown value`
   if (typeof value === 'string' && value.length > MAX_TEMPLATE_LENGTH) return `${field.label} is too long`
+  if (field.kind === 'people' && (!Array.isArray(value) || value.length > MAX_PEOPLE || value.some((item) => typeof item !== 'string')))
+    return `${field.label} has an unknown value`
   if (field.kind === 'rules') {
     const rules = value as { field?: string; operator?: string; value?: string }[]
     for (const rule of rules) {
@@ -541,6 +692,38 @@ function hasCycle(definition: WorkflowDefinition): boolean {
     return found
   }
   return definition.nodes.some((node) => visit(node.id))
+}
+
+/** A run started by a ticketless trigger has no ticket, so nothing it can reach may need one. */
+function ticketIssues(definition: WorkflowDefinition, extra: BlockCatalog): WorkflowIssue[] {
+  const issues: WorkflowIssue[] = []
+  const flagged = new Set<string>()
+  for (const trigger of definition.nodes) {
+    const spec = blockSpec(trigger.type, extra)
+    if (!spec?.ticketless) continue
+    const reached = new Set<string>()
+    const queue = [trigger.id]
+    while (queue.length > 0) {
+      const id = queue.shift() as string
+      for (const edge of definition.edges) {
+        if (edge.source !== id || reached.has(edge.target)) continue
+        reached.add(edge.target)
+        queue.push(edge.target)
+      }
+    }
+    for (const node of definition.nodes) {
+      const needs = blockSpec(node.type, extra)
+      if (!reached.has(node.id) || !needs || flagged.has(node.id)) continue
+      const choice = needs.fields
+        .filter((field) => fieldApplies(field, node.config))
+        .flatMap((field) => field.options?.filter((option) => option.needsTicket && option.value === String(node.config[field.key])) ?? [])[0]
+      if (!needs.needsTicket && !choice) continue
+      flagged.add(node.id)
+      const what = choice ? `${choice.label} needs a ticket` : `${needs.title} works on a ticket`
+      issues.push({ nodeId: node.id, message: `${what}, and ${spec.title} starts without one` })
+    }
+  }
+  return issues
 }
 
 const DAY_MS = 86_400_000
@@ -587,7 +770,7 @@ export function nextScheduleTime(config: Record<string, unknown>, after: Date): 
 }
 
 /** Saving a draft is always allowed. This is what has to hold before a workflow can be published. */
-export function validateWorkflow(definition: WorkflowDefinition): WorkflowIssue[] {
+export function validateWorkflow(definition: WorkflowDefinition, extra: BlockCatalog = {}): WorkflowIssue[] {
   const issues: WorkflowIssue[] = []
   const nodes = new Map(definition.nodes.map((node) => [node.id, node]))
   if (nodes.size !== definition.nodes.length) issues.push({ nodeId: null, message: 'Two blocks share an id' })
@@ -603,15 +786,19 @@ export function validateWorkflow(definition: WorkflowDefinition): WorkflowIssue[
       continue
     }
     seen.add(key)
-    if (!blockSpec(source.type)?.outputs.some((output) => output.id === edge.sourceHandle))
+    if (!blockSpec(source.type, extra)?.outputs.some((output) => output.id === edge.sourceHandle))
       issues.push({ nodeId: source.id, message: 'A connection leaves through an unknown output' })
     if (isTriggerBlock(target.type)) issues.push({ nodeId: target.id, message: 'Nothing can lead into a starting block' })
   }
   if (hasCycle(definition)) issues.push({ nodeId: null, message: 'Connections cannot loop back on themselves' })
+  issues.push(...ticketIssues(definition, extra))
 
   for (const node of definition.nodes) {
-    const spec = blockSpec(node.type)
-    if (!spec) continue
+    const spec = blockSpec(node.type, extra)
+    if (!spec) {
+      issues.push({ nodeId: node.id, message: 'The plugin behind this block is off, or no longer offers it' })
+      continue
+    }
     const trigger = spec.category === 'trigger'
     if (trigger && !definition.edges.some((edge) => edge.source === node.id))
       issues.push({ nodeId: node.id, message: 'Nothing happens after this block' })
@@ -659,7 +846,7 @@ export interface WorkflowDto {
   publishedVersion: number
   publishedAt: string | null
   hasUnpublishedChanges: boolean
-  triggers: BlockType[]
+  triggers: string[]
   runCount: number
   lastRunAt: string | null
   lastRunStatus: WorkflowRunStatus | null
@@ -684,9 +871,10 @@ export interface WorkflowRunDto {
   workflowId: string
   workflowName: string
   workflowVersion: number
-  issueId: string
-  issueIdentifier: string
-  issueTitle: string
+  /** Null when a ticketless trigger started the run. */
+  issueId: string | null
+  issueIdentifier: string | null
+  issueTitle: string | null
   status: WorkflowRunStatus
   trigger: { nodeId: string; event: { kind: string } & Record<string, unknown> }
   startedByName: string | null
@@ -704,4 +892,9 @@ export interface NotificationChannelDto {
   id: string
   name: string
   private: boolean
+}
+
+export interface NotificationPersonDto {
+  id: string
+  name: string
 }

@@ -105,6 +105,8 @@ const members = await fx.members(orgId) // needs members:read
 const projects = await fx.projects(orgId) // needs tickets:write
 const ticket = await fx.createTicket(orgId, { projectId: projects[0].id, title: 'Order a laptop' })
 const now = await fx.getTicket(orgId, ticket.id) // now.closed once its status is completed or canceled
+await fx.finishStep(orgId, { runId, nodeId, handle: 'sent' }) // needs workflows:blocks, ends a step a block held
+await fx.fireTrigger(orgId, { trigger: 'reacted', data: { who: 'Kim' }, eventId }) // needs workflows:blocks, starts workflows built on it
 ```
 
 What a plugin may ask beyond its own settings is a permission it names in `definePlugin({ permissions })`:
@@ -113,10 +115,43 @@ What a plugin may ask beyond its own settings is a permission it names in `defin
 - `agents:run`: the organization's agents, and runs of them with no ticket and no repository. A run gets your prompt and answers in the shape of `outputSchema`, a JSON Schema of an object. Claude and Codex both fill it, so close every object with `additionalProperties: false` and list every property under `required`. At most three of a plugin's runs are unfinished at once.
 - `members:read`: the organization's people and agents, with their names, handles, roles, and whether each is active. No email addresses.
 - `tickets:write`: the names of the organization's projects, and tickets you create in them, in whatever tracker each project follows. Give `agentId` to hand the ticket to an agent. You read back only tickets you created.
+- `workflows:blocks`: blocks and triggers in the organization's workflows, and what each block is given when it runs. A trigger starts workflows with no ticket, and each filled-in field of it has to equal the event's value under the same key. `definePlugin` adds it for a plugin with `blocks` or `triggers`.
 
 An organization's admin sees these when turning the plugin on, and Factorix answers only what that admin allowed. A permission a newer version of your plugin adds is refused until the admin saves the plugin's settings again. A refused call throws `FactorixError`, whose `status` is 403 for a permission that was not allowed, 404 when the organization has not turned the plugin on or the run is not this plugin's, 409 for a disabled agent or too many runs, and 401 for a wrong secret.
 
 Text in the activity comes from trackers and people. When you put it into a prompt, mark it as data, as `plugins/digest` does, since the agent follows what its prompt asks.
+
+## Workflow blocks
+
+A block is a step an organization's workflows can take, run by your plugin:
+
+```ts
+definePlugin({
+  name: 'Chat',
+  version: '1.0.0',
+  blocks: [
+    {
+      key: 'post',
+      title: 'Post to chat',
+      description: 'Posts a message to a channel.',
+      fields: [
+        { key: 'channel', label: 'Channel', kind: 'select', dynamic: true, required: true },
+        { key: 'text', label: 'Message', kind: 'template', required: true },
+      ],
+      outputs: [
+        { id: 'sent', label: 'Sent' },
+        { id: 'muted', label: 'Muted' },
+      ],
+      async run(call) {
+        return { handle: 'sent', output: { ts: await post(call.config.channel, call.config.text) } }
+      },
+      options: async ({ org }) => listChannels(org.id),
+    },
+  ],
+})
+```
+
+`call.config` holds the block's fields with `{{...}}` placeholders already filled. A `dynamic` select gets its choices from `options`. A block leaves through the output it names, the first by default, or through `failed` when `run` throws. `output` reaches later blocks as `{{steps.<block id>.<key>}}`. Slow work answers `{ wait: true }` and calls `finishStep` with `call.run.id` and `call.nodeId` once done, using `call.plugin.id` as the `pluginId`. A held step fails after seven days without word.
 
 ## Your own tables
 
@@ -139,6 +174,7 @@ import { checkTracker, factorixClient, fakeFactorix } from '@moxxylabs/factorix-
 
 const client = factorixClient(plugin)
 await checkTracker(client.tracker({ config: { site: 'https://acme.test' }, secrets: { token: 't' } }))
+expect(await client.runBlock('post', { config: { channel: 'C1', text: 'Hi' } })).toEqual({ handle: 'sent', output: { ts: '1.5' } })
 expect((await client.openPage('reports')).status).toBe(200)
 expect((await client.openPage('notes', { account: { id: 'a', name: 'Kim', role: 'admin' } }, { form: { note: 'hi' } })).status).toBe(303)
 
@@ -161,7 +197,7 @@ Factorix to plugin, `POST <address>`:
 { "protocol": 1, "method": "tracker.listTeams", "params": [], "connection": { "id": "…", "config": {}, "secrets": {} } }
 ```
 
-The answer is `{ "result": … }`, or `{ "error": { "message": "…" } }` with a status of 400 or above. `manifest` is the one method with no connection.
+The answer is `{ "result": … }`, or `{ "error": { "message": "…" } }` with a status of 400 or above. `manifest`, `workflow.block`, and `workflow.options` come with no connection. `workflow.block` has the block's call as its one param and answers `{ "handle", "output" }` or `{ "wait": true }`. `workflow.options` has `{ "block", "field", "org" }` and answers `[{ "value", "label" }]`.
 
 The manifest names what the plugin asks of Factorix as `"permissions": ["activity:read", "agents:run"]`.
 
@@ -177,10 +213,12 @@ Plugin to Factorix, each signed the same way:
 - `POST <factorix>/webhooks/plugins/<pluginId>/projects` with `{ "orgId" }`, answered with `{ "projects" }`. Needs `tickets:write`.
 - `POST <factorix>/webhooks/plugins/<pluginId>/tickets` with `{ "orgId", "projectId", "title", "description", "priority", "agentId" }`, answered with `{ "ticket" }`. Needs `tickets:write`.
 - `POST <factorix>/webhooks/plugins/<pluginId>/tickets/<ticketId>` with `{ "orgId" }`, answered with `{ "ticket" }`. Needs `tickets:write`.
+- `POST <factorix>/webhooks/plugins/<pluginId>/workflow-steps` with `{ "orgId", "runId", "nodeId", "handle", "output", "error" }`, answered with `{ "ok": true }`. Needs `workflows:blocks`.
+- `POST <factorix>/webhooks/plugins/<pluginId>/workflow-triggers` with `{ "orgId", "trigger", "data", "eventId" }`, answered with `{ "started" }`. Needs `workflows:blocks`.
 
 A refusal is a status of 400 or above with `{ "error": { "message": "…" } }`.
 
-Limits today: a plugin provides a tracker, pages, settings, and work for agents. It cannot serve a code host, attachments, or workflow blocks yet.
+Limits today: a plugin provides a tracker, pages, settings, workflow blocks and triggers, and work for agents. It cannot serve a code host or attachments yet.
 
 ## Publishing the SDK
 

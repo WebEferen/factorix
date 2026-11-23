@@ -6,6 +6,7 @@ import { workflowDto, workflowRunDetailDto, workflowRunDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
 import { conflict, HttpError, notFound, parseBody } from '../lib/errors'
+import { blockCatalog, pluginBlockCatalog, pluginFieldOptions } from '../services/plugin-blocks'
 import { cancelWorkflowRun, startWorkflowRun } from '../services/workflows'
 
 const RUN_COLUMNS = [
@@ -70,6 +71,20 @@ export function workflowRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { workflow: workflowDto(await load(account.orgId, id)) }
   })
 
+  /** The blocks the organization's integrations and plugins add, on top of the built-in ones. */
+  app.get('/api/workflows/blocks', async (request) => {
+    const { account } = requireAuth(request)
+    return { blocks: await blockCatalog(db, account.orgId) }
+  })
+
+  /** A plugin's choices for one field of its block, such as its channels. Only someone who can edit workflows needs them. */
+  app.get('/api/workflows/blocks/options', async (request) => {
+    const { account } = requireAdmin(request)
+    const { type, field } = request.query as { type?: unknown; field?: unknown }
+    if (typeof type !== 'string' || typeof field !== 'string') throw notFound('Field')
+    return { options: await pluginFieldOptions(deps, account.orgId, type, field) }
+  })
+
   app.get('/api/workflows/:id', async (request) => {
     const { account } = requireAuth(request)
     return { workflow: workflowDto(await load(account.orgId, (request.params as { id: string }).id)) }
@@ -98,7 +113,7 @@ export function workflowRoutes(app: FastifyInstance, deps: AppDeps): void {
     const { account } = requireAdmin(request)
     const { id } = request.params as { id: string }
     const current = await load(account.orgId, id)
-    const issues = validateWorkflow(current.definition as WorkflowDefinition)
+    const issues = validateWorkflow(current.definition as WorkflowDefinition, await pluginBlockCatalog(db, account.orgId))
     if (issues.length > 0) throw new HttpError(422, 'invalid_workflow', 'This workflow has problems to fix first', { issues })
     const version = (current.publishedVersion as number) + 1
     await db('workflows')
@@ -159,7 +174,7 @@ export function workflowRoutes(app: FastifyInstance, deps: AppDeps): void {
   const runQuery = (orgId: string) =>
     db('workflow_runs')
       .join('workflows', 'workflow_runs.workflow_id', 'workflows.id')
-      .join('issues', 'workflow_runs.issue_id', 'issues.id')
+      .leftJoin('issues', 'workflow_runs.issue_id', 'issues.id')
       .leftJoin('accounts', 'workflow_runs.started_by', 'accounts.id')
       .where({ 'workflow_runs.org_id': orgId })
       .select(RUN_COLUMNS)

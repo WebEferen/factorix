@@ -3,7 +3,7 @@
 import {
   BLOCK_CATEGORIES,
   BLOCK_TYPES,
-  type BlockType,
+  type BlockCatalog,
   blockSpec,
   initialBlockConfig,
   isTriggerBlock,
@@ -32,13 +32,14 @@ import { type DragEvent, useCallback, useEffect, useMemo, useRef, useState } fro
 import { toast } from 'sonner'
 import { useSWRConfig } from 'swr'
 import { type ApiError, api } from '../lib/api'
-import { useAgents, useProjects } from '../lib/data'
+import { useAgents, useProjects, useWorkflowBlocks } from '../lib/data'
 import { cn } from '../lib/format'
 import { useIsDesktop } from '../lib/use-media'
 import { PageHeader } from '../shell/page-header'
-import { Button, Chip, Dialog, DialogFooter, Toggle, Tooltip } from '../ui'
-import { BLOCK_ICONS, type BlockFlowNode, CATEGORY_TONES, isFailureEdge, toDefinition, toFlowEdge, toFlowNode } from './blocks'
+import { Button, Chip, Dialog, DialogFooter, Skeleton, Toggle, Tooltip } from '../ui'
+import { type BlockFlowNode, blockIcon, CATEGORY_TONES, isFailureEdge, toDefinition, toFlowEdge, toFlowNode } from './blocks'
 import { CanvasContext, type CanvasInfo, FlowCanvas } from './canvas'
+import { BlockCatalogProvider, useBlockCatalog } from './catalog'
 import { BlockInspector, WorkflowPanel } from './inspector'
 import { RunWorkflowDialog } from './run-dialog'
 
@@ -50,8 +51,8 @@ const COLUMN_WIDTH = 280
 const GRID = 20
 const snap = (value: number) => Math.round(value / GRID) * GRID
 
-function newNodeId(type: BlockType, nodes: { id: string }[]): string {
-  const base = (type.split('.')[1] ?? type).replaceAll('_', '-')
+function newNodeId(type: string, nodes: { id: string }[]): string {
+  const base = (type.split('.').at(-1) ?? type).replaceAll('_', '-')
   const taken = new Set(nodes.map((node) => node.id))
   let index = 1
   while (taken.has(`${base}-${index}`)) index += 1
@@ -190,14 +191,41 @@ function useHistory(definition: WorkflowDefinition, restore: (definition: Workfl
   return { undo, redo, canUndo: past.current.length > 0 || key !== stable.current, canRedo: future.current.length > 0 }
 }
 
-function Palette({ onAdd }: { onAdd: (type: BlockType) => void }) {
+interface PaletteSection {
+  key: string
+  label: string
+  types: string[]
+}
+
+/** Factorix's own blocks by category, then each integration's and each plugin's blocks under its name, integrations first. */
+function paletteSections(catalog: BlockCatalog): PaletteSection[] {
+  const sections: PaletteSection[] = BLOCK_CATEGORIES.map((category) => ({
+    key: category.id,
+    label: category.label,
+    types: BLOCK_TYPES.filter((type) => {
+      const spec = blockSpec(type)
+      return spec?.category === category.id && !spec.owner
+    }),
+  }))
+  const owned = Object.entries(catalog).flatMap(([type, spec]) => (spec.owner ? [{ type, owner: spec.owner }] : []))
+  owned.sort((a, b) => Number(a.owner.kind === 'plugin') - Number(b.owner.kind === 'plugin'))
+  for (const { type, owner } of owned) {
+    const key = `${owner.kind}:${owner.id}`
+    const section = sections.find((item) => item.key === key)
+    if (section) section.types.push(type)
+    else sections.push({ key, label: owner.name, types: [type] })
+  }
+  return sections.filter((section) => section.types.length > 0)
+}
+
+function Palette({ onAdd, catalog }: { onAdd: (type: string) => void; catalog: BlockCatalog }) {
   return (
     <aside aria-label="Blocks" className="scroll-thin flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r border-divider bg-surface p-3">
-      {BLOCK_CATEGORIES.map((category) => (
-        <section key={category.id} className="flex flex-col gap-0.5">
-          <h2 className="px-1.5 pb-1 text-xs text-ink-3">{category.label}</h2>
-          {BLOCK_TYPES.filter((type) => blockSpec(type)?.category === category.id).map((type) => {
-            const spec = blockSpec(type)
+      {paletteSections(catalog).map((section) => (
+        <section key={section.key} className="flex flex-col gap-0.5">
+          <h2 className="px-1.5 pb-1 text-xs text-ink-3">{section.label}</h2>
+          {section.types.map((type) => {
+            const spec = blockSpec(type, catalog)
             return (
               <Tooltip key={type} label={spec?.description ?? ''} side="right">
                 <button
@@ -210,8 +238,13 @@ function Palette({ onAdd }: { onAdd: (type: BlockType) => void }) {
                   onClick={() => onAdd(type)}
                   className="flex h-8 w-full cursor-grab items-center gap-2 rounded-md px-1.5 text-left text-sm transition-colors duration-75 select-none hover:bg-soft active:cursor-grabbing"
                 >
-                  <span className={cn('flex size-5 shrink-0 items-center justify-center rounded-sm [&_svg]:size-3', CATEGORY_TONES[category.id])}>
-                    {BLOCK_ICONS[type]}
+                  <span
+                    className={cn(
+                      'flex size-5 shrink-0 items-center justify-center rounded-sm [&_svg]:size-3',
+                      spec && CATEGORY_TONES[spec.category],
+                    )}
+                  >
+                    {blockIcon(type)}
                   </span>
                   <span className="min-w-0 truncate">{spec?.title}</span>
                 </button>
@@ -239,6 +272,7 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
   const flow = useReactFlow<BlockFlowNode, BuiltInEdge>()
   const desktop = useIsDesktop()
   const editable = canEdit && desktop
+  const catalog = useBlockCatalog()
   const { mutate: mutateCache } = useSWRConfig()
   const [workflow, setLocalWorkflow] = useState(initial)
   const setWorkflow = useCallback(
@@ -250,8 +284,8 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
   )
   const [meta, setMeta] = useState<Meta>({ name: initial.name, description: initial.description, projectId: initial.projectId })
   const toEdge = useCallback(
-    (edge: WorkflowDefinition['edges'][number], nodes: WorkflowDefinition['nodes']) => toFlowEdge(edge, isFailureEdge(edge, nodes)),
-    [],
+    (edge: WorkflowDefinition['edges'][number], nodes: WorkflowDefinition['nodes']) => toFlowEdge(edge, isFailureEdge(edge, nodes, catalog)),
+    [catalog],
   )
   const [nodes, setNodes] = useState<BlockFlowNode[]>(() => initial.definition.nodes.map(toFlowNode))
   const [edges, setEdges] = useState<BuiltInEdge[]>(() => initial.definition.edges.map((edge) => toEdge(edge, initial.definition.nodes)))
@@ -262,7 +296,7 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
   const definition = useMemo(() => toDefinition(nodes, edges), [nodes, edges])
   const definitionKey = JSON.stringify(definition)
   // biome-ignore lint/correctness/useExhaustiveDependencies: the key changes exactly when the definition's content does
-  const issues = useMemo(() => validateWorkflow(definition), [definitionKey])
+  const issues = useMemo(() => validateWorkflow(definition, catalog), [definitionKey, catalog])
 
   const nameMissing = !meta.name.trim()
   const autosave = useAutosave(workflow.id, { ...meta, definition }, canEdit && !nameMissing, setWorkflow)
@@ -318,10 +352,10 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
           sourceHandle,
           target: connection.target,
         }
-        return addEdge(toFlowEdge(edge, isFailureEdge(edge, graphNodes)), current)
+        return addEdge(toFlowEdge(edge, isFailureEdge(edge, graphNodes, catalog)), current)
       })
     },
-    [flow],
+    [flow, catalog],
   )
 
   const isValidConnection = useCallback(
@@ -335,7 +369,7 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
   )
 
   const addBlock = useCallback(
-    (type: BlockType, at?: { x: number; y: number }) => {
+    (type: string, at?: { x: number; y: number }) => {
       const current = flow.getNodes()
       const anchor = at ? undefined : current.find((node) => node.selected)
       const id = newNodeId(type, current)
@@ -348,10 +382,10 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
           current.some((node) => Math.abs(node.position.x - x) < NODE_WIDTH && Math.abs(node.position.y - y) < ROW_HEIGHT / 2)
         while (taken(position.x, position.y)) position = { x: position.x + COLUMN_WIDTH, y: position.y }
       }
-      const node: BlockFlowNode = { id, type: 'block', position, data: { type, config: initialBlockConfig(type) }, selected: true }
+      const node: BlockFlowNode = { id, type: 'block', position, data: { type, config: initialBlockConfig(type, catalog) }, selected: true }
       setNodes((items) => [...items.map((item) => ({ ...item, selected: false })), node])
       if (anchor && !isTriggerBlock(type)) {
-        const outputs = blockSpec(anchor.data.type)?.outputs ?? []
+        const outputs = blockSpec(anchor.data.type, catalog)?.outputs ?? []
         const free = outputs.find(
           (output) => !output.failure && !flow.getEdges().some((edge) => edge.source === anchor.id && edge.sourceHandle === output.id),
         )
@@ -362,15 +396,15 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
         }
       }
     },
-    [flow],
+    [flow, catalog],
   )
 
   const onDrop = (event: DragEvent) => {
     const type = event.dataTransfer.getData(BLOCK_MIME)
-    if (!editable || !blockSpec(type)) return
+    if (!editable || !blockSpec(type, catalog)) return
     event.preventDefault()
     const point = flow.screenToFlowPosition({ x: event.clientX - NODE_WIDTH / 2, y: event.clientY - 30 })
-    addBlock(type as BlockType, { x: snap(point.x), y: snap(point.y) })
+    addBlock(type, { x: snap(point.x), y: snap(point.y) })
   }
 
   const selectNode = useCallback(
@@ -474,7 +508,7 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
         ) : null}
       </PageHeader>
       <div className="flex min-h-0 flex-1">
-        {editable ? <Palette onAdd={addBlock} /> : null}
+        {editable ? <Palette onAdd={addBlock} catalog={catalog} /> : null}
         <div className="relative min-w-0 flex-1" onDragOver={(event) => event.preventDefault()} onDrop={onDrop}>
           <CanvasContext.Provider value={info}>
             <FlowCanvas
@@ -574,9 +608,21 @@ function Editor({ initial, canEdit }: { initial: WorkflowDto; canEdit: boolean }
 }
 
 export function WorkflowEditor({ workflow, canEdit }: { workflow: WorkflowDto; canEdit: boolean }) {
+  // Blocks from plugins decide which outputs count as failures, so the graph waits for them. Without them, those blocks show as missing.
+  const { data, error } = useWorkflowBlocks()
+  if (!data && !error)
+    return (
+      <div className="p-6">
+        <Skeleton className="h-40" />
+      </div>
+    )
   return (
-    <ReactFlowProvider>
-      <Editor initial={workflow} canEdit={canEdit} />
-    </ReactFlowProvider>
+    <BlockCatalogProvider value={data?.blocks ?? EMPTY_CATALOG}>
+      <ReactFlowProvider>
+        <Editor initial={workflow} canEdit={canEdit} />
+      </ReactFlowProvider>
+    </BlockCatalogProvider>
   )
 }
+
+const EMPTY_CATALOG: BlockCatalog = {}

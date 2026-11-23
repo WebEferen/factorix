@@ -39,7 +39,7 @@ export default function WorkflowRunsPage() {
               className="flex h-11 items-center gap-3 border-b border-divider px-4 transition-colors duration-75 hover:bg-softer"
             >
               <span className="shrink-0 text-xs text-ink-2">{run.issueIdentifier}</span>
-              <span className="min-w-0 flex-1 truncate text-sm">{run.issueTitle}</span>
+              <span className="min-w-0 flex-1 truncate text-sm">{run.issueTitle ?? 'Started without a ticket'}</span>
               <span className="hidden shrink-0 text-xs text-ink-3 sm:block">Version {run.workflowVersion}</span>
               <RunStatusChip status={run.status} />
               <span className="w-20 shrink-0 text-right text-xs text-ink-3">{timeAgo(run.createdAt)}</span>

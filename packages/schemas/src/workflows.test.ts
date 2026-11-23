@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   completePlaceholder,
   initialBlockConfig,
+  integrationBlocks,
   nextScheduleTime,
   openPlaceholder,
   validateWorkflow,
@@ -23,7 +24,7 @@ describe('validateWorkflow', () => {
         nodes: [
           block('start', 'trigger.manual'),
           block('check', 'logic.condition', { rules: [{ field: 'status', operator: 'is', value: 'Todo' }] }),
-          block('tell', 'notify.send', NOTIFY),
+          block('tell', 'slack.send_message', NOTIFY),
           block('work', 'agent.run'),
         ],
         edges: [link('start', 'check'), link('check', 'tell', 'true'), link('check', 'work', 'false'), link('start', 'tell')],
@@ -36,7 +37,7 @@ describe('validateWorkflow', () => {
   })
 
   it('flags blocks that do nothing or that nothing reaches', () => {
-    const issues = validateWorkflow({ nodes: [block('start', 'trigger.manual'), block('tell', 'notify.send', NOTIFY)], edges: [] })
+    const issues = validateWorkflow({ nodes: [block('start', 'trigger.manual'), block('tell', 'slack.send_message', NOTIFY)], edges: [] })
     expect(issues).toContainEqual({ nodeId: 'start', message: 'Nothing happens after this block' })
     expect(issues).toContainEqual({ nodeId: 'tell', message: 'Nothing leads to this block' })
   })
@@ -84,6 +85,58 @@ describe('workflowDefinition', () => {
     expect(
       workflowDefinition.safeParse({ nodes: [{ id: '../a', type: 'trigger.manual', position: { x: 0, y: 0 }, config: {} }], edges: [] }).success,
     ).toBe(false)
+  })
+})
+
+describe('a ticketless trigger', () => {
+  it('cannot lead to a block that works on a ticket, though another trigger can', () => {
+    const slack = block('chat', 'trigger.slack.mention', { connectionId: 'c', channel: 'any' })
+    const comment = block('c', 'tracker.comment', { body: 'x' })
+    const create = block('make', 'tracker.create_issue', { title: '{{steps.chat.text}}', projectId: 'p' })
+    expect(
+      messages({ nodes: [slack, create, block('tell', 'slack.send_message', NOTIFY)], edges: [link('chat', 'make'), link('make', 'tell')] }),
+    ).toEqual([])
+    expect(messages({ nodes: [slack, create, comment], edges: [link('chat', 'make'), link('make', 'c')] })).toEqual([
+      'Comment on ticket works on a ticket, and App mentioned starts without one',
+    ])
+    expect(
+      messages({ nodes: [block('start', 'trigger.manual'), comment, slack, create], edges: [link('start', 'c'), link('chat', 'make')] }),
+    ).toEqual([])
+  })
+
+  it('can ask an agent, but not have the answer posted on a ticket', () => {
+    const slack = block('chat', 'trigger.slack.mention', { connectionId: 'c', channel: 'any' })
+    const ask = (post: string) => block('ask', 'agent.prompt', { prompt: '{{steps.chat.text}}', post })
+    const flow = (post: string) => ({
+      nodes: [slack, ask(post), block('tell', 'slack.send_message', NOTIFY)],
+      edges: [link('chat', 'ask'), link('ask', 'tell')],
+    })
+    expect(messages(flow('none'))).toEqual([])
+    expect(messages(flow('comment'))).toEqual(['Post it on the ticket needs a ticket, and App mentioned starts without one'])
+  })
+})
+
+describe('a Slack block', () => {
+  it('is pinned to a place, which may be a channel, direct messages, or anywhere, and can reply where the run started', () => {
+    const flow = (trigger: Record<string, unknown>, send: Record<string, unknown> = NOTIFY) =>
+      messages({
+        nodes: [block('chat', 'trigger.slack.message', { connectionId: 'c', ...trigger }), block('tell', 'slack.send_message', send)],
+        edges: [link('chat', 'tell')],
+      })
+    expect(flow({})).toEqual(['Where is required'])
+    for (const channel of ['C1', 'dm', 'any']) expect(flow({ channel })).toEqual([])
+    expect(flow({ channel: 'dm' }, { ...NOTIFY, channel: 'reply' })).toEqual([])
+    expect(flow({ channel: 'C1', from: ['U7', 'U8'] })).toEqual([])
+    expect(flow({ channel: 'C1', from: 'U7' })).toEqual(['From has an unknown value'])
+  })
+})
+
+describe('integrationBlocks', () => {
+  it('offers an integration its blocks only once it is connected', () => {
+    expect(integrationBlocks(['linear', 'gitlab'])).toEqual({})
+    const slack = integrationBlocks(['linear', 'slack'])
+    expect(Object.keys(slack)).toEqual(['trigger.slack.message', 'trigger.slack.mention', 'slack.send_message'])
+    expect(slack['slack.send_message']).toMatchObject({ owner: { kind: 'integration', id: 'slack', name: 'Slack' } })
   })
 })
 

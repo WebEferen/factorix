@@ -2,6 +2,9 @@ import { DELIVERY_HEADER, readPageToken, SIGNATURE_HEADER, sign, TIMESTAMP_HEADE
 import {
   type Activity,
   type Agent,
+  type BlockAnswer,
+  type BlockCall,
+  type BlockField,
   type Connection,
   type Field,
   type Manifest,
@@ -35,6 +38,39 @@ export interface PageDefinition {
   action?(context: PageContext, request: Request, token: string): string | Response | Promise<string | Response>
 }
 
+export interface BlockDefinition {
+  /** Lowercase letters, digits, and underscores, starting with a letter. Keep it once workflows use the block. */
+  key: string
+  title: string
+  description: string
+  fields?: BlockField[]
+  /** The ways out of the block. Defaults to one, `next`. A block that throws leaves through `failed`, which every block has. */
+  outputs?: { id: string; label: string }[]
+  /** What it hands to later blocks, as `{{steps.<block id>.<key>}}`, so the editor can offer them. */
+  provides?: { key: string; label: string }[]
+  /** Does the block's work. Answer quickly: anything slow answers `{ wait: true }` and calls `finishStep` when done. */
+  run(call: BlockCall): BlockAnswer | Promise<BlockAnswer>
+  /** The choices of a `dynamic` field, for one organization. */
+  options?(input: { field: string; org: { id: string } }): { value: string; label: string }[] | Promise<{ value: string; label: string }[]>
+}
+
+/**
+ * Something that happens in your plugin and can start a workflow, with no ticket. Report each one with
+ * `factorix().fireTrigger`. Its fields narrow which events start a workflow: each one an admin fills in has to equal the
+ * event's value under the same key, so they can only be `text` or `select`.
+ */
+export interface TriggerDefinition {
+  /** Lowercase letters, digits, and underscores, starting with a letter, and no block's key. Keep it once workflows use it. */
+  key: string
+  title: string
+  description: string
+  fields?: BlockField[]
+  /** What an event hands to the blocks after it, as `{{steps.<block id>.<key>}}`, so the editor can offer them. */
+  provides?: { key: string; label: string }[]
+  /** The choices of a `dynamic` field, for one organization. */
+  options?(input: { field: string; org: { id: string } }): { value: string; label: string }[] | Promise<{ value: string; label: string }[]>
+}
+
 export interface PluginDefinition {
   name: string
   version: string
@@ -46,6 +82,10 @@ export interface PluginDefinition {
   /** What the plugin asks of Factorix through `factorix()`. An organization's admin allows them when turning the plugin on. */
   permissions?: Permission[]
   pages?: PageDefinition[]
+  /** Steps it adds to the workflows of each organization that turns it on. */
+  blocks?: BlockDefinition[]
+  /** What can start those workflows from inside the plugin. */
+  triggers?: TriggerDefinition[]
   /** Builds a tracker for one connection. Called per request, so keep it cheap and keep nothing in it. */
   tracker?(connection: Connection): Tracker
 }
@@ -63,7 +103,39 @@ export function definePlugin(definition: PluginDefinition): Plugin {
   }))
   for (const page of pages)
     if (!page.path.startsWith('/') || page.path.startsWith('//')) throw new Error(`Page ${page.key} needs a path that starts with one slash`)
-  if (!definition.tracker && pages.length === 0) throw new Error('A plugin needs a tracker or at least one page')
+  const blocks = (definition.blocks ?? []).map((block) => ({
+    key: block.key,
+    title: block.title,
+    description: block.description,
+    fields: block.fields ?? [],
+    outputs: block.outputs ?? [{ id: 'next', label: 'Next' }],
+    provides: block.provides ?? [],
+  }))
+  for (const block of blocks) {
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(block.key)) throw new Error(`Block ${block.key} needs a key of lowercase letters, digits, and underscores`)
+    if (blocks.filter((other) => other.key === block.key).length > 1) throw new Error(`Two blocks share the key ${block.key}`)
+    if (block.outputs.some((output) => output.id === 'failed'))
+      throw new Error(`Block ${block.key} cannot name an output failed, which every block has`)
+  }
+  const triggers = (definition.triggers ?? []).map((trigger) => ({
+    key: trigger.key,
+    title: trigger.title,
+    description: trigger.description,
+    fields: trigger.fields ?? [],
+    provides: trigger.provides ?? [],
+  }))
+  for (const trigger of triggers) {
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(trigger.key))
+      throw new Error(`Trigger ${trigger.key} needs a key of lowercase letters, digits, and underscores`)
+    if ([...blocks, ...triggers].filter((other) => other.key === trigger.key).length > 1)
+      throw new Error(`Two blocks or triggers share the key ${trigger.key}`)
+    if (trigger.fields.some((field) => field.kind !== 'text' && field.kind !== 'select'))
+      throw new Error(`The fields of trigger ${trigger.key} can only be text or select`)
+  }
+  if (!definition.tracker && pages.length === 0 && blocks.length === 0 && triggers.length === 0)
+    throw new Error('A plugin needs a tracker, a page, or a block')
+  const workflows = blocks.length + triggers.length > 0
+  const permissions: Permission[] = [...(definition.permissions ?? []), ...(workflows ? (['workflows:blocks'] as const) : [])]
   return {
     ...definition,
     manifest: {
@@ -72,10 +144,12 @@ export function definePlugin(definition: PluginDefinition): Plugin {
       version: definition.version,
       ...(definition.description ? { description: definition.description } : {}),
       provides: definition.tracker ? ['tracker'] : [],
-      permissions: [...new Set(definition.permissions ?? [])],
+      permissions: [...new Set(permissions)],
       connection: { fields: definition.connection?.fields ?? [] },
       settings: { fields: definition.settings?.fields ?? [] },
       pages,
+      blocks,
+      triggers,
     },
   }
 }
@@ -133,6 +207,7 @@ export function createHandler(plugin: Plugin, options: HandlerOptions): (request
     }
     if (call.protocol !== PROTOCOL) return json(400, { error: { message: `This plugin speaks protocol ${PROTOCOL}` } })
     if (call.method === 'manifest') return json(200, { result: plugin.manifest })
+    if (call.method === 'workflow.block' || call.method === 'workflow.options') return workflow(call.method, call.params?.[0])
     const [scope, method] = String(call.method).split('.')
     if (scope !== 'tracker' || !method || !TRACKER_METHODS.has(method) || !plugin.tracker || !call.connection) {
       return json(404, { error: { message: `Unknown method ${String(call.method)}` } })
@@ -146,6 +221,27 @@ export function createHandler(plugin: Plugin, options: HandlerOptions): (request
       return json(200, { result: result ?? null })
     } catch (error) {
       return json(500, { error: { message: error instanceof Error ? error.message : 'The plugin failed' } })
+    }
+  }
+
+  const workflow = async (method: string, input: unknown): Promise<Response> => {
+    const name = (input as { block?: unknown } | undefined)?.block
+    const block = plugin.blocks?.find((candidate) => candidate.key === name)
+    // A trigger's dynamic fields are asked for under the same method, by its key.
+    const trigger = method === 'workflow.options' ? plugin.triggers?.find((candidate) => candidate.key === name) : undefined
+    if (trigger) {
+      if (!trigger.options) return json(404, { error: { message: `Trigger ${trigger.key} lists no choices` } })
+      const { field, org } = input as { field: string; org: { id: string } }
+      return json(200, { result: await trigger.options({ field, org }) })
+    }
+    if (!block) return json(404, { error: { message: `This plugin has no block ${String(name)}` } })
+    try {
+      if (method === 'workflow.block') return json(200, { result: await block.run(input as BlockCall) })
+      if (!block.options) return json(404, { error: { message: `Block ${block.key} lists no choices` } })
+      const { field, org } = input as { field: string; org: { id: string } }
+      return json(200, { result: await block.options({ field, org }) })
+    } catch (error) {
+      return json(500, { error: { message: error instanceof Error ? error.message : 'The block failed' } })
     }
   }
 
@@ -272,6 +368,24 @@ export function factorix(options: FactorixOptions) {
     /** A ticket this plugin created, as it stands now. Needs `tickets:write`. */
     async getTicket(orgId: string, ticketId: string): Promise<Ticket> {
       return (await call(`tickets/${encodeURIComponent(ticketId)}`, orgId)).ticket as Ticket
+    },
+    /**
+     * Ends a step one of your blocks held with `{ wait: true }`. `handle` and `output` work as in the block's answer, and
+     * `error` fails the step instead. Throws `FactorixError` 409 once the step has ended. Needs `workflows:blocks`.
+     */
+    async finishStep(
+      orgId: string,
+      step: { runId: string; nodeId: string; handle?: string; output?: Record<string, string>; error?: string },
+    ): Promise<void> {
+      await call('workflow-steps', orgId, { ...step })
+    },
+    /**
+     * Reports that one of your triggers happened, and starts the organization's workflows built on it. `data` holds the
+     * values its fields are compared with and what it provides, as texts; other keys are dropped. Sending the same
+     * `eventId` again starts nothing new, so a retry is safe. Answers how many workflows started. Needs `workflows:blocks`.
+     */
+    async fireTrigger(orgId: string, event: { trigger: string; data?: Record<string, string>; eventId?: string }): Promise<number> {
+      return Number((await call('workflow-triggers', orgId, { ...event })).started ?? 0)
     },
   }
 }

@@ -1,14 +1,14 @@
 'use client'
 
-import { blockSpec, type WorkflowRunDetailDto, type WorkflowStepDto } from '@factorix/schemas'
+import { type BlockCatalog, blockSpec, type WorkflowRunDetailDto, type WorkflowStepDto } from '@factorix/schemas'
 import { type BuiltInEdge, ReactFlowProvider } from '@xyflow/react'
 import Link from 'next/link'
 import { useMemo, useState } from 'react'
-import { useAgents, useProjects } from '../lib/data'
+import { useAgents, useProjects, useWorkflowBlocks } from '../lib/data'
 import { cn, duration, fullDate, timeAgo } from '../lib/format'
 import {
-  BLOCK_ICONS,
   type BlockFlowNode,
+  blockIcon,
   CATEGORY_TONES,
   isFailureEdge,
   RunStatusChip,
@@ -18,6 +18,9 @@ import {
   toFlowNode,
 } from './blocks'
 import { CanvasContext, type CanvasInfo, FlowCanvas } from './canvas'
+import { BlockCatalogProvider } from './catalog'
+
+const EMPTY_CATALOG: BlockCatalog = {}
 
 const FINISHED = new Set(['succeeded', 'failed'])
 
@@ -62,6 +65,8 @@ export function RunView({ run }: { run: WorkflowRunDetailDto }) {
   const [selected, setSelected] = useState<string | null>(null)
   const { data: agents } = useAgents()
   const { data: projects } = useProjects()
+  const { data: blocks } = useWorkflowBlocks()
+  const catalog = blocks?.blocks ?? EMPTY_CATALOG
   const stepsKey = JSON.stringify(run.steps.map((step) => [step.nodeId, step.status, step.handle]))
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: only redraw the canvas when a step changes
@@ -70,9 +75,13 @@ export function RunView({ run }: { run: WorkflowRunDetailDto }) {
     return run.definition.edges.map((edge) => {
       const source = steps.get(edge.source)
       const taken = Boolean(source && FINISHED.has(source.status) && source.handle === edge.sourceHandle)
-      return { ...toFlowEdge(edge, isFailureEdge(edge, run.definition.nodes), taken ? 'taken' : 'idle'), selectable: false, focusable: false }
+      return {
+        ...toFlowEdge(edge, isFailureEdge(edge, run.definition.nodes, catalog), taken ? 'taken' : 'idle'),
+        selectable: false,
+        focusable: false,
+      }
     })
-  }, [stepsKey, run.definition])
+  }, [stepsKey, run.definition, catalog])
 
   const nodes = useMemo<BlockFlowNode[]>(
     () => run.definition.nodes.map((node) => ({ ...toFlowNode(node), selected: node.id === selected, draggable: false })),
@@ -96,19 +105,21 @@ export function RunView({ run }: { run: WorkflowRunDetailDto }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col md:flex-row">
       <div className="relative h-[40vh] shrink-0 border-b border-divider md:h-auto md:min-w-0 md:flex-1 md:border-b-0">
-        <ReactFlowProvider>
-          <CanvasContext.Provider value={info}>
-            <FlowCanvas
-              nodes={nodes}
-              edges={edges}
-              nodesDraggable={false}
-              nodesConnectable={false}
-              deleteKeyCode={null}
-              onNodeClick={(_, node) => setSelected(node.id)}
-              onPaneClick={() => setSelected(null)}
-            />
-          </CanvasContext.Provider>
-        </ReactFlowProvider>
+        <BlockCatalogProvider value={catalog}>
+          <ReactFlowProvider>
+            <CanvasContext.Provider value={info}>
+              <FlowCanvas
+                nodes={nodes}
+                edges={edges}
+                nodesDraggable={false}
+                nodesConnectable={false}
+                deleteKeyCode={null}
+                onNodeClick={(_, node) => setSelected(node.id)}
+                onPaneClick={() => setSelected(null)}
+              />
+            </CanvasContext.Provider>
+          </ReactFlowProvider>
+        </BlockCatalogProvider>
       </div>
       <aside aria-label="Steps" className="scroll-thin min-h-0 flex-1 overflow-y-auto border-divider bg-surface md:w-96 md:flex-none md:border-l">
         <div className="flex flex-col gap-1.5 border-b border-divider p-4">
@@ -116,9 +127,13 @@ export function RunView({ run }: { run: WorkflowRunDetailDto }) {
             <RunStatusChip status={run.status} />
             <span className="text-xs text-ink-2">Version {run.workflowVersion}</span>
           </div>
-          <Link href={`/issues/${run.issueId}`} className="text-sm hover:underline">
-            <span className="text-ink-2">{run.issueIdentifier}</span> {run.issueTitle}
-          </Link>
+          {run.issueId ? (
+            <Link href={`/issues/${run.issueId}`} className="text-sm hover:underline">
+              <span className="text-ink-2">{run.issueIdentifier}</span> {run.issueTitle}
+            </Link>
+          ) : (
+            <p className="text-sm text-ink-2">Started without a ticket</p>
+          )}
           <p className="text-xs text-ink-2">
             {run.startedByName ? `Started by ${run.startedByName}` : 'Started by itself'} {timeAgo(run.createdAt)}
             {run.finishedAt ? `, took ${duration(run.createdAt, run.finishedAt)}` : ''}
@@ -128,7 +143,7 @@ export function RunView({ run }: { run: WorkflowRunDetailDto }) {
         <ol>
           {stepOrder(run).map((step) => {
             const node = run.definition.nodes.find((item) => item.id === step.nodeId)
-            const spec = blockSpec(step.block)
+            const spec = blockSpec(step.block, catalog)
             const status = STEP_STATUS[step.status]
             return (
               <li
@@ -147,11 +162,13 @@ export function RunView({ run }: { run: WorkflowRunDetailDto }) {
                       spec ? CATEGORY_TONES[spec.category] : 'bg-soft',
                     )}
                   >
-                    {node ? BLOCK_ICONS[node.type] : null}
+                    {node ? blockIcon(node.type) : null}
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm">{spec?.title ?? step.block}</span>
-                    {node ? <span className="block truncate text-xs text-ink-2">{summarizeBlock(node.type, node.config, info.names)}</span> : null}
+                    {node ? (
+                      <span className="block truncate text-xs text-ink-2">{summarizeBlock(node.type, node.config, info.names, catalog)}</span>
+                    ) : null}
                   </span>
                   <span className={cn('flex shrink-0 items-center gap-1 text-xs [&_svg]:size-3.5', status.className)}>
                     {status.icon}

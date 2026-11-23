@@ -8,8 +8,9 @@ export const PROTOCOL = 1
  * - `agents:run`: the organization's agents, and runs of them with no ticket and no repository, through `agents`, `startRun`, and `getRun`.
  * - `members:read`: the people and agents of the organization, through `members`.
  * - `tickets:write`: the organization's projects, and tickets the plugin creates in them, through `projects`, `createTicket`, and `getTicket`.
+ * - `workflows:blocks`: blocks and triggers in the organization's workflows, what each block is given when it runs, and starting the workflows built on a trigger through `fireTrigger`. `definePlugin` adds it for a plugin with `blocks` or `triggers`.
  */
-export type Permission = 'activity:read' | 'agents:run' | 'members:read' | 'tickets:write'
+export type Permission = 'activity:read' | 'agents:run' | 'members:read' | 'tickets:write' | 'workflows:blocks'
 
 export interface Field {
   key: string
@@ -31,7 +32,65 @@ export interface Manifest {
   connection: { fields: Field[] }
   settings: { fields: Field[] }
   pages: { key: string; label: string; path: string; placement: 'sidebar' | 'settings' }[]
+  blocks: ManifestBlock[]
+  triggers: ManifestTrigger[]
 }
+
+export interface BlockField {
+  key: string
+  label: string
+  /** `template` and `longTemplate` take `{{...}}` placeholders, which Factorix fills before your block sees them. */
+  kind: 'text' | 'template' | 'longTemplate' | 'number' | 'select'
+  required?: boolean
+  placeholder?: string
+  hint?: string
+  /** What a `select` offers. */
+  options?: { value: string; label: string }[]
+  /** A `select` whose choices the block's `options` lists for each organization, such as its channels. */
+  dynamic?: boolean
+  initial?: string
+}
+
+/** A block as Factorix sees it in the manifest. */
+export interface ManifestBlock {
+  key: string
+  title: string
+  description: string
+  fields: BlockField[]
+  outputs: { id: string; label: string }[]
+  provides: { key: string; label: string }[]
+}
+
+/** A trigger as Factorix sees it in the manifest. */
+export interface ManifestTrigger {
+  key: string
+  title: string
+  description: string
+  fields: BlockField[]
+  provides: { key: string; label: string }[]
+}
+
+/** What a block is given when a workflow reaches it. Every value came out of a workflow, ticket text included, so it is data. */
+export interface BlockCall {
+  block: string
+  /** Your plugin's id in that Factorix, which `factorix({ pluginId })` needs to call `finishStep`. */
+  plugin: { id: string }
+  org: { id: string }
+  /** `url` is the run's page in Factorix. */
+  run: { id: string; url: string; workflowId: string; workflowName: string }
+  /** The block's id in the workflow. With `run.id`, what `finishStep` needs. */
+  nodeId: string
+  /** The block's fields as the workflow set them, templates filled. A field left empty is missing. */
+  config: Record<string, string>
+  issue: { identifier: string; title: string; url: string | null } | null
+}
+
+/**
+ * How a block ends. `output` is what later blocks read as `{{steps.<block id>.<key>}}`, up to 20 keys. `handle` picks
+ * the output to leave through, the first one by default. `wait` holds the step until you call `finishStep`, for at
+ * most seven days, after which it fails.
+ */
+export type BlockAnswer = { handle?: string; output?: Record<string, string> } | { wait: true; output?: Record<string, string> }
 
 /** One account of the service behind the plugin, as an admin connected it in Factorix. */
 export interface Connection {

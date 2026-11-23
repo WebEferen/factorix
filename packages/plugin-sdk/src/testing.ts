@@ -1,6 +1,6 @@
 import { createHandler, FactorixError, type Plugin } from './plugin.js'
 import { SIGNATURE_HEADER, sign, signPageToken, TIMESTAMP_HEADER, verify } from './signing.js'
-import { type Connection, type Manifest, type PageContext, PROTOCOL, type Tracker } from './types.js'
+import { type BlockAnswer, type BlockCall, type Connection, type Manifest, type PageContext, PROTOCOL, type Tracker } from './types.js'
 
 const DEFAULT_SECRET = 'test-secret-0123456789'
 
@@ -38,6 +38,29 @@ export function factorixClient(plugin: Plugin, options: { secret?: string; path?
         },
       ) as Required<Tracker>
     },
+    /** Runs a block as a workflow reaching it does. `config` holds its fields with templates already filled. */
+    runBlock(key: string, input: Partial<Omit<BlockCall, 'block'>> = {}): Promise<BlockAnswer> {
+      return call(
+        'workflow.block',
+        [
+          {
+            plugin: { id: 'plugin-1' },
+            org: { id: 'org-1' },
+            run: { id: 'run-1', url: 'https://factorix.test/workflows/workflow-1/runs/run-1', workflowId: 'workflow-1', workflowName: 'Test' },
+            nodeId: `${key}-1`,
+            config: {},
+            issue: null,
+            ...input,
+            block: key,
+          },
+        ],
+        null,
+      ) as Promise<BlockAnswer>
+    },
+    /** The choices a block lists for one of its `dynamic` fields. */
+    blockOptions(key: string, field: string, org = { id: 'org-1' }): Promise<{ value: string; label: string }[]> {
+      return call('workflow.options', [{ block: key, field, org }], null) as Promise<{ value: string; label: string }[]>
+    },
     /**
      * Opens a page as a signed-in person would, and returns what the plugin served. With `form`, posts it to the page
      * the way a form on the page does, which reaches its `action`.
@@ -72,12 +95,25 @@ export function factorixClient(plugin: Plugin, options: { secret?: string; path?
   }
 }
 
-type FakeCall = 'settings' | 'activity' | 'agents' | 'runs' | 'run' | 'members' | 'projects' | 'tickets' | 'ticket'
+type FakeCall =
+  | 'settings'
+  | 'activity'
+  | 'agents'
+  | 'runs'
+  | 'run'
+  | 'members'
+  | 'projects'
+  | 'tickets'
+  | 'ticket'
+  | 'workflow-steps'
+  | 'workflow-triggers'
 
 /**
  * Stands in for Factorix behind `factorix({ fetch })`, for your tests. Each handler gets the body the plugin sent
  * (`runId` added for `run`, which is `getRun`, and `ticketId` for `ticket`, which is `getTicket`) and returns what
- * Factorix would answer: settings, the activity, the agents, the run, the members, the projects, or the ticket. Throw a `FactorixError` to answer with its status. Signatures are checked like Factorix does.
+ * Factorix would answer: settings, the activity, the agents, the run, the members, the projects, or the ticket.
+ * `workflow-steps` is `finishStep`, whose answer is not read, and `workflow-triggers` is `fireTrigger`, which answers how many
+ * workflows started. Throw a `FactorixError` to answer with its status. Signatures are checked like Factorix does.
  */
 export function fakeFactorix(
   handlers: Partial<Record<FakeCall, (body: Record<string, unknown>) => unknown>>,
@@ -96,15 +132,18 @@ export function fakeFactorix(
     projects: (projects) => ({ projects }),
     tickets: (ticket) => ({ ticket }),
     ticket: (ticket) => ({ ticket }),
+    'workflow-steps': () => ({ ok: true }),
+    'workflow-triggers': (started) => ({ started: Number(started ?? 0) }),
   }
   const fake = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const body = String(init?.body ?? '')
     const headers = new Headers(init?.headers)
     if (!verify(secret, headers.get(TIMESTAMP_HEADER), headers.get(SIGNATURE_HEADER), body))
       return answer(401, { error: { message: 'Plugin signature check failed' } })
-    const match = /^\/webhooks\/plugins\/([^/]+)\/(settings|activity|agents|runs|members|projects|tickets)(?:\/([^/]+))?$/.exec(
-      new URL(String(input)).pathname,
-    )
+    const match =
+      /^\/webhooks\/plugins\/([^/]+)\/(settings|activity|agents|runs|members|projects|tickets|workflow-steps|workflow-triggers)(?:\/([^/]+))?$/.exec(
+        new URL(String(input)).pathname,
+      )
     if (!match?.[1] || !match[2]) return answer(404, { error: { message: 'Not found' } })
     const one = match[2] === 'runs' ? 'run' : match[2] === 'tickets' ? 'ticket' : null
     if (match[3] && !one) return answer(404, { error: { message: 'Not found' } })

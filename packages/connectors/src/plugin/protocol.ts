@@ -26,6 +26,8 @@ export const PLUGIN_PERMISSIONS = {
   'agents:run': "Ask this organization's agents for work in runs with no ticket and no repository, and read their answers",
   'members:read': 'Read who is in this organization: the names, handles, and roles of its people and agents',
   'tickets:write': "Read the names of this organization's projects, create tickets in them, hand those tickets to agents, and read their status",
+  'workflows:blocks':
+    "Add blocks to this organization's workflows, start the workflows built on its triggers, and receive what each of its blocks is given when it runs, ticket text included",
 } as const
 export type PluginPermission = keyof typeof PLUGIN_PERMISSIONS
 
@@ -42,6 +44,68 @@ export interface PluginManifest {
   settings: { fields: PluginField[] }
   /** Pages the plugin serves itself, shown inside Factorix in a frame. */
   pages: PluginPage[]
+  /** Blocks it adds to workflows. They need `workflows:blocks`. */
+  blocks: PluginBlock[]
+  /** What can start a workflow from inside the plugin. They need `workflows:blocks` too. */
+  triggers: PluginTrigger[]
+}
+
+export const PLUGIN_BLOCK_FIELD_KINDS = ['text', 'template', 'longTemplate', 'number', 'select'] as const
+
+export interface PluginBlockField {
+  key: string
+  label: string
+  /** `template` and `longTemplate` take `{{...}}` placeholders, which Factorix fills before the plugin sees them. */
+  kind: (typeof PLUGIN_BLOCK_FIELD_KINDS)[number]
+  required?: boolean
+  placeholder?: string
+  hint?: string
+  /** What a `select` offers. With `dynamic`, Factorix asks the plugin for them, per organization, instead. */
+  options?: { value: string; label: string }[]
+  dynamic?: boolean
+  initial?: string
+}
+
+/** A step a workflow can take, run by the plugin. It leaves through one of its outputs, or through `failed` when it throws. */
+export interface PluginBlock {
+  key: string
+  title: string
+  description: string
+  fields: PluginBlockField[]
+  outputs: { id: string; label: string }[]
+  /** What it hands to later blocks, as `{{steps.<block id>.<key>}}`. */
+  provides: { key: string; label: string }[]
+}
+
+/**
+ * Something that happens in the plugin and starts the workflows built on it, with no ticket. Its fields narrow which
+ * events start a workflow: each one filled in has to equal the event's value under the same key.
+ */
+export interface PluginTrigger {
+  key: string
+  title: string
+  description: string
+  fields: PluginBlockField[]
+  /** What an event hands to the blocks after it, as `{{steps.<block id>.<key>}}`. */
+  provides: { key: string; label: string }[]
+}
+
+/** What a plugin is told when one of its blocks runs. Every value came out of a workflow, so it is data. */
+export interface PluginBlockCall {
+  block: string
+  plugin: { id: string }
+  org: { id: string }
+  run: { id: string; url: string; workflowId: string; workflowName: string }
+  nodeId: string
+  config: Record<string, string>
+  issue: { identifier: string; title: string; url: string | null } | null
+}
+
+/** `wait` holds the step until the plugin reports it through `/workflow-steps`. */
+export interface PluginBlockAnswer {
+  handle?: string
+  output?: Record<string, string>
+  wait?: boolean
 }
 
 export interface PluginPage {
@@ -137,11 +201,23 @@ export function parsePluginManifest(value: unknown): PluginManifest {
   const provides = Array.isArray(raw.provides) && raw.provides.includes('tracker') ? (['tracker'] as const) : []
   const pages = (raw.pages ?? []) as Record<string, unknown>[]
   if (!Array.isArray(pages) || pages.length > 10) throw new Error('The plugin manifest lists its pages wrongly')
-  if (provides.length === 0 && pages.length === 0) throw new Error('The plugin provides nothing this Factorix can use: no tracker and no pages')
+  const blocks = (raw.blocks ?? []) as Record<string, unknown>[]
+  if (!Array.isArray(blocks) || blocks.length > 20) throw new Error('The plugin manifest lists its blocks wrongly')
+  const triggers = (raw.triggers ?? []) as Record<string, unknown>[]
+  if (!Array.isArray(triggers) || triggers.length > 20) throw new Error('The plugin manifest lists its triggers wrongly')
+  if (provides.length === 0 && pages.length === 0 && blocks.length === 0 && triggers.length === 0) {
+    throw new Error('The plugin provides nothing this Factorix can use: no tracker, no pages, and no blocks')
+  }
   const permissions = (raw.permissions ?? []) as unknown[]
   if (!Array.isArray(permissions)) throw new Error('The plugin manifest lists its permissions wrongly')
   const unknown = permissions.find((permission) => typeof permission !== 'string' || !Object.hasOwn(PLUGIN_PERMISSIONS, permission))
   if (unknown !== undefined) throw new Error(`The plugin asks for ${String(unknown)}, which this Factorix does not know`)
+  if (blocks.length + triggers.length > 0 && !permissions.includes('workflows:blocks'))
+    throw new Error('A plugin with workflow blocks has to ask for workflows:blocks')
+  const parsedBlocks = parseBlocks(blocks)
+  const parsedTriggers = parseTriggers(triggers)
+  if (parsedTriggers.some((trigger) => parsedBlocks.some((block) => block.key === trigger.key)))
+    throw new Error('A plugin trigger needs a key no block of the plugin has')
   return {
     protocol: PLUGIN_PROTOCOL,
     name: raw.name,
@@ -158,7 +234,128 @@ export function parsePluginManifest(value: unknown): PluginManifest {
       }
       return { key: page.key, label: page.label, path: page.path, placement: page.placement === 'settings' ? 'settings' : 'sidebar' }
     }),
+    blocks: parsedBlocks,
+    triggers: parsedTriggers,
   }
+}
+
+export const PLUGIN_BLOCK_KEY = /^[a-z][a-z0-9_]{0,39}$/
+const OUTPUT_ID = /^[a-z][a-z0-9_]{0,39}$/
+
+function parseBlocks(blocks: Record<string, unknown>[]): PluginBlock[] {
+  const keys = new Set<string>()
+  return blocks.map((block) => {
+    if (!text(block.key, 40) || !PLUGIN_BLOCK_KEY.test(block.key) || keys.has(block.key)) throw new Error('Each plugin block needs a key of its own')
+    keys.add(block.key)
+    if (!text(block.title, 60) || !text(block.description, 300)) throw new Error(`Plugin block ${block.key} needs a title and a description`)
+    const outputs = (block.outputs ?? [{ id: 'next', label: 'Next' }]) as Record<string, unknown>[]
+    if (!Array.isArray(outputs) || outputs.length === 0 || outputs.length > 6) throw new Error(`Plugin block ${block.key} lists its outputs wrongly`)
+    const provides = (block.provides ?? []) as Record<string, unknown>[]
+    if (!Array.isArray(provides) || provides.length > 20) throw new Error(`Plugin block ${block.key} lists what it provides wrongly`)
+    return {
+      key: block.key,
+      title: block.title,
+      description: block.description,
+      fields: parseBlockFields(block.key, block.fields),
+      outputs: outputs.map((output) => {
+        if (!text(output.id, 40) || !OUTPUT_ID.test(output.id) || output.id === 'failed' || !text(output.label, 40)) {
+          throw new Error(`An output of plugin block ${block.key} needs an id other than failed, and a label`)
+        }
+        return { id: output.id, label: output.label }
+      }),
+      provides: provides.map((item) => {
+        if (!text(item.key, 40) || !FIELD_KEY.test(item.key) || !text(item.label, 60))
+          throw new Error(`Plugin block ${block.key} provides something unnamed`)
+        return { key: item.key, label: item.label }
+      }),
+    }
+  })
+}
+
+function parseTriggers(triggers: Record<string, unknown>[]): PluginTrigger[] {
+  const keys = new Set<string>()
+  return triggers.map((trigger) => {
+    if (!text(trigger.key, 40) || !PLUGIN_BLOCK_KEY.test(trigger.key) || keys.has(trigger.key))
+      throw new Error('Each plugin trigger needs a key of its own')
+    keys.add(trigger.key)
+    if (!text(trigger.title, 60) || !text(trigger.description, 300)) throw new Error(`Plugin trigger ${trigger.key} needs a title and a description`)
+    const fields = parseBlockFields(trigger.key, trigger.fields)
+    if (fields.some((field) => field.kind !== 'text' && field.kind !== 'select'))
+      throw new Error(`The fields of plugin trigger ${trigger.key} can only be text or select, since they are compared with each event`)
+    const provides = (trigger.provides ?? []) as Record<string, unknown>[]
+    if (!Array.isArray(provides) || provides.length > 20) throw new Error(`Plugin trigger ${trigger.key} lists what it provides wrongly`)
+    return {
+      key: trigger.key,
+      title: trigger.title,
+      description: trigger.description,
+      fields,
+      provides: provides.map((item) => {
+        if (!text(item.key, 40) || !FIELD_KEY.test(item.key) || !text(item.label, 60))
+          throw new Error(`Plugin trigger ${trigger.key} provides something unnamed`)
+        return { key: item.key, label: item.label }
+      }),
+    }
+  })
+}
+
+/** An event a plugin reports. Only the keys its trigger declares are kept, as short texts. */
+export function parsePluginTriggerEvent(trigger: PluginTrigger, value: unknown): Record<string, string> {
+  const declared = new Set([...trigger.fields.map((field) => field.key), ...trigger.provides.map((item) => item.key)])
+  const data = parseBlockOutput(value)
+  return Object.fromEntries(Object.entries(data).filter(([key]) => declared.has(key)))
+}
+
+function parseBlockFields(block: string, value: unknown): PluginBlockField[] {
+  const fields = (value ?? []) as Record<string, unknown>[]
+  if (!Array.isArray(fields) || fields.length > 20) throw new Error(`Plugin block ${block} lists its fields wrongly`)
+  return fields.map((field) => {
+    if (!text(field.key, 40) || !FIELD_KEY.test(field.key) || !text(field.label, 80))
+      throw new Error(`A field of plugin block ${block} needs a key and a label`)
+    const kind = PLUGIN_BLOCK_FIELD_KINDS.find((item) => item === field.kind)
+    if (!kind) throw new Error(`Field ${field.key} of plugin block ${block} has an unknown kind`)
+    const options = (field.options ?? []) as Record<string, unknown>[]
+    if (!Array.isArray(options) || options.length > 100) throw new Error(`Field ${field.key} of plugin block ${block} lists its options wrongly`)
+    return {
+      key: field.key,
+      label: field.label,
+      kind,
+      ...(field.required === true ? { required: true } : {}),
+      ...(text(field.placeholder, 200) ? { placeholder: field.placeholder } : {}),
+      ...(text(field.hint, 300) ? { hint: field.hint } : {}),
+      ...(kind === 'select'
+        ? {
+            options: options.map((option) => {
+              if (!text(option.value, 200) || !text(option.label, 200)) throw new Error(`An option of field ${field.key} needs a value and a label`)
+              return { value: option.value, label: option.label }
+            }),
+            ...(field.dynamic === true ? { dynamic: true } : {}),
+          }
+        : {}),
+      ...(text(field.initial, 4000) ? { initial: field.initial } : {}),
+    }
+  })
+}
+
+/** What a block answered. The plugin is someone else's server, so the handle has to be one of the block's outputs and the output plain text. */
+export function parsePluginBlockAnswer(block: PluginBlock, value: unknown): PluginBlockAnswer {
+  const raw = (value ?? {}) as Record<string, unknown>
+  if (raw.wait === true) return { wait: true, output: parseBlockOutput(raw.output) }
+  const handle = raw.handle === undefined ? block.outputs[0]?.id : raw.handle
+  if (typeof handle !== 'string' || !block.outputs.some((output) => output.id === handle)) {
+    throw new Error(`The plugin left block ${block.key} through ${String(handle)}, which it does not have`)
+  }
+  return { handle, output: parseBlockOutput(raw.output) }
+}
+
+export function parseBlockOutput(value: unknown): Record<string, string> {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== 'object' || Array.isArray(value)) throw new Error('A block output has to be an object of texts')
+  const output: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value).slice(0, 20)) {
+    if (!FIELD_KEY.test(key)) continue
+    output[key] = String(item ?? '').slice(0, 4000)
+  }
+  return output
 }
 
 function parseFields(value: unknown): PluginField[] {

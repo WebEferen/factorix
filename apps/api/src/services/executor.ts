@@ -240,7 +240,8 @@ class RunExecution {
             },
           ]
         : []
-    if (targets.length === 0 && this.run.phase !== 'plugin') throw new Error('This run has no repository to work on')
+    // A plugin's request and a workflow's question with no project may have no code to read.
+    if (targets.length === 0 && this.run.phase !== 'plugin' && this.run.phase !== 'prompt') throw new Error('This run has no repository to work on')
     this.repos = targets.map((repo) => ({
       ...repo,
       env: {
@@ -483,7 +484,8 @@ class RunExecution {
     const options: StartAgentOptions = {
       runId: this.run.id,
       issueKey: workspaceKey(this.run),
-      readOnlyRepo: PHASES[this.run.phase as Phase].readOnlyRepo,
+      // The read-only mount needs a repos folder, and with no repository there is nothing to protect.
+      readOnlyRepo: PHASES[this.run.phase as Phase].readOnlyRepo && this.repos.length > 0,
       env: withServices(await this.containerEnv(), services.started),
       networks: services.started?.network ? [services.started.network] : undefined,
       isolation: this.isolation(),

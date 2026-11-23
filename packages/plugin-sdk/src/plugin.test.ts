@@ -60,7 +60,7 @@ describe('a plugin', () => {
   })
 
   it('needs something to offer and a real secret', () => {
-    expect(() => definePlugin({ name: 'Empty', version: '1' })).toThrow('tracker or at least one page')
+    expect(() => definePlugin({ name: 'Empty', version: '1' })).toThrow('a tracker, a page, or a block')
     expect(() => createHandler(plugin, { secret: 'short' })).toThrow('16 characters')
   })
 })
@@ -106,6 +106,118 @@ describe('a page with a form', () => {
     expect(expired.status).toBe(401)
     expect(await expired.text()).toContain('Open Admin again under Settings, Plugins')
     expect(seen).toHaveLength(1)
+  })
+})
+
+describe('a plugin with workflow blocks', () => {
+  const seen: unknown[] = []
+  const blocks = definePlugin({
+    name: 'Blocks',
+    version: '1',
+    blocks: [
+      {
+        key: 'post',
+        title: 'Post a message',
+        description: 'Posts to a channel.',
+        fields: [
+          { key: 'channel', label: 'Channel', kind: 'select', dynamic: true, required: true },
+          { key: 'text', label: 'Text', kind: 'template' },
+        ],
+        outputs: [
+          { id: 'sent', label: 'Sent' },
+          { id: 'skipped', label: 'Skipped' },
+        ],
+        provides: [{ key: 'ts', label: 'Message' }],
+        run(call) {
+          seen.push(call)
+          return call.config.text ? { handle: 'sent', output: { ts: '1.2' } } : { handle: 'skipped' }
+        },
+        options: ({ field, org }) => [{ value: `${org.id}-${field}`, label: '#general' }],
+      },
+      { key: 'approve', title: 'Wait for approval', description: 'Holds the step.', run: () => ({ wait: true }) },
+    ],
+    triggers: [
+      {
+        key: 'posted',
+        title: 'Message posted',
+        description: 'Someone posted.',
+        fields: [{ key: 'channel', label: 'Channel', kind: 'select', dynamic: true }],
+        provides: [{ key: 'text', label: 'Text' }],
+        options: () => [{ value: 'C1', label: '#ops' }],
+      },
+    ],
+  })
+  const client = factorixClient(blocks)
+
+  it('lists its blocks in the manifest and asks for the permission they need', async () => {
+    const manifest = await client.manifest()
+    expect(manifest.permissions).toEqual(['workflows:blocks'])
+    expect(manifest.blocks.map((block) => [block.key, block.outputs.map((output) => output.id)])).toEqual([
+      ['post', ['sent', 'skipped']],
+      ['approve', ['next']],
+    ])
+    expect(manifest.blocks[0]).not.toHaveProperty('run')
+    expect(manifest.triggers).toEqual([
+      {
+        key: 'posted',
+        title: 'Message posted',
+        description: 'Someone posted.',
+        fields: [{ key: 'channel', label: 'Channel', kind: 'select', dynamic: true }],
+        provides: [{ key: 'text', label: 'Text' }],
+      },
+    ])
+    expect(await client.blockOptions('posted', 'channel')).toEqual([{ value: 'C1', label: '#ops' }])
+  })
+
+  it('refuses a trigger that shares a block key or has a field it cannot compare', () => {
+    const run = () => ({})
+    const trigger = { key: 'post', title: 'x', description: 'x' }
+    expect(() => definePlugin({ name: 'Bad', version: '1', blocks: [{ ...trigger, run }], triggers: [trigger] })).toThrow('share the key')
+    expect(() =>
+      definePlugin({ name: 'Bad', version: '1', triggers: [{ ...trigger, fields: [{ key: 'x', label: 'X', kind: 'template' }] }] }),
+    ).toThrow('text or select')
+  })
+
+  it('fires a trigger', async () => {
+    const fake = fakeFactorix({ 'workflow-triggers': () => 2 })
+    const fx = factorix({ url: 'https://fx.test', secret: 'test-secret-0123456789', pluginId: 'plugin-1', fetch: fake.fetch })
+    expect(await fx.fireTrigger('org-1', { trigger: 'posted', data: { text: 'Hi' }, eventId: 'e1' })).toBe(2)
+    expect(fake.calls[0]?.body).toEqual({ orgId: 'org-1', trigger: 'posted', data: { text: 'Hi' }, eventId: 'e1' })
+  })
+
+  it('runs a block with what the workflow gave it, and lists the choices of a dynamic field', async () => {
+    expect(await client.runBlock('post', { config: { text: 'Hi' } })).toEqual({ handle: 'sent', output: { ts: '1.2' } })
+    expect(await client.runBlock('post')).toEqual({ handle: 'skipped' })
+    expect(await client.runBlock('approve')).toEqual({ wait: true })
+    expect(seen[0]).toMatchObject({ block: 'post', nodeId: 'post-1', run: { id: 'run-1' }, config: { text: 'Hi' } })
+    expect(await client.blockOptions('post', 'channel')).toEqual([{ value: 'org-1-channel', label: '#general' }])
+    await expect(client.blockOptions('approve', 'x')).rejects.toThrow('lists no choices')
+    await expect(client.runBlock('missing')).rejects.toThrow('no block missing')
+  })
+
+  it('refuses a block key Factorix would not take', () => {
+    const run = () => ({})
+    expect(() => definePlugin({ name: 'Bad', version: '1', blocks: [{ key: 'Post', title: 'x', description: 'x', run }] })).toThrow('lowercase')
+    expect(() =>
+      definePlugin({
+        name: 'Bad',
+        version: '1',
+        blocks: [{ key: 'post', title: 'x', description: 'x', outputs: [{ id: 'failed', label: 'x' }], run }],
+      }),
+    ).toThrow('every block has')
+  })
+
+  it('finishes a held step', async () => {
+    const fake = fakeFactorix({ 'workflow-steps': () => null })
+    const fx = factorix({ url: 'https://fx.test', secret: 'test-secret-0123456789', pluginId: 'plugin-1', fetch: fake.fetch })
+    await fx.finishStep('org-1', { runId: 'run-1', nodeId: 'approve-1', handle: 'next', output: { by: 'Kim' } })
+    expect(fake.calls).toEqual([
+      {
+        call: 'workflow-steps',
+        pluginId: 'plugin-1',
+        body: { orgId: 'org-1', runId: 'run-1', nodeId: 'approve-1', handle: 'next', output: { by: 'Kim' } },
+      },
+    ])
   })
 })
 

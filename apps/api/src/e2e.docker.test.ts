@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { signPlugin, type TrackerIssue } from '@factorix/connectors'
 import { json, type RunRow } from '@factorix/db'
 import type { ScriptedPlan } from '@factorix/runtime'
@@ -784,11 +784,11 @@ describe('factory end to end', () => {
           { id: 'build', type: 'agent.run', position, config: { agentId: engineer.id } },
           {
             id: 'tell',
-            type: 'notify.send',
+            type: 'slack.send_message',
             position,
             config: { connectionId: slack.id, channel: 'C1', message: '{{issue.identifier}}: {{steps.build.result}}' },
           },
-          { id: 'failed', type: 'notify.send', position, config: { connectionId: slack.id, channel: 'C2', message: 'It failed' } },
+          { id: 'failed', type: 'slack.send_message', position, config: { connectionId: slack.id, channel: 'C2', message: 'It failed' } },
         ],
         edges: [
           { id: 'a', source: 'start', sourceHandle: 'next', target: 'build' },
@@ -842,7 +842,7 @@ describe('factory end to end', () => {
         nodes: [
           { id: 'start', type: 'trigger.manual', position, config: {} },
           { id: 'ask', type: 'agent.prompt', position, config: { agentId: engineer.id, prompt: 'Is {{issue.identifier}} safe?', post: 'comment' } },
-          { id: 'tell', type: 'notify.send', position, config: { connectionId: slack.id, channel: 'C7', message: '{{steps.ask.text}}' } },
+          { id: 'tell', type: 'slack.send_message', position, config: { connectionId: slack.id, channel: 'C7', message: '{{steps.ask.text}}' } },
         ],
         edges: [
           { id: 'a', source: 'start', sourceHandle: 'next', target: 'ask' },
@@ -883,6 +883,99 @@ describe('factory end to end', () => {
     expect(await issueOf(row.id)).toMatchObject({ factoryState: 'untracked', lockedByRunId: null })
     expect(await remoteGit('branch --list')).toBe(branchesBefore)
     expect(await harness.deps.db('issue_merge_requests').where({ issueId: row.id })).toEqual([])
+  })
+
+  it('answers a Slack mention through an agent with no ticket, reading the workflow’s project read-only or no code at all', async () => {
+    script = (phase) =>
+      phase === 'prompt'
+        ? {
+            steps: [{ say: 'Looking.' }, { exec: 'pwd; touch NOT_ALLOWED 2>&1; echo "touch exited $?"' }],
+            structuredOutput: { summary: 'The deploy broke it.' },
+          }
+        : undefined
+    const signingSecret = 'e2e-slack-signing-secret'
+    const { connection: slack } = await admin.ok('POST', '/api/connections', { kind: 'slack', name: 'Slack for mentions', secret: 'xoxb-secret' })
+    await admin.ok('PUT', `/api/connections/${slack.id}`, { config: { webhookSecret: signingSecret } })
+    const { agents } = await admin.ok('GET', '/api/agents')
+    const engineer = agents.find((agent: { handle: string }) => agent.handle === 'engineer-1')
+    const position = { x: 0, y: 0 }
+    const flow = async (channel: string, workflowProject: string | null) => {
+      const { workflow } = await admin.ok('POST', '/api/workflows', {
+        name: `Answer mentions in ${channel}`,
+        projectId: workflowProject,
+        definition: {
+          nodes: [
+            { id: 'm', type: 'trigger.slack.mention', position, config: { connectionId: slack.id, channel } },
+            { id: 'ask', type: 'agent.prompt', position, config: { agentId: engineer.id, prompt: 'Asked in Slack: {{steps.m.text}}', post: 'none' } },
+            {
+              id: 'tell',
+              type: 'slack.send_message',
+              position,
+              config: { connectionId: slack.id, channel, message: '{{steps.ask.text}}', thread: '{{steps.m.thread}}' },
+            },
+          ],
+          edges: [
+            { id: 'a', source: 'm', sourceHandle: 'next', target: 'ask' },
+            { id: 'b', source: 'ask', sourceHandle: 'next', target: 'tell' },
+          ],
+        },
+      })
+      await admin.ok('POST', `/api/workflows/${workflow.id}/publish`)
+      await admin.ok('POST', `/api/workflows/${workflow.id}/enabled`, { enabled: true })
+      return workflow.id as string
+    }
+    const withCode = await flow('C8', projectId)
+    const withoutCode = await flow('C9', null)
+    const branchesBefore = await remoteGit('branch --list')
+
+    const mention = async (id: string, channel: string) => {
+      const body = JSON.stringify({
+        type: 'event_callback',
+        event_id: id,
+        authorizations: [{ user_id: 'UAPP' }],
+        event: { type: 'app_mention', channel, user: 'U7', text: '<@UAPP> what broke?', ts: '17.5' },
+      })
+      const at = Math.floor(Date.now() / 1000)
+      const response = await harness.app.inject({
+        method: 'POST',
+        url: `/webhooks/slack/${slack.id}`,
+        payload: body,
+        headers: {
+          'content-type': 'application/json',
+          'x-slack-request-timestamp': String(at),
+          'x-slack-signature': `v0=${createHmac('sha256', signingSecret).update(`v0:${at}:${body}`).digest('hex')}`,
+        },
+      })
+      expect(response.statusCode).toBe(200)
+    }
+    await mention('EvDocker1', 'C8')
+    await mention('EvDocker2', 'C9')
+
+    const answered = async (workflowId: string) => {
+      const listed = await waitFor(
+        async () => {
+          const { runs } = await admin.ok('GET', `/api/workflows/${workflowId}/runs`)
+          return runs[0] && runs[0].status !== 'running' ? runs[0] : null
+        },
+        'the workflow run to finish',
+        180_000,
+      )
+      const { run } = await admin.ok('GET', `/api/workflow-runs/${listed.id}`)
+      expect(run.status, JSON.stringify(run.steps)).toBe('succeeded')
+      const asked = run.steps.find((step: { nodeId: string }) => step.nodeId === 'ask').output
+      const row = await harness.deps.db('runs').where({ id: asked.runId }).first()
+      const events = await harness.deps.db('run_events').where({ runId: row.id, type: 'tool.result' })
+      return { row, output: events.map((event: { payload: { output?: string } }) => event.payload.output).join('\n') }
+    }
+    const code = await answered(withCode)
+    expect(code.row).toMatchObject({ phase: 'prompt', state: 'succeeded', issueId: null, projectId })
+    expect(code.output).toContain('Read-only file system')
+    const none = await answered(withoutCode)
+    expect(none.row).toMatchObject({ phase: 'prompt', state: 'succeeded', issueId: null, projectId: null })
+    expect(none.output).toContain('touch exited 0')
+    for (const channelId of ['C8', 'C9'])
+      expect(harness.world.notifications).toContainEqual({ channelId, markdown: 'The deploy broke it.', threadId: '17.5' })
+    expect(await remoteGit('branch --list')).toBe(branchesBefore)
   })
 
   it('lets a researcher report on a ticket with read-only repositories, then hands it to an engineer', async () => {

@@ -1,6 +1,18 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { type Agent, definePlugin, type Member, type PageContext, type Plugin, type TicketProject } from '@moxxylabs/factorix-plugin-sdk'
-import { type Actor, CompanyError, cancelCase, type Deps, decide, mayAct, refreshOrg, retryCase, startCase } from './engine'
+import {
+  type Actor,
+  CASE_FINISHED,
+  CompanyError,
+  cancelCase,
+  type Deps,
+  decide,
+  mayAct,
+  refreshOrg,
+  retryCase,
+  startCase,
+  startForWorkflow,
+} from './engine'
 import {
   type Assignee,
   type Definition,
@@ -20,7 +32,7 @@ import {
 import { TEMPLATES } from './templates'
 import { casesView, caseView, companyView, editView, NOTICES, page, processesView, type Shell, startView, workView } from './view'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 const LIST = 100
 const STATUSES = ['running', 'completed', 'rejected', 'cancelled', 'failed'] as const
 
@@ -405,5 +417,66 @@ export function companyPlugin(deps: Deps): Plugin {
         action: (context, request, token) => act(deps, context, request, token),
       },
     ],
+    blocks: [
+      {
+        key: 'start_case',
+        title: 'Start a company process',
+        description: 'Starts a case of a Company process and waits until it is completed or rejected.',
+        fields: [
+          { key: 'process', label: 'Process', kind: 'select', dynamic: true, required: true },
+          { key: 'title', label: 'Case title', kind: 'template', required: true, initial: '{{issue.identifier}} {{issue.title}}' },
+          {
+            key: 'form',
+            label: 'Form',
+            kind: 'longTemplate',
+            placeholder: 'amount: 120',
+            hint: "One line per field of the process's form, as key: value. The process editor shows each key as {{form.key}}.",
+          },
+        ],
+        outputs: [
+          { id: 'completed', label: 'Completed' },
+          { id: 'rejected', label: 'Rejected' },
+        ],
+        provides: [
+          { key: 'case', label: 'Case number' },
+          { key: 'status', label: 'How the case closed' },
+        ],
+        run: (call) => startForWorkflow(deps, call),
+        options: ({ org }) => publishedProcesses(deps, org.id),
+      },
+    ],
+    triggers: [
+      {
+        key: CASE_FINISHED,
+        title: 'Company case closed',
+        description: 'Starts when a case someone started in Company is completed, rejected, or cancelled.',
+        fields: [
+          { key: 'process', label: 'Process', kind: 'select', dynamic: true, hint: 'Leave empty for any process.' },
+          {
+            key: 'status',
+            label: 'How it closed',
+            kind: 'select',
+            hint: 'Leave empty for any.',
+            options: [
+              { value: 'completed', label: 'Completed' },
+              { value: 'rejected', label: 'Rejected' },
+              { value: 'cancelled', label: 'Cancelled' },
+            ],
+          },
+        ],
+        provides: [
+          { key: 'case', label: 'Case number' },
+          { key: 'title', label: 'Case title' },
+          { key: 'status', label: 'How the case closed' },
+          { key: 'processName', label: 'Process' },
+          { key: 'requester', label: 'Started by' },
+        ],
+        options: ({ org }) => publishedProcesses(deps, org.id),
+      },
+    ],
   })
+}
+
+async function publishedProcesses(deps: Deps, orgId: string) {
+  return (await deps.store.processes(orgId)).filter((process) => process.published).map((process) => ({ value: process.id, label: process.name }))
 }

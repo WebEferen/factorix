@@ -18,6 +18,59 @@ function requireSecret(deps: Pick<AppDeps, 'secrets'>, connection: ConnectionRow
   return secret
 }
 
+/**
+ * What still depends on a connection, in words for the person removing it. A connection goes only once nothing does, so
+ * no project, agent, environment, workflow, or run loses it without someone choosing that first.
+ */
+export async function connectionUses(db: Db, connection: Pick<ConnectionRow, 'id' | 'orgId'>): Promise<string[]> {
+  const { id, orgId } = connection
+  const projects = (await db('projects')
+    .where({ orgId })
+    .where((query) => query.where({ trackerConnectionId: id }).orWhere({ scmConnectionId: id }))
+    .orderBy('name')
+    .select('name', 'trackerConnectionId')) as { name: string; trackerConnectionId: string }[]
+  const agents = (await db('agent_connections')
+    .join('accounts', 'agent_connections.agent_id', 'accounts.id')
+    .where({ 'agent_connections.connection_id': id, 'accounts.org_id': orgId })
+    .orderBy('accounts.handle')
+    .select('accounts.handle')) as { handle: string }[]
+  const secretSets = JSON.stringify([{ connectionId: id }])
+  const environments = (await db('project_environments')
+    .join('projects', 'project_environments.project_id', 'projects.id')
+    .where({ 'project_environments.org_id': orgId })
+    .whereRaw('project_environments.secret_sets @> ?::jsonb', [secretSets])
+    .orderBy('projects.name')
+    .select('projects.name')) as { name: string }[]
+  const previews = (await db('environment_instances')
+    .where({ orgId })
+    .whereNotIn('state', ['stopped', 'failed'])
+    .whereRaw('secret_sets @> ?::jsonb', [secretSets])
+    .count({ count: '*' })
+    .first()) as { count: string | number } | undefined
+  const workflows = (await db('workflows')
+    .where({ orgId })
+    .whereNull('archivedAt')
+    .where((query) =>
+      query.whereRaw('position(? in definition::text) > 0', [id]).orWhereRaw("position(? in coalesce(published_definition::text, '')) > 0", [id]),
+    )
+    .orderBy('name')
+    .select('name')) as { name: string }[]
+  const runs = (await db('runs')
+    .where({ orgId })
+    .whereNotIn('state', ['succeeded', 'failed', 'cancelled'])
+    .whereRaw("trigger->>'scmConnectionId' = ?", [id])
+    .count({ count: '*' })
+    .first()) as { count: string | number } | undefined
+  return [
+    ...projects.map((project) => `project ${project.name} (${project.trackerConnectionId === id ? 'tickets' : 'code'})`),
+    ...agents.map((agent) => `agent @${agent.handle}`),
+    ...environments.map((environment) => `the environment of ${environment.name}`),
+    ...(Number(previews?.count ?? 0) > 0 ? ['a running preview'] : []),
+    ...workflows.map((workflow) => `workflow ${workflow.name}`),
+    ...(Number(runs?.count ?? 0) > 0 ? ['an unfinished run'] : []),
+  ]
+}
+
 export async function getConnection(db: Db, orgId: string, id: string): Promise<ConnectionRow> {
   const row = await db<ConnectionRow>('connections').where({ id, orgId }).first()
   if (!row) throw notFound('Connection')
@@ -75,7 +128,8 @@ export function encodeSecret(deps: Pick<AppDeps, 'secrets'>, secret: ConnectionI
 
 /** Tracker and SCM connections carry an inbound webhook secret, generated once and shown to admins. */
 export function withWebhookSecret(kind: string, config: Record<string, unknown>): Record<string, unknown> {
-  if (hasWebhookOf(kind) && !config.webhookSecret) return { ...config, webhookSecret: randomToken(24) }
+  // Slack signs with the signing secret of the admin's own Slack app, so there is nothing to generate.
+  if (hasWebhookOf(kind) && kind !== 'slack' && !config.webhookSecret) return { ...config, webhookSecret: randomToken(24) }
   return config
 }
 

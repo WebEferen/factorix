@@ -1,4 +1,4 @@
-import { SCM_WEBHOOK_CODECS, TRACKER_WEBHOOK_CODECS, type TrackerWebhookCodec } from '@factorix/connectors'
+import { parseSlackEvent, SCM_WEBHOOK_CODECS, TRACKER_WEBHOOK_CODECS, type TrackerWebhookCodec, verifySlackRequest } from '@factorix/connectors'
 import { type ConnectionRow, json, type WebhookDeliveryRow } from '@factorix/db'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { AppDeps } from '../deps'
@@ -74,6 +74,29 @@ export function webhookRoutes(app: FastifyInstance, deps: AppDeps): void {
         return { ok: true, duplicate: !rowId }
       })
     }
+
+    // Slack's events start the workflows built on its triggers. It wants an answer within three seconds, so they are queued.
+    scope.post('/webhooks/slack/:connectionId', async (request) => {
+      const { connectionId } = request.params as { connectionId: string }
+      const connection = /^[0-9a-f-]{36}$/.test(connectionId)
+        ? await db<ConnectionRow>('connections').where({ id: connectionId, kind: 'slack' }).first()
+        : undefined
+      if (!connection) throw new HttpError(404, 'not_found', 'Unknown webhook')
+      const rawBody = request.body as Buffer
+      if (!verifySlackRequest(rawBody, request.headers, String(connection.config.webhookSecret ?? ''))) {
+        throw new HttpError(401, 'bad_signature', 'Webhook signature check failed')
+      }
+      const event = parseSlackEvent(JSON.parse(rawBody.toString('utf8')))
+      if (event.kind === 'challenge') return { challenge: event.challenge }
+      if (event.kind === 'ignored') return { ok: true }
+      const { id, kind, ...data } = event
+      await queues.workflows.add(
+        'trigger',
+        { orgId: connection.orgId, type: `trigger.slack.${kind}`, data: { ...data, connectionId: connection.id }, eventId: `slack:${id}` },
+        { jobId: `slack-${connection.id}-${id}` },
+      )
+      return { ok: true }
+    })
 
     for (const source of ['gitlab', 'github'] as const) {
       const eventHeader = `x-${source}-event`

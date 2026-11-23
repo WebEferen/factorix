@@ -5,8 +5,8 @@ import type { AppDeps } from '../deps'
 import { connectionDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
-import { badRequest, conflict, isUniqueViolation, parseBody } from '../lib/errors'
-import { encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
+import { badRequest, conflict, isForeignKeyViolation, isUniqueViolation, parseBody } from '../lib/errors'
+import { connectionUses, encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
 import { secretSourceFor } from '../services/environments'
 import { pluginConnectionValues, secretsOf } from '../services/plugins'
 import { readSettings } from '../services/settings'
@@ -87,6 +87,39 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { connection: connectionDto(row as ConnectionRow, (await readSettings(deps)).publicUrl, true) }
   })
 
+  app.get('/api/connections/:id/uses', async (request) => {
+    const { account } = requireAdmin(request)
+    return { uses: await connectionUses(db, await getConnection(db, account.orgId, (request.params as { id: string }).id)) }
+  })
+
+  app.delete('/api/connections/:id', async (request) => {
+    const { account } = requireAdmin(request)
+    const current = await getConnection(db, account.orgId, (request.params as { id: string }).id)
+    if (current.kind === 'factorix') throw badRequest('Built-in tickets cannot be removed, since every ticket in them would go too')
+    try {
+      await db.transaction(async (trx) => {
+        await trx('connections').where({ id: current.id }).forUpdate().first()
+        const uses = await connectionUses(trx, current)
+        if (uses.length > 0) throw conflict(`${current.name} is still used by ${uses.join(', ')}. Remove it from those first.`)
+        await trx('connections').where({ id: current.id }).delete()
+        await writeAudit(trx, {
+          orgId: account.orgId,
+          actorAccountId: account.id,
+          actorKind: 'human',
+          action: 'connection.deleted',
+          targetType: 'connection',
+          targetId: current.id,
+          metadata: { kind: current.kind, name: current.name },
+        })
+      })
+    } catch (error) {
+      // A project made in the meantime still points at it.
+      if (isForeignKeyViolation(error)) throw conflict(`${current.name} is still used by a project. Remove it from that first.`)
+      throw error
+    }
+    return { ok: true }
+  })
+
   app.post('/api/connections/:id/test', async (request) => {
     const { account } = requireAdmin(request)
     const connection = await getConnection(db, account.orgId, (request.params as { id: string }).id)
@@ -119,6 +152,13 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
     const connection = await getConnection(db, account.orgId, (request.params as { id: string }).id)
     if (!NOTIFICATION_KINDS.includes(connection.kind as never)) throw badRequest('This connection has no channels')
     return { channels: await notifierFor(deps, connection).listChannels() }
+  })
+
+  app.get('/api/connections/:id/people', async (request) => {
+    const { account } = requireAdmin(request)
+    const connection = await getConnection(db, account.orgId, (request.params as { id: string }).id)
+    if (!NOTIFICATION_KINDS.includes(connection.kind as never)) throw badRequest('This connection has no people to list')
+    return { people: await notifierFor(deps, connection).listPeople() }
   })
 
   const trackerFromQuery = async (request: { query: unknown; auth: unknown }, orgId: string) => {

@@ -1,4 +1,4 @@
-import { type NotificationChannel, type NotificationConnector, type NotificationMessage, RetryLaterError } from '../notifier'
+import { type NotificationChannel, type NotificationConnector, type NotificationMessage, type NotificationPerson, RetryLaterError } from '../notifier'
 import { markdownToSlack } from './markup'
 
 const API_URL = 'https://slack.com/api'
@@ -9,10 +9,19 @@ const HELP: Record<string, string> = {
   invalid_auth: 'Slack rejected the token.',
   account_inactive: 'This Slack token belongs to a deactivated app or user.',
   token_revoked: 'This Slack token was revoked.',
-  missing_scope: 'The Slack app is missing a scope. It needs chat:write, chat:write.public, channels:read, and groups:read.',
+  missing_scope: 'The Slack app is missing a scope. It needs chat:write, chat:write.public, channels:read, groups:read, and users:read.',
   not_in_channel: 'The Slack app is not in this channel. Invite it, or add the chat:write.public scope for public channels.',
   channel_not_found: 'Slack cannot find this channel. Private channels need the app invited first.',
   is_archived: 'This Slack channel is archived.',
+}
+
+interface SlackMember {
+  id: string
+  name: string
+  real_name?: string
+  deleted?: boolean
+  is_bot?: boolean
+  profile?: { display_name?: string }
 }
 
 interface SlackResponse {
@@ -83,10 +92,25 @@ export class SlackConnector implements NotificationConnector {
     return channels.sort((a, b) => a.name.localeCompare(b.name))
   }
 
+  async listPeople(): Promise<NotificationPerson[]> {
+    const people: NotificationPerson[] = []
+    let cursor: string | undefined
+    do {
+      const data = await this.call('users.list', { limit: 200, cursor })
+      for (const member of data.members as SlackMember[]) {
+        if (member.deleted || member.is_bot || member.id === 'USLACKBOT') continue
+        people.push({ id: member.id, name: member.profile?.display_name || member.real_name || member.name })
+      }
+      cursor = data.response_metadata?.next_cursor || undefined
+    } while (cursor && people.length < 5000)
+    return people.sort((a, b) => a.name.localeCompare(b.name))
+  }
+
   async send(message: NotificationMessage): Promise<{ id: string; url: string | null }> {
     const text = markdownToSlack(message.markdown)
     const data = await this.call('chat.postMessage', {
       channel: message.channelId,
+      ...(message.threadId ? { thread_ts: message.threadId } : {}),
       text: text.slice(0, SECTION_LIMIT),
       blocks: slackSections(text).map((section) => ({ type: 'section', text: { type: 'mrkdwn', text: section } })),
       unfurl_links: false,

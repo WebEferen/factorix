@@ -30,7 +30,7 @@ describe('the Postgres store', () => {
     url.pathname = `/${NAME}`
     pool = new pg.Pool({ connectionString: url.toString() })
     const client = await pool.connect()
-    expect(await migrateUp(client, MIGRATIONS)).toEqual(['0001_company'])
+    expect(await migrateUp(client, MIGRATIONS)).toEqual(['0001_company', '0002_workflow_cases', '0003_closed_cases'])
     client.release()
     store = pgStore(pool)
   })
@@ -81,6 +81,7 @@ describe('the Postgres store', () => {
     createdAt: NOW,
     updatedAt: NOW,
     finishedAt: null,
+    workflow: null,
     ...fields,
   })
 
@@ -151,10 +152,27 @@ describe('the Postgres store', () => {
     expect(await store.events(randomUUID(), first.id)).toEqual([])
   })
 
+  it('keeps the workflow step a case reports to, until it has reported', async () => {
+    const orgId = randomUUID()
+    const item = process(orgId)
+    await store.saveProcess(item)
+    await store.rememberPlugin(orgId, 'plugin-1')
+    const started = await store.insertCase(newCase(item, { workflow: { runId: 'run-1', nodeId: 'buy' } }))
+    expect(await store.case(orgId, started.id)).toMatchObject({ workflow: { runId: 'run-1', nodeId: 'buy' } })
+    const mine = async () => (await store.unreported()).filter((row) => row.orgId === orgId).map((row) => row.id)
+    expect(await mine()).toEqual([])
+    await store.updateCase(started, { status: 'rejected', current: null, phase: null, finishedAt: NOW }, NOW)
+    expect(await mine()).toEqual([started.id])
+    await store.markReported(randomUUID(), started.id, NOW)
+    expect(await mine()).toEqual([started.id])
+    await store.markReported(orgId, started.id, NOW)
+    expect(await mine()).toEqual([])
+  })
+
   it('rolls its tables back', async () => {
     const client = await pool.connect()
-    expect(await migrateDown(client, MIGRATIONS)).toEqual(['0001_company'])
-    expect(await migrateUp(client, MIGRATIONS)).toEqual(['0001_company'])
+    expect(await migrateDown(client, MIGRATIONS, 3)).toEqual(['0003_closed_cases', '0002_workflow_cases', '0001_company'])
+    expect(await migrateUp(client, MIGRATIONS)).toEqual(['0001_company', '0002_workflow_cases', '0003_closed_cases'])
     client.release()
   })
 })

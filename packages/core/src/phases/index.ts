@@ -233,7 +233,7 @@ Your report is posted on the ticket as a comment, so it has to stand on its own:
     readOnlyRepo: true,
     writes: false,
     outputSchema: TASK_SCHEMA,
-    instructions: `A workflow is asking you for one thing about this ticket. The repositories are mounted read-only on the ticket's branch, and no branch or merge request comes out of this.
+    instructions: `A workflow is asking you for one thing, about the ticket below when there is one. Any repositories are mounted read-only, on the ticket's branch when there is a ticket, and no branch or merge request comes out of this.
 Investigate, run what helps, and use the network where it is allowed.
 Your report is the answer the workflow passes on, so it has to stand on its own.`,
     userPrompt: (context) =>

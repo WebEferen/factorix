@@ -1,8 +1,9 @@
+import type { BlockCall } from '@moxxylabs/factorix-plugin-sdk'
 import { describe, expect, it } from 'vitest'
-import { type Actor, cancelCase, decide, poll, retryCase, startCase, sweep } from './engine'
-import { agentPrompt, type Definition, fill, keyFrom, problemsOf, readForm } from './model'
+import { type Actor, cancelCase, decide, poll, retryCase, startCase, startForWorkflow, sweep } from './engine'
+import { agentPrompt, type Definition, fill, formLines, keyFrom, type Process, problemsOf, readForm } from './model'
 import { TEMPLATES } from './templates'
-import { ADA, BOT, fakeWorld, GONE, MO, ORG, PROJECT, published } from './testing'
+import { ADA, BOT, fakeWorld, GONE, MO, ORG, PLUGIN, PROJECT, published } from './testing'
 
 const ada: Actor = { id: ADA.id, name: ADA.name, admin: true }
 const mo: Actor = { id: MO.id, name: MO.name, admin: false }
@@ -228,5 +229,93 @@ describe('a case', () => {
     expect(await cancelCase(world.deps, item, ada)).toMatchObject({ status: 'cancelled', phase: null })
     await expect(cancelCase(world.deps, { ...item, status: 'cancelled' }, ada)).rejects.toThrow('already closed')
     await expect(startCase(world.deps, { ...process, published: null }, { title: '', values: {} }, mo)).rejects.toThrow('not published')
+  })
+})
+
+describe('a case a workflow starts', () => {
+  const call = (process: Process, config: Record<string, string> = {}): BlockCall => ({
+    block: 'start_case',
+    plugin: { id: PLUGIN },
+    org: { id: ORG },
+    run: { id: 'run-9', url: 'https://factorix.test/workflows/w-1/runs/run-9', workflowId: 'w-1', workflowName: 'Buy on request' },
+    nodeId: 'buy',
+    config: { process: process.id, title: 'OPS-4 New monitor', form: 'item: A monitor\namount: 900\nreason: Mine broke', ...config },
+    issue: null,
+  })
+
+  it('reads a form typed as key: value lines', () => {
+    expect(formLines('item: A desk: oak\n\nnot a field\n amount : 3 ')).toEqual({ item: 'A desk: oak', amount: '3' })
+  })
+
+  it('holds the step, gives what the requester would do to the owner, and reports how it closed', async () => {
+    const world = fakeWorld()
+    const process = await published(world, purchase)
+    expect(await startForWorkflow(world.deps, call(process))).toEqual({ wait: true, output: { case: '#1' } })
+    const item = world.store.rows[0]!
+    expect(item).toMatchObject({
+      title: 'OPS-4 New monitor',
+      data: VALUES,
+      requesterName: 'Buy on request',
+      workflow: { runId: 'run-9', nodeId: 'buy' },
+    })
+    const approved = await decide(world.deps, item, ada, { decision: 'approve', note: '' })
+    expect(approved).toMatchObject({ current: 'order', assigneeId: ADA.id })
+
+    world.state.down = true
+    expect((await decide(world.deps, approved, ada, { decision: 'done', note: 'Order 77' })).status).toBe('completed')
+    expect(world.reports).toEqual([])
+    expect(world.logs.at(-1)).toContain('Could not tell the workflow')
+    world.state.down = false
+    await sweep(world.deps)
+    await sweep(world.deps)
+    expect(world.reports).toEqual([{ orgId: ORG, runId: 'run-9', nodeId: 'buy', handle: 'completed', output: { case: '#1', status: 'completed' } }])
+  })
+
+  it('fails the step when the case is cancelled, and answers at once when the case closes right away', async () => {
+    const world = fakeWorld()
+    await startForWorkflow(world.deps, call(await published(world, purchase)))
+    await cancelCase(world.deps, world.store.rows[0]!, ada)
+    expect(world.reports).toEqual([{ orgId: ORG, runId: 'run-9', nodeId: 'buy', error: 'Case #1 was cancelled' }])
+    const quick = await published(world, {
+      form: [],
+      steps: [
+        { id: 't', kind: 'ticket', name: 'File it', dueHours: null, projectId: PROJECT.id, title: 'x', description: '', agentId: null, wait: false },
+      ],
+    })
+    expect(await startForWorkflow(world.deps, call(quick, { form: '' }))).toEqual({
+      handle: 'completed',
+      output: { case: '#2', status: 'completed' },
+    })
+    await sweep(world.deps)
+    expect(world.reports).toHaveLength(1)
+    expect(world.triggers).toEqual([])
+  })
+
+  it('starts the workflows built on its closing when a person started it, once, retried until Factorix hears it', async () => {
+    const world = fakeWorld()
+    const process = await published(world, purchase)
+    const started = await startCase(world.deps, process, { title: 'Desk', values: VALUES }, mo)
+    world.state.down = true
+    await cancelCase(world.deps, started, ada)
+    expect(world.triggers).toEqual([])
+    world.state.down = false
+    await sweep(world.deps)
+    await sweep(world.deps)
+    expect(world.triggers).toEqual([
+      {
+        orgId: ORG,
+        trigger: 'case_finished',
+        eventId: `case-${started.id}`,
+        data: { process: process.id, status: 'cancelled', case: '#1', title: 'Desk', processName: 'Purchase request', requester: 'Mo' },
+      },
+    ])
+  })
+
+  it('refuses a form that is incomplete, and a process that is gone', async () => {
+    const world = fakeWorld()
+    const process = await published(world, purchase)
+    await expect(startForWorkflow(world.deps, call(process, { form: 'amount: lots' }))).rejects.toThrow('Fill in What to buy. Cost must be a number')
+    await expect(startForWorkflow(world.deps, call(process, { process: 'nope' }))).rejects.toThrow('process this block starts is gone')
+    expect(world.store.rows).toEqual([])
   })
 })

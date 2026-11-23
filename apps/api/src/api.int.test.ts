@@ -372,6 +372,59 @@ describe('API', () => {
       expect(await db('projects').where({ id: projectId }).first()).toMatchObject({ trackerConnectionId: linearId, scmConnectionId: gitlabId })
     })
 
+    it('deletes a connection only once nothing uses it, and says what still does', async () => {
+      const { db } = harness.deps
+      const member = new ApiClient(harness.app)
+      await member.ok('POST', '/api/auth/login', { email: 'bo@example.com', password: 'long enough password' })
+      expect((await admin.ok('GET', `/api/connections/${linearId}/uses`)).uses).toEqual([expect.stringMatching(/^project .+ \(tickets\)$/)])
+      expect((await admin.ok('GET', `/api/connections/${gitlabId}/uses`)).uses).toEqual([expect.stringMatching(/^project .+ \(code\)$/)])
+      const refused = await admin.request('DELETE', `/api/connections/${linearId}`)
+      expect(refused.status).toBe(409)
+      expect(refused.body.error.message).toMatch(/^Linear is still used by project .+\. Remove it from those first\.$/)
+      expect((await admin.request('DELETE', `/api/connections/${foreignLinearId}`)).status).toBe(404)
+
+      const { connection: mcp } = await admin.ok('POST', '/api/connections', {
+        kind: 'mcp_http',
+        name: 'Docs',
+        config: { url: 'https://mcp.example/mcp' },
+        secret: { Authorization: 'Bearer x' },
+      })
+      const { connection: chat } = await admin.ok('POST', '/api/connections', { kind: 'slack', name: 'Chat', secret: 'xoxb-1' })
+      const [agent] = (await admin.ok('GET', '/api/agents')).agents
+      await db('agent_connections').insert({ agentId: agent.id, connectionId: mcp.id, role: 'mcp' })
+      const position = { x: 0, y: 0 }
+      const { workflow } = await admin.ok('POST', '/api/workflows', {
+        name: 'Tell chat',
+        projectId: null,
+        definition: {
+          nodes: [
+            { id: 't', type: 'trigger.manual', position, config: {} },
+            { id: 's', type: 'slack.send_message', position, config: { connectionId: chat.id, channel: 'C1', message: 'Hi' } },
+          ],
+          edges: [{ id: 'e', source: 't', sourceHandle: 'next', target: 's' }],
+        },
+      })
+      expect((await admin.ok('GET', `/api/connections/${mcp.id}/uses`)).uses).toEqual([`agent @${agent.handle}`])
+      expect((await admin.ok('GET', `/api/connections/${chat.id}/uses`)).uses).toEqual(['workflow Tell chat'])
+      expect((await member.request('DELETE', `/api/connections/${chat.id}`)).status).toBe(403)
+      expect((await admin.request('DELETE', `/api/connections/${chat.id}`)).status).toBe(409)
+
+      await db('agent_connections').where({ connectionId: mcp.id }).delete()
+      expect((await admin.request('DELETE', `/api/workflows/${workflow.id}`)).status).toBe(200)
+      for (const id of [mcp.id, chat.id]) expect((await admin.request('DELETE', `/api/connections/${id}`)).status).toBe(200)
+      const { connections } = await admin.ok('GET', '/api/connections')
+      expect(connections.map((connection: { id: string }) => connection.id)).not.toContain(chat.id)
+      const { entries } = await admin.ok('GET', '/api/audit?targetType=connection')
+      expect(
+        entries.filter((entry: { action: string }) => entry.action === 'connection.deleted').map((entry: { metadata: unknown }) => entry.metadata),
+      ).toEqual(
+        expect.arrayContaining([
+          { kind: 'slack', name: 'Chat' },
+          { kind: 'mcp_http', name: 'Docs' },
+        ]),
+      )
+    })
+
     it('registers webhooks on both systems', async () => {
       const { results } = await admin.ok('POST', `/api/projects/${projectId}/webhooks`)
       expect(results.map((result: { registered: boolean }) => result.registered)).toEqual([true, true])
@@ -848,6 +901,7 @@ describe('API', () => {
         const { connection } = await admin.ok('POST', '/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
         expect(connection).toMatchObject({ hasSecret: false, webhookUrl: null, accountRole: null })
         expect((await admin.request('POST', '/api/connections', { kind: 'factorix', name: 'Again' })).status).toBe(409)
+        expect((await admin.request('DELETE', `/api/connections/${connection.id}`)).status).toBe(400)
 
         const board = { connectionId: connection.id, key: 'shop', name: 'Shop' }
         const { team } = await admin.ok('POST', '/api/tracker/teams', board)

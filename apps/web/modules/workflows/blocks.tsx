@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  type BlockCatalog,
   type BlockCategory,
   type BlockType,
   blockSpec,
@@ -15,6 +16,7 @@ import {
 import { type BuiltInEdge, MarkerType, type Node } from '@xyflow/react'
 import {
   ArrowRightLeft,
+  AtSign,
   Bot,
   CalendarClock,
   Check,
@@ -26,11 +28,13 @@ import {
   Clock,
   FilePlus,
   GitMerge,
+  Hash,
   Hourglass,
   Loader2,
   MessageSquare,
   MessageSquareText,
   Play,
+  Puzzle,
   Send,
   Split,
   Tag,
@@ -40,7 +44,7 @@ import {
 import type { ReactNode } from 'react'
 import { Chip } from '../ui'
 
-export const BLOCK_ICONS: Record<BlockType, ReactNode> = {
+const BLOCK_ICONS: Record<BlockType, ReactNode> = {
   'trigger.manual': <Play />,
   'trigger.schedule': <CalendarClock />,
   'trigger.issue_created': <CirclePlus />,
@@ -57,7 +61,13 @@ export const BLOCK_ICONS: Record<BlockType, ReactNode> = {
   'tracker.set_status': <CircleDot />,
   'tracker.label': <Tags />,
   'tracker.create_issue': <FilePlus />,
-  'notify.send': <Send />,
+  'trigger.slack.message': <Hash />,
+  'trigger.slack.mention': <AtSign />,
+  'slack.send_message': <Send />,
+}
+
+export function blockIcon(type: string): ReactNode {
+  return Object.hasOwn(BLOCK_ICONS, type) ? BLOCK_ICONS[type as BlockType] : <Puzzle />
 }
 
 export const CATEGORY_TONES: Record<BlockCategory, string> = {
@@ -65,7 +75,8 @@ export const CATEGORY_TONES: Record<BlockCategory, string> = {
   logic: 'bg-warning-soft text-warning-ink',
   agent: 'bg-soft text-ink',
   tracker: 'bg-soft text-ink-2',
-  notify: 'bg-success-soft text-success',
+  integration: 'bg-success-soft text-success',
+  plugin: 'bg-soft text-ink',
 }
 
 export interface BlockNames {
@@ -76,9 +87,9 @@ export interface BlockNames {
 const clip = (value: unknown) => String(value ?? '').trim()
 
 /** One line under the block's title, so a flow can be read without opening each block. */
-export function summarizeBlock(type: string, config: Record<string, unknown>, names: BlockNames): string {
+export function summarizeBlock(type: string, config: Record<string, unknown>, names: BlockNames, catalog: BlockCatalog = {}): string {
   const fieldLabel = (key: string) =>
-    blockSpec(type)
+    blockSpec(type, catalog)
       ?.fields.find((field) => field.key === key)
       ?.options?.find((option) => option.value === String(config[key]))?.label ?? ''
   switch (type) {
@@ -121,15 +132,26 @@ export function summarizeBlock(type: string, config: Record<string, unknown>, na
       return clip(config.label) ? `${fieldLabel('action')} ${clip(config.label)}` : 'No label yet'
     case 'tracker.create_issue':
       return clip(config.title) || 'No title yet'
-    case 'notify.send':
-      return clip(config.channelName) ? `#${clip(config.channelName)}` : 'No channel yet'
-    default:
-      return ''
+    case 'trigger.slack.message':
+    case 'trigger.slack.mention': {
+      const where = fieldLabel('channel') || (clip(config.channelName) ? `In #${clip(config.channelName)}` : 'Nowhere yet')
+      const names = Array.isArray(config.fromNames) ? config.fromNames.map(String) : []
+      const from = names.length === 0 ? '' : `, from ${names[0]}${names.length > 1 ? ` and ${names.length - 1} more` : ''}`
+      return clip(config.contains) ? `${where}${from}, containing ${clip(config.contains)}` : `${where}${from}`
+    }
+    case 'slack.send_message':
+      return fieldLabel('channel') || (clip(config.channelName) ? `#${clip(config.channelName)}` : 'No channel yet')
+    default: {
+      // A plugin's block: its first field with something in it, by the name of the chosen option when it has one.
+      const field = blockSpec(type, catalog)?.fields.find((item) => clip(config[item.key]))
+      if (!field) return ''
+      return clip(config[`${field.key}Label`]) || fieldLabel(field.key) || clip(config[field.key])
+    }
   }
 }
 
 export interface BlockData extends Record<string, unknown> {
-  type: BlockType
+  type: string
   config: Record<string, unknown>
 }
 
@@ -139,9 +161,13 @@ export function toFlowNode(node: WorkflowNode): BlockFlowNode {
   return { id: node.id, type: 'block', position: node.position, data: { type: node.type, config: node.config } }
 }
 
-export function isFailureEdge(edge: Pick<WorkflowEdge, 'source' | 'sourceHandle'>, nodes: { id: string; type: string }[]): boolean {
+export function isFailureEdge(
+  edge: Pick<WorkflowEdge, 'source' | 'sourceHandle'>,
+  nodes: { id: string; type: string }[],
+  catalog: BlockCatalog = {},
+): boolean {
   const source = nodes.find((node) => node.id === edge.source)
-  return Boolean(source && blockSpec(source.type)?.outputs.find((output) => output.id === edge.sourceHandle)?.failure)
+  return Boolean(source && blockSpec(source.type, catalog)?.outputs.find((output) => output.id === edge.sourceHandle)?.failure)
 }
 
 export function toFlowEdge(edge: WorkflowEdge, failure: boolean, tone?: 'taken' | 'idle'): BuiltInEdge {
@@ -201,5 +227,5 @@ export function RunStatusChip({ status }: { status: WorkflowRunStatus }) {
 
 export function triggerSummary(triggers: string[]): string {
   if (triggers.length === 0) return 'Not published yet'
-  return triggers.map((type) => blockSpec(type)?.title ?? type).join(', ')
+  return triggers.map((type) => blockSpec(type)?.title ?? (type.startsWith('trigger.plugin.') ? 'A plugin event' : type)).join(', ')
 }

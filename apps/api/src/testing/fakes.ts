@@ -6,6 +6,7 @@ import type {
   NotificationChannel,
   NotificationConnector,
   NotificationMessage,
+  NotificationPerson,
   OpenMergeRequestInput,
   Page,
   ScmConnector,
@@ -334,12 +335,17 @@ export class FakeWorld {
     { id: 'C1', name: 'engineering', private: false },
     { id: 'C2', name: 'alerts', private: true },
   ]
+  people: NotificationPerson[] = [
+    { id: 'U7', name: 'Ada' },
+    { id: 'U8', name: 'Grace' },
+  ]
 
   notifier(): NotificationConnector {
     return {
       kind: 'slack',
       viewer: async () => ({ name: 'factorix in Acme' }),
       listChannels: async () => this.channels,
+      listPeople: async () => this.people,
       send: async (message) => {
         if (this.notifyError) {
           const error = this.notifyError

@@ -4,6 +4,7 @@ import type {
   AgentDto,
   ApprovalDto,
   ArchetypeDto,
+  BlockCatalog,
   ConnectionDto,
   EnvironmentDto,
   InboxDto,
@@ -14,6 +15,7 @@ import type {
   MeDto,
   NetworkSettings,
   NotificationChannelDto,
+  NotificationPersonDto,
   PlatformSettingDto,
   PluginDto,
   PreviewDto,
@@ -35,6 +37,19 @@ function useApi<T>(path: string | null, config?: SWRConfiguration<T>) {
 
 export function useMe() {
   return useApi<MeDto>('/api/auth/me', { revalidateOnFocus: false, shouldRetryOnError: false })
+}
+
+/** The blocks the organization's plugins add to workflows. */
+export function useWorkflowBlocks() {
+  return useApi<{ blocks: BlockCatalog }>('/api/workflows/blocks', { revalidateOnFocus: false })
+}
+
+/** A plugin's choices for one field of its block. Null while the block is not a plugin's or the field is not dynamic. */
+export function usePluginFieldOptions(type: string | null, field: string | null) {
+  return useApi<{ options: { value: string; label: string }[] }>(
+    type && field ? `/api/workflows/blocks/options?${new URLSearchParams({ type, field })}` : null,
+    { revalidateOnFocus: false },
+  )
 }
 
 export function usePlugins() {
@@ -161,6 +176,17 @@ export function useSecretSourceConfigs(connectionId: string | null, project: str
     connectionId && project ? `/api/secret-sources/${connectionId}/configs?project=${encodeURIComponent(project)}` : null,
     { revalidateOnFocus: false, shouldRetryOnError: false },
   )
+}
+
+export function useConnectionUses(connectionId: string | null) {
+  return useApi<{ uses: string[] }>(connectionId ? `/api/connections/${connectionId}/uses` : null, { revalidateOnFocus: false })
+}
+
+export function useNotificationPeople(connectionId: string | null) {
+  return useApi<{ people: NotificationPersonDto[] }>(connectionId ? `/api/connections/${connectionId}/people` : null, {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+  })
 }
 
 export function useNotificationChannels(connectionId: string | null) {

@@ -436,7 +436,8 @@ export interface WorkflowRunRow {
   orgId: string
   workflowId: string
   workflowVersion: number
-  issueId: string
+  /** Null when a ticketless trigger started the run. */
+  issueId: string | null
   status: 'running' | 'succeeded' | 'failed' | 'cancelled'
   definition: WorkflowGraphRow
   trigger: { nodeId: string; event: { kind: string } & Record<string, unknown> }

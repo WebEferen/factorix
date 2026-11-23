@@ -5,10 +5,10 @@ import { Bot, CheckCircle2, CircleAlert, GitBranch, GitPullRequest, Hash, KeyRou
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { api } from '@/modules/lib/api'
-import { useConnections, useMe, usePlugins } from '@/modules/lib/data'
+import { useConnections, useConnectionUses, useMe, usePlugins } from '@/modules/lib/data'
 import { timeAgo } from '@/modules/lib/format'
 import { PluginFields } from '@/modules/plugins/fields'
-import { Button, Chip, CopyField, Dialog, EmptyState, ErrorState, Field, Input, ListSkeleton, Select, Textarea } from '@/modules/ui'
+import { Button, Chip, CopyField, Dialog, DialogFooter, EmptyState, ErrorState, Field, Input, ListSkeleton, Select, Textarea } from '@/modules/ui'
 import { ConnectionsArt } from '@/modules/ui/empty-art'
 
 const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: React.ReactNode; secret: string; placeholder?: string }> = {
@@ -62,7 +62,7 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
   },
   slack: {
     label: 'Slack',
-    hint: 'Workflows post to its channels. The bot token needs chat:write, chat:write.public, channels:read, and groups:read',
+    hint: 'Workflows post to its channels and can start from its messages. The bot token needs chat:write, chat:write.public, channels:read, groups:read, and users:read',
     icon: <Hash />,
     secret: 'Bot token',
     placeholder: 'xoxb-',
@@ -103,11 +103,13 @@ function ConnectionDialog({
   open,
   onOpenChange,
   onSaved,
+  onDelete,
 }: {
   connection: ConnectionDto | null
   open: boolean
   onOpenChange: (open: boolean) => void
   onSaved: (saved: ConnectionDto) => void
+  onDelete: (connection: ConnectionDto) => void
 }) {
   const [kind, setKind] = useState<ConnectionDto['kind']>('linear')
   const [name, setName] = useState('')
@@ -156,11 +158,13 @@ function ConnectionDialog({
           ? { host, ...(email.trim() ? { email: email.trim() } : {}) }
           : kind === 'trello'
             ? { apiKey: apiKey.trim(), ...(apiSecret.trim() ? { webhookSecret: apiSecret.trim() } : {}) }
-            : kind === 'mcp_http'
-              ? { url }
-              : kind === 'mcp_stdio'
-                ? { command, args: args.split(/\s+/).filter(Boolean) }
-                : {}
+            : kind === 'slack' && apiSecret.trim()
+              ? { webhookSecret: apiSecret.trim() }
+              : kind === 'mcp_http'
+                ? { url }
+                : kind === 'mcp_stdio'
+                  ? { command, args: args.split(/\s+/).filter(Boolean) }
+                  : {}
       let secretValue: unknown
       if (secret) secretValue = usesJsonSecret(kind) ? JSON.parse(secret) : secret
       if (kind === 'plugin') {
@@ -245,6 +249,14 @@ function ConnectionDialog({
             </Field>
           </div>
         ) : null}
+        {kind === 'slack' ? (
+          <Field
+            label="Signing secret"
+            hint="From Basic Information in your Slack app. Workflows can start from Slack messages once it is saved. Leave it blank to only post, or to keep the one stored."
+          >
+            <Input type="password" autoComplete="off" value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} />
+          </Field>
+        ) : null}
         {kind === 'jira' ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Field label="Site">
@@ -313,6 +325,13 @@ function ConnectionDialog({
           </Field>
         ) : null}
         <div className="flex justify-end">
+          {connection && connection.kind !== 'factorix' ? (
+            <div className="mr-auto">
+              <Button type="button" variant="ghost" onClick={() => onDelete(connection)}>
+                Delete
+              </Button>
+            </div>
+          ) : null}
           <Button type="submit" variant="primary" loading={loading}>
             {connection ? 'Save changes' : 'Add connection'}
           </Button>
@@ -364,10 +383,32 @@ export default function ConnectionsPage() {
   const [editing, setEditing] = useState<ConnectionDto | null>(null)
   const [open, setOpen] = useState(false)
   const [webhookFor, setWebhookFor] = useState<ConnectionDto | null>(null)
+  const [deleting, setDeleting] = useState<ConnectionDto | null>(null)
+  const [removing, setRemoving] = useState(false)
+  const uses = useConnectionUses(deleting?.id ?? null)
   const start = (connection: ConnectionDto | null) => {
     setEditing(connection)
     setOpen(true)
   }
+  const askToDelete = (connection: ConnectionDto) => {
+    setOpen(false)
+    setDeleting(connection)
+  }
+  const remove = async () => {
+    if (!deleting) return
+    setRemoving(true)
+    try {
+      await api.delete(`/api/connections/${deleting.id}`)
+      setDeleting(null)
+      await mutate()
+    } catch (error) {
+      toast.error((error as Error).message)
+      void uses.mutate()
+    } finally {
+      setRemoving(false)
+    }
+  }
+  const inUse = uses.data?.uses ?? []
   return (
     <div className="mx-auto max-w-4xl p-4 sm:p-6">
       <div className="mb-4 flex items-center justify-between gap-3">
@@ -439,16 +480,52 @@ export default function ConnectionsPage() {
         onOpenChange={setOpen}
         onSaved={(saved) => {
           void mutate()
-          if (!editing && saved.webhookUrl) toast.success('Connected. Create a project to register its webhooks.')
+          if (!editing && saved.webhookUrl && saved.kind !== 'slack') toast.success('Connected. Create a project to register its webhooks.')
         }}
+        onDelete={askToDelete}
       />
+      <Dialog
+        open={deleting !== null}
+        onOpenChange={(next) => {
+          if (!next) setDeleting(null)
+        }}
+        title={`Delete ${deleting?.name ?? 'this connection'}?`}
+        description={
+          !uses.data
+            ? 'Checking what uses it.'
+            : inUse.length > 0
+              ? 'Something still uses it. Remove it from these first, so nothing loses it without you choosing that.'
+              : 'Nothing uses it. Factorix forgets its secret and stops taking its webhooks. This cannot be undone.'
+        }
+      >
+        {inUse.length > 0 ? (
+          <ul className="flex list-disc flex-col gap-1 pl-5 text-sm text-ink">
+            {inUse.map((use) => (
+              <li key={use}>{use}</li>
+            ))}
+          </ul>
+        ) : null}
+        {uses.error ? <p className="text-sm text-danger-ink">{(uses.error as Error).message}</p> : null}
+        <DialogFooter>
+          <Button size="sm" onClick={() => setDeleting(null)}>
+            Keep it
+          </Button>
+          <Button size="sm" variant="danger" loading={removing} disabled={!uses.data || inUse.length > 0} onClick={() => void remove()}>
+            Delete connection
+          </Button>
+        </DialogFooter>
+      </Dialog>
       <Dialog
         open={webhookFor !== null}
         onOpenChange={(value) => {
           if (!value) setWebhookFor(null)
         }}
         title={`${webhookFor?.name ?? ''} webhook`}
-        description="Project setup can register this for you. Use these values if your token cannot."
+        description={
+          webhookFor?.kind === 'slack'
+            ? 'Slack sends its events here, so workflows can start from messages.'
+            : 'Project setup can register this for you. Use these values if your token cannot.'
+        }
       >
         {webhookFor?.webhookUrl ? (
           <div className="flex flex-col gap-3">
@@ -457,15 +534,17 @@ export default function ConnectionsPage() {
               <CopyField label={webhookFor.kind === 'gitlab' ? 'Secret token' : 'Signing secret'} value={webhookFor.webhookSecret} secret />
             ) : null}
             <p className="text-xs text-ink-2">
-              {webhookFor.kind === 'gitlab'
-                ? 'Enable merge request, comment, and pipeline events on the project.'
-                : webhookFor.kind === 'trello'
-                  ? 'Project setup registers this on the board. Trello signs with the API secret of its key, so webhooks are accepted once that secret is saved on the connection.'
-                  : webhookFor.kind === 'jira'
-                    ? 'Paste the secret into the webhook in Jira, limit it to the project, and enable issue created, updated, and deleted, and comment created and updated. Data Center cannot sign webhooks, so it relies on polling.'
-                    : webhookFor.kind === 'github'
-                      ? 'Send JSON, and enable pull requests, pull request reviews, pull request review comments, issue comments, check suites, and statuses.'
-                      : 'Enable issues, issue comments, and issue labels.'}
+              {webhookFor.kind === 'slack'
+                ? 'In your Slack app, turn on Event Subscriptions, paste this as the Request URL, and subscribe the bot to app_mention, message.channels, message.groups, and message.im. It also needs the app_mentions:read, channels:history, groups:history, and im:history scopes, and for direct messages the Messages tab under App Home. Slack checks the URL right away, so save the signing secret first.'
+                : webhookFor.kind === 'gitlab'
+                  ? 'Enable merge request, comment, and pipeline events on the project.'
+                  : webhookFor.kind === 'trello'
+                    ? 'Project setup registers this on the board. Trello signs with the API secret of its key, so webhooks are accepted once that secret is saved on the connection.'
+                    : webhookFor.kind === 'jira'
+                      ? 'Paste the secret into the webhook in Jira, limit it to the project, and enable issue created, updated, and deleted, and comment created and updated. Data Center cannot sign webhooks, so it relies on polling.'
+                      : webhookFor.kind === 'github'
+                        ? 'Send JSON, and enable pull requests, pull request reviews, pull request review comments, issue comments, check suites, and statuses.'
+                        : 'Enable issues, issue comments, and issue labels.'}
             </p>
           </div>
         ) : null}

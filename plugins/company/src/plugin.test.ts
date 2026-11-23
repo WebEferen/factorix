@@ -25,13 +25,24 @@ function setup() {
 }
 
 describe('the company page', () => {
-  it('describes itself as one sidebar page with what it asks of Factorix', async () => {
+  it('describes itself as one sidebar page and one workflow block, with what it asks of Factorix', async () => {
     expect(await setup().client.manifest()).toMatchObject({
       name: 'Company',
       provides: [],
-      permissions: ['members:read', 'agents:run', 'tickets:write'],
+      permissions: ['members:read', 'agents:run', 'tickets:write', 'workflows:blocks'],
       pages: [{ key: 'company', label: 'Company', path: '/pages/company', placement: 'sidebar' }],
+      blocks: [{ key: 'start_case', outputs: [{ id: 'completed' }, { id: 'rejected' }] }],
+      triggers: [{ key: 'case_finished', fields: [{ key: 'process', dynamic: true }, { key: 'status' }] }],
     })
+  })
+
+  it('offers the published processes to the block', async () => {
+    const { client, post } = setup()
+    const id = String((await post({ intent: 'process.create', template: 'purchase' })).process)
+    expect(await client.blockOptions('start_case', 'process')).toEqual([])
+    await post({ intent: 'process.publish', process: id })
+    expect(await client.blockOptions('start_case', 'process')).toEqual([{ value: id, label: 'Purchase request' }])
+    expect(await client.blockOptions('case_finished', 'process')).toEqual([{ value: id, label: 'Purchase request' }])
   })
 
   it("opens on a person's own work, with a policy that runs only its own script", async () => {

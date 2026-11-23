@@ -78,11 +78,12 @@ export function accountRoleOf(kind: string): 'scm' | 'tracker' | null {
 }
 
 export function hasWebhookOf(kind: string): boolean {
-  return Object.hasOwn(SCM_WEBHOOK_CODECS, kind) || Object.hasOwn(TRACKER_WEBHOOK_CODECS, kind)
+  return Object.hasOwn(SCM_WEBHOOK_CODECS, kind) || Object.hasOwn(TRACKER_WEBHOOK_CODECS, kind) || kind === 'slack'
 }
 
 export * from './notifier'
 export * from './slack/client'
+export * from './slack/events'
 export * from './slack/markup'
 
 export function isSecretSourceKind(kind: string): kind is SecretSourceKind {

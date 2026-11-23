@@ -224,6 +224,24 @@ export const pluginTicketInput = pluginCallInput.extend({
 })
 export type PluginTicketInput = z.output<typeof pluginTicketInput>
 
+/** A plugin reporting how a block it held finished. Without `error`, it leaves through `handle`, or the block's first output. */
+export const pluginStepInput = pluginCallInput.extend({
+  runId: z.string().uuid(),
+  nodeId: z.string().min(1).max(64),
+  handle: z.string().max(40).optional(),
+  output: z.record(z.string(), z.string().max(4000)).optional(),
+  error: z.string().trim().min(1).max(2000).optional(),
+})
+export type PluginStepInput = z.output<typeof pluginStepInput>
+
+export const pluginTriggerInput = pluginCallInput.extend({
+  trigger: z.string().min(1).max(40),
+  data: z.record(z.string(), z.string().max(4000)).default({}),
+  /** The same id twice starts each workflow once, so a plugin can safely send an event again. */
+  eventId: z.string().trim().min(1).max(200).optional(),
+})
+export type PluginTriggerInput = z.output<typeof pluginTriggerInput>
+
 export const connectionUpdateInput = updateOf(connectionInput.omit({ kind: true }))
 export type ConnectionUpdateInput = z.infer<typeof connectionUpdateInput>
 

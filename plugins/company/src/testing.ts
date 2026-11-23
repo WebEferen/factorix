@@ -17,7 +17,9 @@ export const PROJECT = { id: 'project-1', name: 'Operations' }
 export function fakeWorld(options: { now?: Date } = {}) {
   const runs = new Map<string, Run & { prompt: string }>()
   const tickets = new Map<string, Ticket & { description: string; agentId: string | null }>()
-  const state = { now: options.now ?? new Date('2026-11-23T09:00:00Z'), busy: false, refuse: null as string | null }
+  const state = { now: options.now ?? new Date('2026-11-23T09:00:00Z'), busy: false, refuse: null as string | null, down: false }
+  const reports: Record<string, unknown>[] = []
+  const triggers: Record<string, unknown>[] = []
   const guard = (permission: string) => {
     if (state.refuse === permission) throw new FactorixError(403, `Company may not use ${permission} here`)
   }
@@ -78,6 +80,16 @@ export function fakeWorld(options: { now?: Date } = {}) {
       if (!ticket) throw new FactorixError(404, 'Ticket not found')
       return ticket
     },
+    'workflow-steps': (body) => {
+      if (state.down) throw new Error('Factorix is down')
+      reports.push(body)
+      return null
+    },
+    'workflow-triggers': (body) => {
+      if (state.down) throw new Error('Factorix is down')
+      triggers.push(body)
+      return 1
+    },
   })
   const store = memoryStore()
   const logs: string[] = []
@@ -98,7 +110,7 @@ export function fakeWorld(options: { now?: Date } = {}) {
   const later = (minutes: number) => {
     state.now = new Date(state.now.getTime() + minutes * 60_000)
   }
-  return { deps, store, runs, tickets, state, calls: fake.calls, logs, finishRun, closeTicket, later }
+  return { deps, store, runs, tickets, reports, triggers, state, calls: fake.calls, logs, finishRun, closeTicket, later }
 }
 
 let counter = 0

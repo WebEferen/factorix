@@ -91,6 +91,25 @@ describe('SlackConnector', () => {
     expect(calls).toHaveLength(2)
   })
 
+  it('lists people by the name they go by, without bots or deactivated accounts', async () => {
+    const { slack } = connector(() =>
+      reply({
+        ok: true,
+        members: [
+          { id: 'U2', name: 'grace', real_name: 'Grace Hopper', profile: { display_name: '' } },
+          { id: 'U1', name: 'ada', real_name: 'Ada Lovelace', profile: { display_name: 'Ada' } },
+          { id: 'B1', name: 'bot', is_bot: true },
+          { id: 'U3', name: 'gone', deleted: true },
+          { id: 'USLACKBOT', name: 'slackbot' },
+        ],
+      }),
+    )
+    expect(await slack.listPeople()).toEqual([
+      { id: 'U1', name: 'Ada' },
+      { id: 'U2', name: 'Grace Hopper' },
+    ])
+  })
+
   it('turns a rate limit into a retry with the delay Slack asked for', async () => {
     const { slack } = connector(() => new Response('', { status: 429, headers: { 'retry-after': '7' } }))
     const error = await slack.send({ channelId: 'C1', markdown: 'x' }).catch((caught: unknown) => caught)

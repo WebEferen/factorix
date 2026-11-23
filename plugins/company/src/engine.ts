@@ -1,6 +1,18 @@
 import { randomUUID } from 'node:crypto'
-import { type FactorixClient, FactorixError, type Member } from '@moxxylabs/factorix-plugin-sdk'
-import { type Assignee, agentPrompt, type Case, fill, type Process, type Step, type StepOutput, stepOf, templateValues } from './model'
+import { type BlockAnswer, type BlockCall, type FactorixClient, FactorixError, type Member } from '@moxxylabs/factorix-plugin-sdk'
+import {
+  type Assignee,
+  agentPrompt,
+  type Case,
+  fill,
+  formLines,
+  type Process,
+  readForm,
+  type Step,
+  type StepOutput,
+  stepOf,
+  templateValues,
+} from './model'
 import type { CaseChange, Store } from './store'
 
 export interface Deps {
@@ -21,6 +33,8 @@ export interface Actor {
 export class CompanyError extends Error {}
 
 const HOUR_MS = 3_600_000
+/** How a case a workflow started names who asked for it. Nobody signs in as a workflow, so its steps go to the owner. */
+const WORKFLOW_ACTOR = 'workflow:'
 /** A step that asked Factorix for a run or a ticket and has neither this long after never got one, because the plugin stopped in between. */
 const ENTERING_MS = 10 * 60_000
 /** How long a step keeps asking while Factorix says the plugin has too many runs going. */
@@ -83,8 +97,9 @@ async function membersOf(deps: Deps, pluginId: string, orgId: string): Promise<M
 
 /** Who a step waits for. Anything that points nowhere falls back to the process's owner, and then to the organization's admins. */
 async function resolve(deps: Deps, item: Case, assignee: Assignee, pluginId: string): Promise<{ id: string | null; name: string | null }> {
-  if (assignee.kind === 'requester') return { id: item.requesterId, name: item.requesterName }
-  let id = assignee.kind === 'owner' ? item.ownerId : assignee.kind === 'member' ? assignee.id : null
+  const byWorkflow = item.requesterId.startsWith(WORKFLOW_ACTOR)
+  if (assignee.kind === 'requester' && !byWorkflow) return { id: item.requesterId, name: item.requesterName }
+  let id = assignee.kind === 'owner' || assignee.kind === 'requester' ? item.ownerId : assignee.kind === 'member' ? assignee.id : null
   if (assignee.kind === 'department') id = (await deps.store.departments(item.orgId)).find((d) => d.id === assignee.id)?.leadId ?? null
   const members = await membersOf(deps, pluginId, item.orgId)
   const active = (memberId: string | null) =>
@@ -159,7 +174,13 @@ export async function run(deps: Deps, item: Case): Promise<Case> {
   return current
 }
 
-export async function startCase(deps: Deps, process: Process, input: { title: string; values: Record<string, string> }, actor: Actor): Promise<Case> {
+export async function startCase(
+  deps: Deps,
+  process: Process,
+  input: { title: string; values: Record<string, string> },
+  actor: Actor,
+  workflow: Case['workflow'] = null,
+): Promise<Case> {
   const definition = process.published
   const first = definition?.steps[0]
   if (!definition || !first || process.archived) throw new CompanyError(`${process.name} is not published yet`)
@@ -190,9 +211,71 @@ export async function startCase(deps: Deps, process: Process, input: { title: st
     createdAt: now,
     updatedAt: now,
     finishedAt: null,
+    workflow,
   })
   await note(deps, item, actor.name, 'Started the case')
   return run(deps, item)
+}
+
+/** How a closed case ends the workflow step that started it. A failed case is not closed: an admin can start its step again. */
+function ending(item: Case): { handle: string; output: Record<string, string> } | { error: string } | null {
+  if (item.status === 'completed' || item.status === 'rejected')
+    return { handle: item.status, output: { case: `#${item.number}`, status: item.status } }
+  if (item.status === 'cancelled') return { error: `Case #${item.number} was cancelled` }
+  return null
+}
+
+/** The block a workflow runs to start a case. Its step waits until the case closes, unless the case closed right away. */
+export async function startForWorkflow(deps: Deps, call: BlockCall): Promise<BlockAnswer> {
+  await deps.store.rememberPlugin(call.org.id, call.plugin.id)
+  const process = await deps.store.process(call.org.id, call.config.process ?? '')
+  if (!process) throw new CompanyError('The process this block starts is gone. Pick another one')
+  const lines = formLines(call.config.form ?? '')
+  const { values, problems } = readForm(process.published?.form ?? [], (key) => lines[key] ?? '')
+  if (problems.length > 0) throw new CompanyError(problems.join('. '))
+  const actor = { id: `${WORKFLOW_ACTOR}${call.run.workflowId}`, name: call.run.workflowName, admin: false }
+  const item = await startCase(deps, process, { title: call.config.title ?? '', values }, actor, { runId: call.run.id, nodeId: call.nodeId })
+  const end = ending(item)
+  if (!end) return { wait: true, output: { case: `#${item.number}` } }
+  await deps.store.markReported(item.orgId, item.id, nowOf(deps))
+  if ('error' in end) throw new CompanyError(end.error)
+  return end
+}
+
+/** The trigger a closed case fires, unless a workflow started it: that workflow hears of it through its own step. */
+export const CASE_FINISHED = 'case_finished'
+
+/**
+ * Tells Factorix how a closed case closed: the workflow step that started it, or else the workflows built on
+ * `case_finished`. The sweep tries again until Factorix has heard it.
+ */
+export async function report(deps: Deps, item: Case): Promise<void> {
+  const end = ending(item)
+  const pluginId = end ? await deps.store.pluginOf(item.orgId) : null
+  if (!end || !pluginId) return
+  try {
+    if (item.workflow) await deps.factorix(pluginId).finishStep(item.orgId, { ...item.workflow, ...end })
+    else
+      await deps.factorix(pluginId).fireTrigger(item.orgId, {
+        trigger: CASE_FINISHED,
+        eventId: `case-${item.id}`,
+        data: {
+          process: item.processId,
+          status: item.status,
+          case: `#${item.number}`,
+          title: item.title,
+          processName: item.processName,
+          requester: item.requesterName,
+        },
+      })
+  } catch (error) {
+    // The step ended already (409), as after a week without word, or Factorix no longer lets the plugin reach it.
+    if (!(error instanceof FactorixError && [403, 404, 409].includes(error.status))) {
+      deps.log?.(`Could not tell the workflow of case ${item.id}: ${messageOf(error)}`)
+      return
+    }
+  }
+  await deps.store.markReported(item.orgId, item.id, nowOf(deps))
 }
 
 /** True for whoever may act on the step a case waits at: its assignee, or an admin. */
@@ -219,7 +302,9 @@ export async function decide(deps: Deps, item: Case, actor: Actor, input: { deci
     moved = await leave(deps, item, { decision: 'approved', note: text, by }, { actor: by, text: `${step.name}: approved${text ? `. ${text}` : ''}` })
   } else throw new CompanyError('Approve or reject')
   if (!moved) throw new CompanyError(GONE)
-  return run(deps, moved)
+  const after = await run(deps, moved)
+  await report(deps, after)
+  return after
 }
 
 /** Reads the run or the ticket a case waits for, and moves the case on once that finished. */
@@ -267,6 +352,7 @@ export async function cancelCase(deps: Deps, item: Case, actor: Actor): Promise<
   const moved = await move(deps, item, { ...CLEARED, status: 'cancelled', phase: null, finishedAt: nowOf(deps) })
   if (!moved) throw new CompanyError(GONE)
   await note(deps, moved, actor.name, 'Cancelled the case')
+  await report(deps, moved)
   return moved
 }
 
@@ -292,4 +378,5 @@ export async function refreshOrg(deps: Deps, orgId: string): Promise<void> {
 export async function sweep(deps: Deps): Promise<void> {
   for (const item of await deps.store.unsettled())
     await poll(deps, item).catch((error) => deps.log?.(`Could not check case ${item.id}: ${messageOf(error)}`))
+  for (const item of await deps.store.unreported()) await report(deps, item)
 }

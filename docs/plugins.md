@@ -127,12 +127,13 @@ A bundled plugin's pages open under `/_plugin/<name>` on Factorix's own address.
 
 A plugin names what it needs in `permissions`, and the organization's admin sees each one, in plain words, when turning it on. Factorix answers only for organizations that turned the plugin on and only with permissions their admin allowed. When a new version asks for more, the plugin's row says "Asks for more" until an admin saves its settings again.
 
-| Permission      | What it opens                                                                                                                                                                                                                                            |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `activity:read` | Tickets with a person or an agent on them that changed since a moment or are still open, their merged merge requests, and what agents reported, for up to 31 days back.                                                                                  |
-| `agents:run`    | The organization's agents, and runs that hand one of them a request. A run has no ticket and no repository, answers in the JSON shape the plugin names, and appears under Runs like any other. At most three are unfinished per plugin and organization. |
-| `members:read`  | The people and agents of the organization: names, handles, roles, and whether each is active. No email addresses.                                                                                                                                        |
-| `tickets:write` | The names of the organization's projects, and tickets the plugin creates in them, in whatever tracker each project follows. A ticket can be handed to an agent as it is created. The plugin reads back only tickets it created.                          |
+| Permission         | What it opens                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `activity:read`    | Tickets with a person or an agent on them that changed since a moment or are still open, their merged merge requests, and what agents reported, for up to 31 days back.                                                                                                                                                      |
+| `agents:run`       | The organization's agents, and runs that hand one of them a request. A run has no ticket and no repository, answers in the JSON shape the plugin names, and appears under Runs like any other. At most three are unfinished per plugin and organization.                                                                     |
+| `members:read`     | The people and agents of the organization: names, handles, roles, and whether each is active. No email addresses.                                                                                                                                                                                                            |
+| `tickets:write`    | The names of the organization's projects, and tickets the plugin creates in them, in whatever tracker each project follows. A ticket can be handed to an agent as it is created. The plugin reads back only tickets it created.                                                                                              |
+| `workflows:blocks` | Blocks and triggers in the organization's workflows, and what each block is given when it runs: its fields with templates filled, the ticket's identifier, title, and link, and the workflow's name. `finishStep` ends only steps of the plugin's own blocks, and `fireTrigger` starts only workflows built on its triggers. |
 
 ```ts
 import { factorix } from '@moxxylabs/factorix-plugin-sdk'
@@ -161,16 +162,80 @@ The plugin's id is in every page's context. A plugin that works without a page o
 
 An output schema follows the rules both Claude and Codex accept: every object has `additionalProperties: false` and lists every property under `required`. The agent's answer is text it wrote from your prompt, so check it against what you asked before storing it, as the digest does with `digestContentFrom`.
 
-### 6. Tests
+### 6. Workflow blocks
+
+A plugin can add steps to workflows. Its blocks show in the workflow editor under the plugin's name for every organization that turned it on, and Factorix calls the block's `run` when a workflow reaches it.
+
+```ts
+definePlugin({
+  name: 'Chat',
+  version: '1.0.0',
+  blocks: [
+    {
+      key: 'post',
+      title: 'Post to chat',
+      description: 'Posts a message to a channel.',
+      fields: [
+        { key: 'channel', label: 'Channel', kind: 'select', dynamic: true, required: true },
+        { key: 'text', label: 'Message', kind: 'template', required: true },
+      ],
+      outputs: [
+        { id: 'sent', label: 'Sent' },
+        { id: 'muted', label: 'Muted' },
+      ],
+      provides: [{ key: 'ts', label: 'Message' }],
+      async run(call) {
+        const ts = await post(call.org.id, call.config.channel, call.config.text)
+        return { handle: 'sent', output: { ts } }
+      },
+      options: async ({ org }) => (await channels(org.id)).map((channel) => ({ value: channel.id, label: `#${channel.name}` })),
+    },
+  ],
+})
+```
+
+- A field is `text`, `template`, `longTemplate`, `number`, or `select`. Factorix fills a template's `{{...}}` placeholders before the block sees it, so `call.config` holds plain text, and only for the fields the block declares.
+- A `select` with `dynamic` gets its choices from the block's `options`, per organization, while someone edits the workflow.
+- `outputs` are the ways out, `next` when the block names none. Every block also has `failed`, taken when `run` throws, with the error as the step's reason.
+- `output` is what later blocks read as `{{steps.<block id>.<key>}}`: up to 20 keys, each a text of up to 4000 characters. `provides` lists them for the editor.
+- Work that takes longer than a moment answers `{ wait: true }` and calls `fx.finishStep(orgId, { runId: call.run.id, nodeId: call.nodeId, handle, output })` when it is done, or passes `error` to fail the step. `call.plugin.id` is the `pluginId` that call needs. A held step fails after seven days without word. Company's "Start a company process" works this way: its step waits until the case closes.
+
+A plugin with blocks asks for `workflows:blocks`, which `definePlugin` adds. A call carries ticket text, so treat it as data. When an organization turns the plugin off, its blocks stop running and a workflow that uses them cannot be published.
+
+A plugin can also start workflows. A trigger is something that happens inside it, and a workflow that starts from one runs with no ticket, so the editor keeps blocks that work on a ticket away from it. Report each event with `fireTrigger`:
+
+```ts
+definePlugin({
+  // ...
+  triggers: [
+    {
+      key: 'reacted',
+      title: 'Reaction added',
+      description: 'Starts when someone reacts in chat.',
+      fields: [{ key: 'emoji', label: 'Emoji', kind: 'text', hint: 'Leave empty for any.' }],
+      provides: [{ key: 'who', label: 'Who reacted' }],
+    },
+  ],
+})
+
+await fx.fireTrigger(orgId, { trigger: 'reacted', data: { emoji: 'tada', who: 'Kim' }, eventId: reactionId })
+```
+
+- A trigger's fields narrow which events start a workflow: each one an admin fills in has to equal the event's value under the same key, ignoring case. They can only be `text` or `select`, and a dynamic `select` gets its choices from the trigger's `options`.
+- `data` holds those values and what the trigger `provides`, as texts. Other keys are dropped. Later blocks read them as `{{steps.<trigger id>.<key>}}`.
+- The same `eventId` starts each workflow once, so send an event again when you are not sure it arrived. `fireTrigger` answers how many workflows started.
+- A trigger needs `workflows:blocks` too, and its key cannot be a block's. Company's "Company case closed" works this way: it fires when a case someone started closes, and never for a case a workflow started, so a workflow cannot keep starting itself.
+
+### 7. Tests
 
 `@moxxylabs/factorix-plugin-sdk/testing` runs a plugin without a network:
 
-- `factorixClient(plugin)` calls it the way Factorix does, signatures included: `manifest()`, `openPage(key, context, { form })` to open a page or post a form to it, and `tracker(connection)`.
-- `fakeFactorix({ activity, agents, runs, run, settings })` stands in for Factorix's side. Pass its `fetch` to `factorix({ ..., fetch })` and read back the signed `calls` the plugin made.
+- `factorixClient(plugin)` calls it the way Factorix does, signatures included: `manifest()`, `openPage(key, context, { form })` to open a page or post a form to it, `tracker(connection)`, `runBlock(key, call)`, and `blockOptions(key, field)`.
+- `fakeFactorix({ activity, agents, runs, run, settings, 'workflow-steps', 'workflow-triggers' })` stands in for Factorix's side. Pass its `fetch` to `factorix({ ..., fetch })` and read back the signed `calls` the plugin made.
 
 Put tests next to the code as `src/*.test.ts`, and tests that need the plugin's database as `src/*.int.test.ts`. `yarn test:unit` and `yarn test:integration` pick up `plugins/*` too.
 
-### 7. Running it
+### 8. Running it
 
 - `yarn dev` starts the plugin host with the rest. Put these in `.env` once:
 
@@ -210,6 +275,7 @@ Bundled plugins need no DNS record of their own: their pages come from Factorix'
 - With `agents:run`, its own runs only. The agent gets no repository and no secret values, and its prompt is the plugin's.
 - With `members:read`, who is in the organization, without email addresses.
 - With `tickets:write`, project names and the tickets it created itself, never anyone else's.
+- With `workflows:blocks`, what each of its blocks is given when it runs, and nothing else of the workflow.
 
 Bundled plugins share one container. Each gets only its own secret, but nothing stops one process from reading another's memory there, so a plugin nobody here reviewed belongs on its own server, installed by address.
 
@@ -217,7 +283,7 @@ Bundled plugins share one container. Each gets only its own secret, but nothing 
 
 Version 1. JSON over HTTP, signed with the plugin's secret: `x-factorix-timestamp` (milliseconds; more than five minutes off is refused) and `x-factorix-signature`, `sha256=` and the hex HMAC-SHA256 of `<timestamp>.<body>`.
 
-Factorix calls the plugin with `POST <address>` and `{ "protocol": 1, "method": "manifest" | "tracker.<method>", "params": [], "connection": … }`. The answer is `{ "result": … }` or `{ "error": { "message": … } }`.
+Factorix calls the plugin with `POST <address>` and `{ "protocol": 1, "method": "manifest" | "tracker.<method>" | "workflow.block" | "workflow.options", "params": [], "connection": … }`. The answer is `{ "result": … }` or `{ "error": { "message": … } }`. `workflow.block` gets the call as its one param and answers `{ handle?, output? }` or `{ wait: true, output? }`. `workflow.options` gets `{ block, field, org }` and answers `[{ value, label }]`.
 
 The plugin calls Factorix with `POST <factorix>/webhooks/…`. Every call except events names an `orgId`:
 
@@ -233,5 +299,7 @@ The plugin calls Factorix with `POST <factorix>/webhooks/…`. Every call except
 | `/webhooks/plugins/<pluginId>/projects`           | `{ orgId }`                                                      | `tickets:write`      |
 | `/webhooks/plugins/<pluginId>/tickets`            | `{ orgId, projectId, title, description?, priority?, agentId? }` | `tickets:write`      |
 | `/webhooks/plugins/<pluginId>/tickets/<ticketId>` | `{ orgId }`                                                      | `tickets:write`      |
+| `/webhooks/plugins/<pluginId>/workflow-steps`     | `{ orgId, runId, nodeId, handle?, output?, error? }`             | `workflows:blocks`   |
+| `/webhooks/plugins/<pluginId>/workflow-triggers`  | `{ orgId, trigger, data?, eventId? }`                            | `workflows:blocks`   |
 
-Errors: 401 for a bad signature, 403 for a permission the organization did not allow, 404 for an organization that has not turned the plugin on, a run it did not start, a ticket it did not create, or a project or agent the organization does not have, 409 for a disabled agent or too many unfinished runs.
+Errors: 401 for a bad signature, 403 for a permission the organization did not allow, 404 for an organization that has not turned the plugin on, a run it did not start, a ticket it did not create, or a project or agent the organization does not have, 409 for a disabled agent, too many unfinished runs, or a step that already ended.

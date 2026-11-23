@@ -126,6 +126,8 @@ export interface Case {
   createdAt: Date
   updatedAt: Date
   finishedAt: Date | null
+  /** The workflow step that started the case, which waits until it closes. */
+  workflow: { runId: string; nodeId: string } | null
 }
 
 export interface CaseEvent {
@@ -214,6 +216,16 @@ export function templateValues(item: Pick<Case, 'data' | 'outputs' | 'title' | '
   }
   for (const [key, value] of Object.entries(item.data)) values[`form.${key}`] = value
   for (const [id, output] of Object.entries(item.outputs)) for (const [key, value] of Object.entries(output)) values[`steps.${id}.${key}`] = value
+  return values
+}
+
+/** A form typed as text, one `key: value` line per field, as a workflow's block sends it. */
+export function formLines(text: string): Record<string, string> {
+  const values: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const at = line.indexOf(':')
+    if (at > 0) values[line.slice(0, at).trim()] = line.slice(at + 1).trim()
+  }
   return values
 }
 

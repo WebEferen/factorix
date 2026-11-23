@@ -19,7 +19,7 @@ import { refreshRuntimeModels } from './services/runtime-models'
 import { checkCi, handleScmEvent, mergeIssue, revertIssue, settleCi } from './services/scm-inbound'
 import { readSettings } from './services/settings'
 import { handleTrackerEvent, importProject, postTrackerComment, setTrackerState } from './services/tracker-sync'
-import { advanceWorkflowRun, executeWorkflowStep, handleWorkflowEvent, sweepWorkflows } from './services/workflows'
+import { advanceWorkflowRun, executeWorkflowStep, fireTrigger, handleWorkflowEvent, sweepWorkflows } from './services/workflows'
 
 const RELAY_INTERVAL_MS = 500
 const RECOVERY_INTERVAL_MS = 30_000
@@ -116,6 +116,7 @@ export function startWorkers(
         if (job.name === 'event') await handleWorkflowEvent(deps, job.data)
         else if (job.name === 'advance') await advanceWorkflowRun(deps.db, job.data.runId)
         else if (job.name === 'step') await executeWorkflowStep(deps, job.data.runId, job.data.nodeId)
+        else if (job.name === 'trigger') await fireTrigger(deps, job.data)
       },
       { ...base, concurrency: 5 },
     ),

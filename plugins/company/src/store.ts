@@ -44,6 +44,9 @@ export interface Store {
   updateCase(item: Pick<Case, 'id' | 'current' | 'phase' | 'status'>, change: CaseChange, now: Date): Promise<boolean>
   /** Running cases that wait for the plugin or for Factorix, not for a person. */
   unsettled(): Promise<Case[]>
+  /** Closed cases Factorix has not heard about yet: neither the workflow that started one nor the workflows built on its closing. */
+  unreported(): Promise<Case[]>
+  markReported(orgId: string, id: string, now: Date): Promise<void>
   addEvent(event: CaseEvent): Promise<void>
   events(orgId: string, caseId: string): Promise<CaseEvent[]>
 }
@@ -129,6 +132,26 @@ CREATE TABLE case_events (
 CREATE INDEX case_events_case ON case_events (case_id, at);`,
     down: 'DROP TABLE case_events; DROP TABLE cases; DROP TABLE processes; DROP TABLE placements; DROP TABLE departments; DROP TABLE company_orgs;',
   },
+  {
+    id: '0002_workflow_cases',
+    up: `
+ALTER TABLE cases ADD COLUMN workflow_run_id text, ADD COLUMN workflow_node_id text, ADD COLUMN workflow_reported_at timestamptz;
+CREATE INDEX cases_unreported ON cases (updated_at)
+  WHERE workflow_run_id IS NOT NULL AND workflow_reported_at IS NULL AND status IN ('completed', 'rejected', 'cancelled');`,
+    down: 'DROP INDEX cases_unreported; ALTER TABLE cases DROP COLUMN workflow_run_id, DROP COLUMN workflow_node_id, DROP COLUMN workflow_reported_at;',
+  },
+  {
+    // Every closed case now tells Factorix, to start the workflows built on it. Those closed before are left alone.
+    id: '0003_closed_cases',
+    up: `
+UPDATE cases SET workflow_reported_at = updated_at WHERE workflow_reported_at IS NULL AND status IN ('completed', 'rejected', 'cancelled');
+DROP INDEX cases_unreported;
+CREATE INDEX cases_unreported ON cases (updated_at) WHERE workflow_reported_at IS NULL AND status IN ('completed', 'rejected', 'cancelled');`,
+    down: `
+DROP INDEX cases_unreported;
+CREATE INDEX cases_unreported ON cases (updated_at)
+  WHERE workflow_run_id IS NOT NULL AND workflow_reported_at IS NULL AND status IN ('completed', 'rejected', 'cancelled');`,
+  },
 ]
 
 /** A `pg` Pool, or anything else that runs one statement with numbered parameters. */
@@ -197,6 +220,7 @@ const caseOf = (row: Record<string, unknown>): Case => ({
   createdAt: date(row.created_at),
   updatedAt: date(row.updated_at),
   finishedAt: dateOrNull(row.finished_at),
+  workflow: row.workflow_run_id ? { runId: String(row.workflow_run_id), nodeId: String(row.workflow_node_id) } : null,
 })
 
 const eventOf = (row: Record<string, unknown>): CaseEvent => ({
@@ -289,8 +313,8 @@ export function pgStore(db: Queryable): Store {
         await db.query(
           `WITH numbered AS (UPDATE company_orgs SET next_case = next_case + 1 WHERE org_id = $2 RETURNING next_case - 1 AS number)
            INSERT INTO cases (id, org_id, process_id, process_name, owner_id, version, definition, number, title, status, data, outputs,
-             requester_id, requester_name, current, phase, step_at, created_at, updated_at)
-           SELECT $1, $2, $3, $4, $5, $6, $7, numbered.number, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17 FROM numbered
+             requester_id, requester_name, current, phase, step_at, created_at, updated_at, workflow_run_id, workflow_node_id)
+           SELECT $1, $2, $3, $4, $5, $6, $7, numbered.number, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17, $18, $19 FROM numbered
            RETURNING *`,
           [
             c.id,
@@ -310,6 +334,8 @@ export function pgStore(db: Queryable): Store {
             c.phase,
             c.stepAt,
             c.createdAt,
+            c.workflow?.runId ?? null,
+            c.workflow?.nodeId ?? null,
           ],
         )
       ).rows[0]
@@ -348,6 +374,16 @@ export function pgStore(db: Queryable): Store {
     },
     unsettled: () =>
       many("SELECT * FROM cases WHERE status = 'running' AND phase IN ('pending', 'entering', 'waiting') ORDER BY updated_at", [], caseOf),
+    unreported: () =>
+      many(
+        `SELECT * FROM cases WHERE workflow_reported_at IS NULL AND status IN ('completed', 'rejected', 'cancelled')
+         ORDER BY updated_at LIMIT 100`,
+        [],
+        caseOf,
+      ),
+    async markReported(orgId, id, now) {
+      await db.query('UPDATE cases SET workflow_reported_at = $3 WHERE org_id = $1 AND id = $2', [orgId, id, now])
+    },
     async addEvent(e) {
       await db.query('INSERT INTO case_events (id, case_id, org_id, at, actor, text) VALUES ($1, $2, $3, $4, $5, $6)', [
         e.id,
@@ -373,6 +409,7 @@ export function memoryStore(): Store & { rows: Case[] } {
   const processes: Process[] = []
   const rows: Case[] = []
   const events: CaseEvent[] = []
+  const reported = new Set<string>()
   const copy = <T>(value: T): T => structuredClone(value)
   const newestFirst = (list: Case[]) => [...list].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime() || b.number - a.number)
   return {
@@ -456,6 +493,12 @@ export function memoryStore(): Store & { rows: Case[] } {
     },
     async unsettled() {
       return copy(rows.filter((row) => row.status === 'running' && UNSETTLED.includes(row.phase)))
+    },
+    async unreported() {
+      return copy(rows.filter((row) => !reported.has(row.id) && ['completed', 'rejected', 'cancelled'].includes(row.status)))
+    },
+    async markReported(orgId, id) {
+      if (rows.some((row) => row.orgId === orgId && row.id === id)) reported.add(id)
     },
     async addEvent(event) {
       events.push(copy(event))

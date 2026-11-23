@@ -1,4 +1,4 @@
-import { RetryLaterError } from '@factorix/connectors'
+import { parsePluginBlockAnswer, RetryLaterError } from '@factorix/connectors'
 import { FAILED_HANDLE, planWorkflow, type StepState, triggerMatches, type WorkflowEvent, waitMatches } from '@factorix/core'
 import {
   type Db,
@@ -11,12 +11,14 @@ import {
   type WorkflowScheduleRow,
   type WorkflowStepRow,
 } from '@factorix/db'
-import { isTriggerBlock, nextScheduleTime } from '@factorix/schemas'
+import { isTriggerBlock, nextScheduleTime, type PluginStepInput, parsePluginBlockType } from '@factorix/schemas'
 import type { Knex } from 'knex'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
+import { badRequest, conflict, notFound } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { requestRunCancel } from './pipeline'
+import { pluginBlockOf, runPluginBlockStep } from './plugin-blocks'
 import { BLOCK_HANDLERS, type BlockContext, templateValues } from './workflow-blocks'
 
 /** Every limit here exists because a workflow can spend money and create tickets with no person watching. */
@@ -31,14 +33,15 @@ type Deps = Pick<AppDeps, 'db' | 'secrets' | 'connectors' | 'env' | 'queues'>
 
 function initialStep(node: { id: string; type: string }, firedNodeId: string, event: WorkflowEvent) {
   if (node.id === firedNodeId) {
-    return { status: 'succeeded', handle: 'next', output: json(event), startedAt: new Date(), finishedAt: new Date() }
+    const output = event.kind === 'external' ? event.data : event
+    return { status: 'succeeded', handle: 'next', output: json(output), startedAt: new Date(), finishedAt: new Date() }
   }
   return { status: isTriggerBlock(node.type) ? 'skipped' : 'pending' }
 }
 
 export async function startWorkflowRun(
   db: Db,
-  input: { workflow: WorkflowRow; issue: IssueRow; nodeId: string; event: WorkflowEvent; startedBy: string | null; eventId?: string },
+  input: { workflow: WorkflowRow; issue: IssueRow | null; nodeId: string; event: WorkflowEvent; startedBy: string | null; eventId?: string },
 ): Promise<WorkflowRunRow | null> {
   const { workflow, issue, nodeId, event, startedBy, eventId } = input
   const definition = workflow.publishedDefinition
@@ -49,7 +52,7 @@ export async function startWorkflowRun(
         orgId: workflow.orgId,
         workflowId: workflow.id,
         workflowVersion: workflow.publishedVersion,
-        issueId: issue.id,
+        issueId: issue?.id ?? null,
         definition: json(definition),
         trigger: json({ nodeId, event }),
         triggerEventId: eventId ?? null,
@@ -67,8 +70,7 @@ export async function startWorkflowRun(
       actorAccountId: startedBy,
       actorKind: startedBy ? 'human' : 'system',
       action: 'workflow.run_started',
-      targetType: 'issue',
-      targetId: issue.id,
+      ...(issue ? { targetType: 'issue', targetId: issue.id } : { targetType: 'workflow', targetId: workflow.id }),
       metadata: { workflowId: workflow.id, workflowRunId: run.id, name: workflow.name, version: workflow.publishedVersion, event: event.kind },
     })
     await emit(trx, workflow.orgId, { type: 'workflow.advance', runId: run.id })
@@ -93,8 +95,7 @@ async function finishRun(
     actorAccountId,
     actorKind: actorAccountId ? 'human' : 'system',
     action: 'workflow.run_finished',
-    targetType: 'issue',
-    targetId: run.issueId,
+    ...(run.issueId ? { targetType: 'issue', targetId: run.issueId } : { targetType: 'workflow', targetId: run.workflowId }),
     metadata: { workflowId: run.workflowId, workflowRunId: run.id, status, error },
   })
 }
@@ -173,26 +174,31 @@ export async function executeWorkflowStep(deps: Deps, runId: string, nodeId: str
   const fail = (error: string) => settleStep(db, run, nodeId, ['running'], { status: 'failed', handle: FAILED_HANDLE, error })
   const node = run.definition.nodes.find((item) => item.id === nodeId)
   const handler = node ? (BLOCK_HANDLERS as Record<string, (typeof BLOCK_HANDLERS)['agent.run']>)[node.type] : undefined
-  if (!node || !handler) {
+  const plugin = node ? parsePluginBlockType(node.type) : null
+  if (!node || (!handler && !plugin)) {
     await fail('This block cannot run.')
     return
   }
   try {
-    const issue = await db<IssueRow>('issues').where({ id: run.issueId }).first()
-    const project = issue ? await db<ProjectRow>('projects').where({ id: issue.projectId }).first() : undefined
+    const issue = run.issueId ? await db<IssueRow>('issues').where({ id: run.issueId }).first() : null
     const workflow = await db<WorkflowRow>('workflows').where({ id: run.workflowId }).first()
-    if (!issue || !project || !workflow) throw new Error('The ticket or workflow no longer exists.')
-    const agent = issue.assignedAgentId ? await db('accounts').where({ id: issue.assignedAgentId }).first() : null
+    // A run with no ticket works in the workflow's project, when it is limited to one.
+    const projectId = issue?.projectId ?? workflow?.projectId
+    const project = projectId ? ((await db<ProjectRow>('projects').where({ id: projectId }).first()) ?? null) : null
+    if ((run.issueId && (!issue || !project)) || !workflow) throw new Error('The ticket or workflow no longer exists.')
+    const agent = issue?.assignedAgentId ? await db('accounts').where({ id: issue.assignedAgentId }).first() : null
     const context: BlockContext = {
       deps,
       run,
       nodeId,
-      issue,
+      issue: issue ?? null,
       project,
       config: node.config,
-      values: await templateValues(deps, run, workflow.name, issue, project),
+      values: await templateValues(deps, run, workflow.name, issue ?? null, project),
     }
-    const result = await handler(context, (agent?.handle as string | undefined) ?? null)
+    const result = handler
+      ? await handler(context, (agent?.handle as string | undefined) ?? null)
+      : await runPluginBlockStep(context, node.type, workflow.name)
     if (result.status === 'wait') {
       await db('workflow_steps')
         .where({ runId, nodeId, status: 'running' })
@@ -220,6 +226,7 @@ function agentHandle(factoryState: string): { handle: string; status: 'succeeded
 
 /** An agent that fails to start at all can finish before the step is even marked as waiting, and that event would be missed. */
 async function settleWaitingAgent(deps: Pick<AppDeps, 'db'>, run: Pick<WorkflowRunRow, 'id' | 'orgId' | 'issueId'>, nodeId: string): Promise<void> {
+  if (!run.issueId) return
   const issue = await deps.db<IssueRow>('issues').where({ id: run.issueId }).first()
   if (!issue || !AGENT_SETTLED.includes(issue.factoryState)) return
   const { status, handle, result } = agentHandle(issue.factoryState)
@@ -292,25 +299,47 @@ export async function handleWorkflowEvent(
   }
 }
 
-async function withinRunLimits(db: Db, workflow: WorkflowRow, issue: IssueRow): Promise<boolean> {
+async function withinRunLimits(db: Db, workflow: WorkflowRow, issue: IssueRow | null): Promise<boolean> {
   const recent = db('workflow_runs')
     .where({ workflowId: workflow.id })
     .whereNull('startedBy')
     .andWhere('created_at', '>', db.raw(`now() - interval '1 hour'`))
   const [{ total, onTicket }] = (await recent.select(
     db.raw('COUNT(*)::int AS total'),
-    db.raw('COUNT(*) FILTER (WHERE issue_id = ?)::int AS on_ticket', [issue.id]),
+    db.raw('COUNT(*) FILTER (WHERE issue_id = ?)::int AS on_ticket', [issue?.id ?? null]),
   )) as { total: number; onTicket: number }[] as [{ total: number; onTicket: number }]
   if (total < MAX_AUTOMATIC_RUNS_PER_HOUR && onTicket < MAX_RUNS_PER_TICKET_PER_HOUR) return true
   await writeAudit(db, {
     orgId: workflow.orgId,
     actorKind: 'system',
     action: 'workflow.throttled',
-    targetType: 'issue',
-    targetId: issue.id,
+    ...(issue ? { targetType: 'issue', targetId: issue.id } : { targetType: 'workflow', targetId: workflow.id }),
     metadata: { workflowId: workflow.id, name: workflow.name, runsThisHour: total, runsOnTicket: onTicket },
   })
   return false
+}
+
+/**
+ * Starts the workflows that a trigger from outside the tracker fires, with no ticket. The event id makes a repeated
+ * delivery start each workflow once.
+ */
+export async function fireTrigger(
+  deps: Pick<AppDeps, 'db'>,
+  input: { orgId: string; type: string; data: Record<string, string>; eventId: string; filters?: string[] },
+): Promise<number> {
+  const { db } = deps
+  const event: WorkflowEvent = { kind: 'external', type: input.type, data: input.data, ...(input.filters ? { filters: input.filters } : {}) }
+  const workflows = await db<WorkflowRow>('workflows')
+    .where({ orgId: input.orgId, enabled: true })
+    .whereNull('archivedAt')
+    .whereRaw('published_definition::text LIKE ?', [`%"${input.type}"%`])
+  let started = 0
+  for (const workflow of workflows) {
+    const fired = workflow.publishedDefinition?.nodes.find((node) => triggerMatches(node, event))
+    if (!fired || !(await withinRunLimits(db, workflow, null))) continue
+    if (await startWorkflowRun(db, { workflow, issue: null, nodeId: fired.id, event, startedBy: null, eventId: input.eventId })) started++
+  }
+  return started
 }
 
 async function scheduleSkipped(db: Db, workflow: WorkflowRow, reason: string): Promise<void> {
@@ -400,8 +429,17 @@ export async function sweepWorkflows(deps: Pick<AppDeps, 'db' | 'queues'>): Prom
     .where({ 'workflow_steps.status': 'waiting' })
     .where('workflow_steps.wake_at', '<=', db.fn.now())
     .select(...columns)) as StepOfRun[]
-  for (const step of due)
-    await settleStep(db, step, step.nodeId, ['waiting'], { status: 'succeeded', handle: step.block === 'logic.wait_for' ? 'timeout' : 'next' })
+  for (const step of due) {
+    if (parsePluginBlockType(step.block)) {
+      await settleStep(db, step, step.nodeId, ['waiting'], {
+        status: 'failed',
+        handle: FAILED_HANDLE,
+        error: 'The plugin never said how this step ended.',
+      })
+    } else {
+      await settleStep(db, step, step.nodeId, ['waiting'], { status: 'succeeded', handle: step.block === 'logic.wait_for' ? 'timeout' : 'next' })
+    }
+  }
 
   const agents = (await active()
     .where({ 'workflow_steps.status': 'waiting', 'workflow_steps.block': 'agent.run' })
@@ -432,7 +470,32 @@ export async function sweepWorkflows(deps: Pick<AppDeps, 'db' | 'queues'>): Prom
   }
 }
 
-type StepOfRun = { id: string; orgId: string; issueId: string; nodeId: string; block: string }
+type StepOfRun = { id: string; orgId: string; issueId: string | null; nodeId: string; block: string }
+
+/**
+ * A plugin reporting a step of its own block that it held. It reaches only steps of its blocks, in organizations that
+ * turned it on. A step still `running` counts too, since the plugin may report before its answer to the call is stored.
+ */
+export async function finishPluginStep(db: Db, pluginId: string, orgId: string, input: PluginStepInput): Promise<void> {
+  const run = await db<WorkflowRunRow>('workflow_runs').where({ id: input.runId, orgId }).first()
+  const step = run ? await db<WorkflowStepRow>('workflow_steps').where({ runId: run.id, nodeId: input.nodeId }).first() : undefined
+  if (!run || !step || parsePluginBlockType(step.block)?.pluginId !== pluginId) throw notFound('Workflow step')
+  let result: Parameters<typeof settleStep>[4]
+  if (input.error) {
+    result = { status: 'failed', handle: FAILED_HANDLE, output: step.output ?? undefined, error: input.error }
+  } else {
+    const block = await pluginBlockOf(db, orgId, step.block)
+    if (!block) throw notFound('Block')
+    let answer: ReturnType<typeof parsePluginBlockAnswer>
+    try {
+      answer = parsePluginBlockAnswer(block, { handle: input.handle, output: input.output })
+    } catch (error) {
+      throw badRequest((error as Error).message)
+    }
+    result = { status: 'succeeded', handle: answer.handle ?? 'next', output: { ...step.output, ...answer.output } }
+  }
+  if (!(await settleStep(db, run, step.nodeId, ['running', 'waiting'], result))) throw conflict('That step is not waiting for the plugin')
+}
 
 export async function cancelWorkflowRun(db: Db, run: WorkflowRunRow, accountId: string): Promise<void> {
   await db.transaction(async (trx) => {

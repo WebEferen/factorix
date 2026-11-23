@@ -1,6 +1,15 @@
 import { type PluginPermission, signPluginPage, splitPluginValues, verifyPlugin } from '@factorix/connectors'
 import { type ConnectionRow, json, type OrganizationPluginRow, type OrganizationRow, type PluginRow } from '@factorix/db'
-import { pluginActivityInput, pluginCallInput, pluginInput, pluginOrganizationInput, pluginRunInput, pluginTicketInput } from '@factorix/schemas'
+import {
+  pluginActivityInput,
+  pluginCallInput,
+  pluginInput,
+  pluginOrganizationInput,
+  pluginRunInput,
+  pluginStepInput,
+  pluginTicketInput,
+  pluginTriggerInput,
+} from '@factorix/schemas'
 import type { FastifyInstance, FastifyRequest } from 'fastify'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
@@ -16,8 +25,10 @@ import {
   pluginProjects,
   startPluginRun,
 } from '../services/plugin-api'
+import { firePluginTrigger } from '../services/plugin-blocks'
 import { enabledPlugin, endpointOf, getPlugin, manifestOf, pluginAllows, pluginDto, readManifest, secretsOf } from '../services/plugins'
 import { readSettings } from '../services/settings'
+import { finishPluginStep } from '../services/workflows'
 
 const PAGE_TTL_MS = 5 * 60_000
 
@@ -285,6 +296,17 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
     scope.post('/webhooks/plugins/:id/tickets/:ticketId', async (request) => {
       const { plugin, enabled } = await signed(request, 'tickets:write')
       return { ticket: await getPluginTicket(db, plugin, enabled.orgId, (request.params as { ticketId: string }).ticketId) }
+    })
+
+    scope.post('/webhooks/plugins/:id/workflow-steps', async (request) => {
+      const { plugin, enabled, body } = await signed(request, 'workflows:blocks')
+      await finishPluginStep(db, plugin.id, enabled.orgId, parseBody(pluginStepInput, body))
+      return { ok: true }
+    })
+
+    scope.post('/webhooks/plugins/:id/workflow-triggers', async (request) => {
+      const { plugin, enabled, body } = await signed(request, 'workflows:blocks')
+      return { started: await firePluginTrigger(db, plugin.id, enabled.orgId, parseBody(pluginTriggerInput, body)) }
     })
   })
 }
