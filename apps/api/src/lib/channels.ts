@@ -1,3 +1,9 @@
+/**
+ * For connections that only subscribe. ioredis lets SUBSCRIBE through before its ready check, which then fails in subscriber mode,
+ * and the reconnect that follows forgets the subscription, so messages stop for good.
+ */
+export const SUBSCRIBER_OPTIONS = { maxRetriesPerRequest: null, enableReadyCheck: false }
+
 export const runChannel = (runId: string) => `run:${runId}`
 export const runCommandChannel = (runId: string) => `run:${runId}:commands`
 export const orgChannel = (orgId: string) => `org:${orgId}`

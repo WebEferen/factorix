@@ -6,6 +6,7 @@ import { type Job, Worker } from 'bullmq'
 import { Redis } from 'ioredis'
 import { type AppDeps, realConnectors } from './deps'
 import { loadEnv } from './env'
+import { SUBSCRIBER_OPTIONS } from './lib/channels'
 import { createSecretBox } from './lib/crypto'
 import { createQueues, QUEUE_NAMES } from './queues'
 import { syncBundledPlugins } from './services/bundled-plugins'
@@ -43,7 +44,7 @@ export function startWorkers(
   const log = options.log ?? ((message: string) => console.error(`[worker] ${message}`))
   const owner = newWorkerId()
   const blocking = deps.redis.duplicate({ maxRetriesPerRequest: null })
-  const subscriber = deps.redis.duplicate({ maxRetriesPerRequest: null })
+  const subscriber = deps.redis.duplicate(SUBSCRIBER_OPTIONS)
   subscriber.setMaxListeners(0)
   const base = { connection: blocking, prefix: options.prefix }
 

@@ -1,5 +1,6 @@
 import type { FastifyReply, FastifyRequest } from 'fastify'
 import type { Redis } from 'ioredis'
+import { SUBSCRIBER_OPTIONS } from './lib/channels'
 
 const KEEPALIVE_MS = 20_000
 
@@ -42,7 +43,7 @@ export class RedisFanout {
   private readonly subscriber: Redis
 
   constructor(redis: Redis) {
-    this.subscriber = redis.duplicate({ maxRetriesPerRequest: null })
+    this.subscriber = redis.duplicate(SUBSCRIBER_OPTIONS)
     this.subscriber.on('message', (channel: string, message: string) => {
       for (const listener of this.listeners.get(channel) ?? []) listener(message)
     })

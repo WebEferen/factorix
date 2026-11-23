@@ -1,6 +1,7 @@
 import type { Db, RunnerRow } from '@factorix/db'
 import { type FrameTransport, RemoteSandboxProvider, type RunnerFrame, type SandboxProvider, type SandboxRoutes } from '@factorix/sandbox'
 import type { Redis } from 'ioredis'
+import { SUBSCRIBER_OPTIONS } from '../lib/channels'
 
 export const RUNNER_TOKEN_PREFIX = 'fxr_'
 /** A runner counts as online while its stream keeps renewing this. */
@@ -28,7 +29,7 @@ export class RunnerLinks {
   private readonly providers = new Map<string, RemoteSandboxProvider>()
 
   constructor(private readonly deps: { db: Db; redis: Redis; stack?: string }) {
-    this.subscriber = deps.redis.duplicate({ maxRetriesPerRequest: null })
+    this.subscriber = deps.redis.duplicate(SUBSCRIBER_OPTIONS)
     this.subscriber.on('message', (channel: string, message: string) => {
       const listeners = this.listeners.get(channel)
       if (!listeners) return

@@ -1,14 +1,16 @@
+import { once } from 'node:events'
 import { createServer, request as httpRequest, type Server } from 'node:http'
 import { type AddressInfo, connect } from 'node:net'
-import { AsyncQueue } from '@factorix/runtime'
+import { AsyncQueue, type TunnelFrame } from '@factorix/runtime'
 import { type AgentHandle, RoutingSandboxProvider, type SandboxProvider, serveSandbox } from '@factorix/sandbox'
+import type { Redis, RedisOptions } from 'ioredis'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import { COOKIE, createGateway, type PreviewRoute, signCookie } from '../../preview-gateway/src/gateway'
 import { createRunnerDialer } from '../../preview-gateway/src/runners'
 import { connectRunner, type RunnerLink } from '../../remote-runner/src/link'
 import { createGrantStore } from '../../remote-runner/src/store'
 import { serveTunnel } from '../../remote-runner/src/tunnel'
-import { proxyTokenKey, runProxyChannel } from './lib/channels'
+import { proxyTokenKey, runProxyChannel, SUBSCRIBER_OPTIONS } from './lib/channels'
 import { RunnerLinks, runnerKeys } from './services/runner-link'
 import { TEAM_ID } from './testing/fakes'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
@@ -290,6 +292,51 @@ describe('runners', () => {
       app.close()
       app.closeAllConnections()
     }
+  })
+
+  it('keep hearing what a runner sends when a subscription went out before its connection was ready', async () => {
+    const { redis } = harness.deps
+    const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+    // The gateway's dialer subscribes on its first dial, which can come while its connection is still being set up.
+    let subscriber: Redis | undefined
+    const watched = new Proxy(redis, {
+      get(target, key) {
+        if (key === 'duplicate') return (options: RedisOptions) => (subscriber = target.duplicate(options))
+        if (key === 'exists') return async () => 1
+        const value = Reflect.get(target, key, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    const dialer = createRunnerDialer(watched)
+    await once(subscriber as Redis, 'connect')
+    const stream = await dialer.dial('early', { host: 'fx-env-early-web', port: 80 })
+    const heard: Buffer[] = []
+    stream.on('data', (chunk: Buffer) => heard.push(chunk))
+    await pause(300)
+    const frame: TunnelFrame = { t: 'tun.data', id: (stream as unknown as { id: string }).id, d: Buffer.from('hi').toString('base64') }
+    await expect
+      .poll(async () => {
+        await redis.publish('runner:early:tun', JSON.stringify(frame))
+        return heard.length
+      })
+      .toBeGreaterThan(0)
+    dialer.close()
+
+    // The same holds for the API's own subscribers.
+    const plain = redis.duplicate(SUBSCRIBER_OPTIONS)
+    await once(plain, 'connect')
+    await plain.subscribe('early')
+    const messages: string[] = []
+    plain.on('message', (_channel, message) => messages.push(message))
+    await pause(300)
+    await expect
+      .poll(async () => {
+        await redis.publish('early', 'hi')
+        return messages.length
+      })
+      .toBeGreaterThan(0)
+    plain.disconnect()
   })
 
   it('go offline when the connection closes, and removing one frees its projects', async () => {

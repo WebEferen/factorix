@@ -11,7 +11,8 @@ const DOWN_TTL_SECONDS = 3600
  * own, so the runner still only dials out and the gateway sees nothing else the runner sends.
  */
 export function createRunnerDialer(redis: Redis): { dial(runnerId: string, target: PreviewTarget): Promise<Duplex>; close(): void } {
-  const subscriber = redis.duplicate({ maxRetriesPerRequest: null })
+  // Without the ready check: it fails once SUBSCRIBE got in before it, and the reconnect after that forgets the subscription.
+  const subscriber = redis.duplicate({ maxRetriesPerRequest: null, enableReadyCheck: false })
   const subscribed = new Map<string, Promise<unknown>>()
   const streams = new Map<string, TunnelStream>()
   subscriber.on('message', (_channel: string, message: string) => {
