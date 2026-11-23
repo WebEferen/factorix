@@ -88,12 +88,12 @@ export function serveTunnel(
       streams.set(frame.id, stream)
       const socket = connect({ host: frame.host, port: frame.port })
       socket.on('error', (error) => stream.destroy(error))
-      socket.on('close', () => stream.destroy())
       stream.on('error', () => undefined)
       stream.on('close', () => {
         streams.delete(frame.id)
         socket.destroy()
       })
+      // When the app hangs up, the pipe only ends the stream: what it still holds for the gateway goes out once acked, then tun.end.
       socket.pipe(stream)
       stream.pipe(socket)
       return
