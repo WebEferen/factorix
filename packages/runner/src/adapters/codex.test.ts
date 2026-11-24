@@ -3,8 +3,27 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RunSpec } from '@factorix/runtime'
 import { describe, expect, it } from 'vitest'
-import { buildFirstTurn, buildHelperTurn, buildThreadOptions, codexCatalog, codexHome, mcpServersToConfig } from './codex'
+import { buildFirstTurn, buildHelperTurn, buildThreadOptions, catalogWith, codexCatalog, codexHome, mcpServersToConfig } from './codex'
 import { CodexNormalizer, parseStructuredOutput } from './codex-normalize'
+
+describe('catalogWith', () => {
+  const rows = [
+    { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', context_window: 400_000 },
+    { slug: 'gpt-6-sol', display_name: 'GPT-6-Sol', context_window: 200_000 },
+    { slug: 'gpt-6-astra', display_name: 'GPT-6-Astra', context_window: 300_000 },
+  ]
+
+  it('adds a model the CLI does not know as a copy of its family’s newest, ahead of the CLI’s own list', () => {
+    expect(catalogWith(rows, 'gpt-6.2-sol')).toEqual([{ slug: 'gpt-6.2-sol', display_name: 'gpt-6.2-sol', context_window: 400_000 }, ...rows])
+    expect(catalogWith(rows, 'gpt-6.2-astra')?.[0]).toMatchObject({ slug: 'gpt-6.2-astra', context_window: 300_000 })
+    expect(catalogWith(rows, 'gpt-7-nova')?.[0]).toMatchObject({ slug: 'gpt-7-nova', context_window: 400_000 })
+  })
+
+  it('leaves the CLI alone for a model it knows, or a name it cannot read', () => {
+    expect(catalogWith(rows, 'gpt-6-sol')).toBeNull()
+    expect(catalogWith(rows, 'codex-auto-review')).toBeNull()
+  })
+})
 
 describe('codexHome', () => {
   it('makes the folder in a home that starts empty, as a run’s does', () => {

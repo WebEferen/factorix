@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import {
   type AgentHelper,
@@ -92,6 +92,40 @@ export function codexCatalog(rows: CodexCatalogRow[]): RuntimeModelCatalog {
   return { defaultModel: null, models }
 }
 
+/** `gpt-6.2-sol` is family `sol` at 6.2, and `gpt-5.5` has no family. */
+function versionOf(slug: string): { family: string; version: number[] } | null {
+  const parts = slug.split('-').slice(1)
+  const version = parts.filter((part) => /^\d{1,3}(?:\.\d{1,3})?$/.test(part)).flatMap((part) => part.split('.').map(Number))
+  if (version.length === 0) return null
+  return { family: parts.filter((part) => /^[a-z]+$/.test(part)).join('-'), version }
+}
+
+/**
+ * The CLI knows only the models of its own release and runs a newer one on fallback settings. A catalog file replaces its
+ * list, so this is that list with the newer model added as a copy of its family's newest entry, or null when the CLI knows it.
+ */
+export function catalogWith<T extends CodexCatalogRow>(rows: T[], model: string): T[] | null {
+  const wanted = versionOf(model)
+  if (!wanted || rows.some((row) => row.slug === model)) return null
+  const known = rows.flatMap((row) => {
+    const parsed = versionOf(row.slug)
+    return parsed ? [{ row, ...parsed }] : []
+  })
+  const family = known.filter((entry) => entry.family === wanted.family)
+  const newest = (family.length > 0 ? family : known).sort(
+    (a, b) => (b.version[0] ?? 0) - (a.version[0] ?? 0) || (b.version[1] ?? 0) - (a.version[1] ?? 0),
+  )[0]
+  return newest ? [{ ...newest.row, slug: model, display_name: model }, ...rows] : null
+}
+
+async function bundledRows(io: RunnerIO): Promise<(CodexCatalogRow & Record<string, unknown>)[]> {
+  const { stdout } = await promisify(execFile)('codex', ['debug', 'models', '--bundled'], {
+    env: { ...process.env, CODEX_HOME: codexHome(io), HOME: io.homeDir },
+    maxBuffer: 256 * 1024 * 1024,
+  })
+  return (JSON.parse(stdout) as { models: (CodexCatalogRow & Record<string, unknown>)[] }).models
+}
+
 /** The Codex CLI refuses to start while CODEX_HOME does not exist, and a run's home starts empty. */
 export function codexHome(io: Pick<RunnerIO, 'homeDir'>): string {
   const home = `${io.homeDir}/.codex`
@@ -104,12 +138,7 @@ export class CodexRuntime implements AgentRuntime {
 
   /** The Codex SDK has no model list, so this asks the CLI it wraps, which is pinned with it. */
   async listModels(io: RunnerIO): Promise<RuntimeModelCatalog> {
-    const home = codexHome(io)
-    const { stdout } = await promisify(execFile)('codex', ['debug', 'models', '--bundled'], {
-      env: { ...process.env, CODEX_HOME: home, HOME: io.homeDir },
-      maxBuffer: 256 * 1024 * 1024,
-    })
-    return codexCatalog((JSON.parse(stdout) as { models: CodexCatalogRow[] }).models)
+    return codexCatalog(await bundledRows(io))
   }
 
   capabilities() {
@@ -120,23 +149,42 @@ export class CodexRuntime implements AgentRuntime {
 
   private readonly helperUsage: Record<string, ModelUsage> = {}
 
-  private client(io: RunnerIO, mcpServers: RunSpec['mcpServers'] = {}): Codex {
+  /** Where a catalog that knows `model` was written, when the CLI does not know it. Without one the run goes on fallback settings. */
+  private async catalogFor(io: RunnerIO, model: string | undefined): Promise<string | undefined> {
+    if (!model) return undefined
+    try {
+      const rows = catalogWith(await bundledRows(io), model)
+      if (!rows) return undefined
+      const path = `${codexHome(io)}/models-${model.replace(/[^\w.-]/g, '_')}.json`
+      writeFileSync(path, JSON.stringify({ models: rows }))
+      return path
+    } catch {
+      return undefined
+    }
+  }
+
+  private async client(io: RunnerIO, model: string | undefined, mcpServers: RunSpec['mcpServers'] = {}): Promise<Codex> {
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value
     env.CODEX_HOME = codexHome(io)
     env.HOME = io.homeDir
+    const catalog = await this.catalogFor(io, model)
+    const config: Record<string, ConfigValue> = {
+      ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServersToConfig(mcpServers) } : {}),
+      ...(catalog ? { model_catalog_json: catalog } : {}),
+    }
     return new Codex({
       env,
       apiKey: process.env.CODEX_API_KEY,
       baseUrl: process.env.OPENAI_BASE_URL,
-      config: Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServersToConfig(mcpServers) } : undefined,
+      config: Object.keys(config).length > 0 ? config : undefined,
     })
   }
 
   /** The SDK has no helpers, so one is a second thread on its own model. It gets no MCP servers, and so cannot delegate further. */
   async runHelper(spec: RunSpec, helper: AgentHelper, task: string, signal: AbortSignal, io: RunnerIO): Promise<string> {
     const model = helper.model ?? spec.model.name
-    const thread = this.client(io).startThread({ ...buildThreadOptions(spec), model, modelReasoningEffort: undefined })
+    const thread = (await this.client(io, model)).startThread({ ...buildThreadOptions(spec), model, modelReasoningEffort: undefined })
     const turn = await thread.run(buildHelperTurn(helper, task), { signal })
     const key = model ?? 'default'
     const spent = this.helperUsage[key] ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
@@ -150,7 +198,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async *run(spec: RunSpec, control: RunControl, io: RunnerIO): AsyncIterable<RunEventBody> {
-    const codex = this.client(io, spec.mcpServers)
+    const codex = await this.client(io, spec.model.name, spec.mcpServers)
     const options = buildThreadOptions(spec)
     const thread = spec.resume ? codex.resumeThread(spec.resume.sessionRef, options) : codex.startThread(options)
     const normalizer = new CodexNormalizer(spec.model.name, spec.resume?.sessionRef, this.helperUsage)
