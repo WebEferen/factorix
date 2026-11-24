@@ -240,6 +240,12 @@ export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
     const query = request.query as { from?: string; to?: string }
     const to = query.to ? new Date(query.to) : new Date()
     const from = query.from ? new Date(query.from) : new Date(to.getFullYear(), to.getMonth(), 1)
+    const hasUsage = `GREATEST(
+      (runs.usage->>'inputTokens')::bigint,
+      (runs.usage->>'outputTokens')::bigint,
+      (runs.usage->>'cacheReadTokens')::bigint,
+      (runs.usage->>'cacheWriteTokens')::bigint
+    ) > 0`
     const totals = (column: string, label: string) =>
       db('runs')
         .leftJoin('accounts', 'runs.agent_id', 'accounts.id')
@@ -251,13 +257,8 @@ export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
           db.raw(`COALESCE(${column}::text, 'none') AS key`),
           db.raw(`COALESCE(${label}, 'Ad-hoc') AS label`),
           db.raw('COUNT(*) AS runs'),
-          db.raw('COUNT(runs.cost_usd) AS priced_runs'),
-          db.raw(`COUNT(*) FILTER (WHERE runs.cost_usd IS NULL AND GREATEST(
-            (runs.usage->>'inputTokens')::bigint,
-            (runs.usage->>'outputTokens')::bigint,
-            (runs.usage->>'cacheReadTokens')::bigint,
-            (runs.usage->>'cacheWriteTokens')::bigint
-          ) > 0) AS unpriced_runs`),
+          db.raw(`COUNT(*) FILTER (WHERE runs.cost_usd IS NOT NULL AND (runs.cost_usd <> 0 OR ${hasUsage})) AS priced_runs`),
+          db.raw(`COUNT(*) FILTER (WHERE runs.cost_usd IS NULL AND ${hasUsage}) AS unpriced_runs`),
           db.raw('COALESCE(SUM(runs.cost_usd) FILTER (WHERE NOT runs.cost_estimated), 0) AS cost_usd'),
           db.raw('COALESCE(SUM(runs.cost_usd) FILTER (WHERE runs.cost_estimated), 0) AS estimated_cost_usd'),
           db.raw(`COALESCE(SUM((runs.usage->>'inputTokens')::bigint), 0) AS input_tokens`),

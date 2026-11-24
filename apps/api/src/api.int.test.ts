@@ -1603,11 +1603,15 @@ describe('API', () => {
 
     it('totals estimates and distinguishes runs with usage but no price', async () => {
       const { db } = harness.deps
-      const { agents } = await admin.ok('GET', '/api/agents')
-      const agent = await db('accounts').where({ id: agents[0].id }).first()
+      const spendAdmin = new ApiClient(harness.app)
+      await spendAdmin.ok('POST', '/api/auth/login', { email: SETUP.email, password: SETUP.password })
+      const { org } = await spendAdmin.ok('POST', '/api/orgs', { name: 'Spend fixtures' })
+      await spendAdmin.ok('POST', '/api/auth/switch', { orgId: org.id })
+      const { agents } = await spendAdmin.ok('GET', '/api/agents')
+      const [priced, unpriced] = agents
       const run = {
-        orgId: agent.orgId,
-        agentId: agent.id,
+        orgId: org.id,
+        agentId: priced.id,
         agentSnapshot: json({}),
         phase: 'implement',
         state: 'succeeded',
@@ -1615,19 +1619,21 @@ describe('API', () => {
       }
       await db('runs').insert([
         { ...run, usage: json({ inputTokens: 100_000 }), costUsd: 0.25, costEstimated: true },
-        { ...run, agentId: agents[1].id, usage: json({ cacheReadTokens: 25 }) },
-        { ...run, agentId: agents[1].id, state: 'queued' },
+        { ...run, agentId: unpriced.id, usage: json({ cacheReadTokens: 25 }) },
+        { ...run, agentId: unpriced.id, state: 'queued' },
         {
           ...run,
-          agentId: agents[1].id,
+          agentId: unpriced.id,
           state: 'failed',
+          costUsd: 0,
+          costEstimated: true,
           usage: json({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }),
         },
       ])
-      const spend = await admin.ok('GET', '/api/spend')
+      const spend = await spendAdmin.ok('GET', '/api/spend')
       expect(spend.totalUsd).toBe(0.25)
-      expect(spend.byAgent[0]).toMatchObject({ key: agent.id, estimatedCostUsd: 0.25, pricedRuns: 1, unpricedRuns: 0 })
-      expect(spend.byAgent.find((row: { key: string }) => row.key === agents[1].id)).toMatchObject({
+      expect(spend.byAgent[0]).toMatchObject({ key: priced.id, estimatedCostUsd: 0.25, pricedRuns: 1, unpricedRuns: 0 })
+      expect(spend.byAgent.find((row: { key: string }) => row.key === unpriced.id)).toMatchObject({
         runs: 3,
         pricedRuns: 0,
         unpricedRuns: 1,
