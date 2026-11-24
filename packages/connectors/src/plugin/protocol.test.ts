@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parsePluginBlockAnswer, parsePluginManifest, parsePluginTriggerEvent } from './protocol'
+import { parsePluginBlockAnswer, parsePluginManifest, parsePluginToolAnswer, parsePluginTriggerEvent } from './protocol'
 
 const base = { protocol: 1, name: 'Chat', version: '1.0.0', permissions: ['workflows:blocks'] }
 const post = {
@@ -57,6 +57,39 @@ describe('plugin triggers in a manifest', () => {
     expect(() => parsePluginManifest({ ...base, triggers: [{ ...closed, fields: [{ key: 'note', label: 'Note', kind: 'template' }] }] })).toThrow(
       'text or select',
     )
+  })
+})
+
+describe('plugin tools in a manifest', () => {
+  const tools = { ...base, permissions: ['agents:tools'] }
+  const search = {
+    key: 'search_docs',
+    description: 'Searches the docs.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+  }
+
+  it('reads a tool, and takes an input of no fields when it names none', () => {
+    const parsed = parsePluginManifest({ ...tools, tools: [search, { key: 'ping', description: 'Pings.' }] }).tools
+    expect(parsed).toEqual([search, { key: 'ping', description: 'Pings.', inputSchema: { type: 'object', properties: {} } }])
+    expect(parsePluginManifest(base).tools).toEqual([])
+  })
+
+  it('refuses tools without the permission, with a shared key, or with an input that is not an object', () => {
+    expect(() => parsePluginManifest({ ...base, tools: [search] })).toThrow('agents:tools')
+    expect(() => parsePluginManifest({ ...tools, tools: [search, search] })).toThrow('a key of its own')
+    expect(() => parsePluginManifest({ ...tools, tools: [{ ...search, key: 'Search' }] })).toThrow('a key of its own')
+    expect(() => parsePluginManifest({ ...tools, tools: [{ ...search, inputSchema: { type: 'string' } }] })).toThrow('of an object')
+    expect(() => parsePluginManifest({ ...tools, tools: [{ ...search, description: '' }] })).toThrow('needs a description')
+    const huge = { type: 'object', properties: { query: { type: 'string', description: 'x'.repeat(9000) } } }
+    expect(() => parsePluginManifest({ ...tools, tools: [{ ...search, inputSchema: huge }] })).toThrow('too large')
+  })
+
+  it('turns an answer into the text the agent reads, and cuts a long one', () => {
+    expect(parsePluginToolAnswer('found 2')).toBe('found 2')
+    expect(parsePluginToolAnswer({ hits: [1] })).toBe('{\n  "hits": [\n    1\n  ]\n}')
+    expect(parsePluginToolAnswer(undefined)).toBe('null')
+    const long = parsePluginToolAnswer('a'.repeat(200_000))
+    expect(long).toHaveLength(100_000 + '\n[The answer was cut at 100000 characters.]'.length)
   })
 })
 

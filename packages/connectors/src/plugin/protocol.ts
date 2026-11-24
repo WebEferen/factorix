@@ -24,6 +24,8 @@ export interface PluginField {
 export const PLUGIN_PERMISSIONS = {
   'activity:read': 'Read what happened on tickets: titles, statuses, assignees, merged merge requests, and what agents reported',
   'agents:run': "Ask this organization's agents for work in runs with no ticket and no repository, and read their answers",
+  'agents:tools':
+    "Offer tools to this organization's agents, and receive what an agent sends one, with the agent's name and ticket. What an agent sends can hold code and ticket text",
   'members:read': 'Read who is in this organization: the names, handles, and roles of its people and agents',
   'tickets:write': "Read the names of this organization's projects, create tickets in them, hand those tickets to agents, and read their status",
   'workflows:blocks':
@@ -48,6 +50,8 @@ export interface PluginManifest {
   blocks: PluginBlock[]
   /** What can start a workflow from inside the plugin. They need `workflows:blocks` too. */
   triggers: PluginTrigger[]
+  /** Tools the organization's agents can call. They need `agents:tools`. */
+  tools: PluginTool[]
 }
 
 export const PLUGIN_BLOCK_FIELD_KINDS = ['text', 'template', 'longTemplate', 'number', 'select'] as const
@@ -106,6 +110,26 @@ export interface PluginBlockAnswer {
   handle?: string
   output?: Record<string, string>
   wait?: boolean
+}
+
+/** A tool an agent calls through Factorix's MCP server. The worker asks the plugin, so a call never leaves from the agent's container. */
+export interface PluginTool {
+  key: string
+  description: string
+  /** A JSON Schema of an object, which the agent's model fills in. */
+  inputSchema: Record<string, unknown>
+}
+
+/** What a plugin is told when an agent calls one of its tools. A model wrote `input`, from code and ticket text, so it is data. */
+export interface PluginToolCall {
+  tool: string
+  plugin: { id: string }
+  org: { id: string }
+  agent: { id: string; handle: string }
+  /** `url` is the run's page in Factorix. */
+  run: { id: string; url: string }
+  issue: { identifier: string; title: string; url: string | null } | null
+  input: Record<string, unknown>
 }
 
 export interface PluginPage {
@@ -221,6 +245,9 @@ export function parsePluginManifest(value: unknown): PluginManifest {
   if (unknown !== undefined) throw new Error(`The plugin asks for ${String(unknown)}, which this Factorix does not know`)
   if (blocks.length + triggers.length > 0 && !permissions.includes('workflows:blocks'))
     throw new Error('A plugin with workflow blocks has to ask for workflows:blocks')
+  const tools = (raw.tools ?? []) as Record<string, unknown>[]
+  if (!Array.isArray(tools) || tools.length > 20) throw new Error('The plugin manifest lists its tools wrongly')
+  if (tools.length > 0 && !permissions.includes('agents:tools')) throw new Error('A plugin with tools for agents has to ask for agents:tools')
   const parsedBlocks = parseBlocks(blocks)
   const parsedTriggers = parseTriggers(triggers)
   if (parsedTriggers.some((trigger) => parsedBlocks.some((block) => block.key === trigger.key)))
@@ -243,7 +270,34 @@ export function parsePluginManifest(value: unknown): PluginManifest {
     }),
     blocks: parsedBlocks,
     triggers: parsedTriggers,
+    tools: parseTools(tools),
   }
+}
+
+const TOOL_SCHEMA_BYTES = 8192
+
+function parseTools(tools: Record<string, unknown>[]): PluginTool[] {
+  const keys = new Set<string>()
+  return tools.map((tool) => {
+    if (!text(tool.key, 40) || !PLUGIN_BLOCK_KEY.test(tool.key) || keys.has(tool.key)) throw new Error('Each plugin tool needs a key of its own')
+    keys.add(tool.key)
+    if (!text(tool.description, 1000)) throw new Error(`Plugin tool ${tool.key} needs a description of at most 1000 characters`)
+    const schema = (tool.inputSchema ?? { type: 'object', properties: {} }) as Record<string, unknown>
+    if (!schema || typeof schema !== 'object' || Array.isArray(schema) || schema.type !== 'object')
+      throw new Error(`The input of plugin tool ${tool.key} has to be a JSON Schema of an object`)
+    if (JSON.stringify(schema).length > TOOL_SCHEMA_BYTES) throw new Error(`The input schema of plugin tool ${tool.key} is too large`)
+    return { key: tool.key, description: tool.description, inputSchema: schema }
+  })
+}
+
+const TOOL_ANSWER_CHARS = 100_000
+
+/** What a tool answered, as the text the agent reads. The plugin is someone else's server, so the text is capped. */
+export function parsePluginToolAnswer(value: unknown): string {
+  const answer = typeof value === 'string' ? value : (JSON.stringify(value ?? null, null, 2) ?? 'null')
+  return answer.length > TOOL_ANSWER_CHARS
+    ? `${answer.slice(0, TOOL_ANSWER_CHARS)}\n[The answer was cut at ${TOOL_ANSWER_CHARS} characters.]`
+    : answer
 }
 
 export const PLUGIN_BLOCK_KEY = /^[a-z][a-z0-9_]{0,39}$/

@@ -148,7 +148,7 @@ function openThreadsFrom(rows: MrDiscussionRow[], repos: { id?: string | null; n
 /** A helper works for minutes, far longer than a runtime waits on a tool by default. */
 const DELEGATE_TIMEOUT_SECONDS = 900
 
-/** The MCP server inside the container. `tools` names what it offers: `preview`, `helpers`, or both. */
+/** The MCP server inside the container. `tools` names what it offers: any of `preview`, `helpers`, and `plugins`. */
 function factorixMcpServer(tools: string[]): McpServerSpec {
   return {
     type: 'stdio',
@@ -310,6 +310,8 @@ export interface SpecInput {
   resumeSessionRef?: string
   /** Offers the preview tools of the factorix MCP server, which reach the worker through the runner. */
   previewTool?: boolean
+  /** Offers the tools of the organization's plugins through the same server. */
+  pluginTools?: boolean
   resources?: PhaseResource[]
   files?: RunFile[]
   /** Masks secret values in the prompt. Everything the agent reads from people and tools goes through it. */
@@ -337,7 +339,11 @@ export async function buildRunSpec(deps: Pick<AppDeps, 'db' | 'secrets'>, input:
   const redact = input.redact ?? ((text: string) => text)
   const helperMode = RUNTIME_CAPABILITIES[run.runtime].helpers
   const helpers = helperMode !== 'none' && agent.helpers?.length ? agent.helpers : undefined
-  const tools = [...(input.previewTool ? ['preview'] : []), ...(helpers && helperMode === 'delegate' ? ['helpers'] : [])]
+  const tools = [
+    ...(input.previewTool ? ['preview'] : []),
+    ...(helpers && helperMode === 'delegate' ? ['helpers'] : []),
+    ...(input.pluginTools ? ['plugins'] : []),
+  ]
   return {
     runId: run.id,
     attempt: run.attempt,

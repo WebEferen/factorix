@@ -1,6 +1,6 @@
 import { createHandler, FactorixError, type Plugin } from './plugin.js'
 import { SIGNATURE_HEADER, sign, signPageToken, TIMESTAMP_HEADER, verify } from './signing.js'
-import { type BlockAnswer, type BlockCall, type Connection, type Manifest, type PageContext, PROTOCOL, type Tracker } from './types.js'
+import { type BlockAnswer, type BlockCall, type Connection, type Manifest, type PageContext, PROTOCOL, type ToolCall, type Tracker } from './types.js'
 
 const DEFAULT_SECRET = 'test-secret-0123456789'
 
@@ -56,6 +56,25 @@ export function factorixClient(plugin: Plugin, options: { secret?: string; path?
         ],
         null,
       ) as Promise<BlockAnswer>
+    },
+    /** Calls a tool as an agent does, through Factorix. Answers what the tool returned. */
+    callTool(key: string, input: Record<string, unknown> = {}, context: Partial<Omit<ToolCall, 'tool' | 'input'>> = {}): Promise<unknown> {
+      return call(
+        'agent.tool',
+        [
+          {
+            plugin: { id: 'plugin-1' },
+            org: { id: 'org-1' },
+            agent: { id: 'agent-1', handle: 'ada' },
+            run: { id: 'run-1', url: 'https://factorix.test/runs/run-1' },
+            issue: null,
+            ...context,
+            tool: key,
+            input,
+          },
+        ],
+        null,
+      )
     },
     /** The choices a block lists for one of its `dynamic` fields. */
     blockOptions(key: string, field: string, org = { id: 'org-1' }): Promise<{ value: string; label: string }[]> {

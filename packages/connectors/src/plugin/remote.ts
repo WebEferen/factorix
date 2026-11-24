@@ -8,8 +8,10 @@ import {
   type PluginBlockCall,
   type PluginConnection,
   type PluginManifest,
+  type PluginToolCall,
   parsePluginBlockAnswer,
   parsePluginManifest,
+  parsePluginToolAnswer,
   signPlugin,
 } from './protocol'
 
@@ -58,14 +60,18 @@ export async function callPlugin(endpoint: PluginEndpoint, method: string, param
 export async function fetchPluginManifest(endpoint: PluginEndpoint): Promise<PluginManifest> {
   const manifest = parsePluginManifest(await callPlugin(endpoint, 'manifest', [], null))
   // Checked here rather than in the parser, which also reads an uploaded package's stand-in until its server answers.
-  if (manifest.provides.length + manifest.pages.length + manifest.blocks.length + manifest.triggers.length === 0) {
-    throw new Error('The plugin provides nothing this Factorix can use: no tracker, no pages, and no blocks')
+  if (manifest.provides.length + manifest.pages.length + manifest.blocks.length + manifest.triggers.length + manifest.tools.length === 0) {
+    throw new Error('The plugin provides nothing this Factorix can use: no tracker, no pages, no blocks, and no tools')
   }
   return manifest
 }
 
 export async function runPluginBlock(endpoint: PluginEndpoint, block: PluginBlock, call: PluginBlockCall): Promise<PluginBlockAnswer> {
   return parsePluginBlockAnswer(block, await callPlugin(endpoint, 'workflow.block', [call], null))
+}
+
+export async function runPluginTool(endpoint: PluginEndpoint, call: PluginToolCall): Promise<string> {
+  return parsePluginToolAnswer(await callPlugin(endpoint, 'agent.tool', [call], null))
 }
 
 /** The choices of a `dynamic` field, as the plugin lists them for one organization. */

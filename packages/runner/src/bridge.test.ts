@@ -211,3 +211,51 @@ describe('helpers behind the delegate tool', () => {
     expect((await delegate(handle, { helper: 'code-search', task: 'x' })).result.content[0]?.text).toContain('ending')
   })
 })
+
+describe('plugin tools', () => {
+  const listed = [
+    { name: 'docs_search', description: 'Searches the docs.', inputSchema: { type: 'object', properties: { query: { type: 'string' } } } },
+    { name: 'preview_start', description: 'A plugin cannot take a name of ours.', inputSchema: { type: 'object' } },
+  ]
+  const calls: [string, unknown][] = []
+  const handleFor = (groups: string[]) =>
+    createMcpHandler(async (op, input) => {
+      calls.push([op, input])
+      if (op === 'tool.list') return listed
+      if (op === 'tool.call' && (input as { name: string }).name === 'docs_search') return 'Found 2 pages'
+      throw new Error('There is no tool called that')
+    }, groups)
+  const list = async (groups: string[]) =>
+    ((await handleFor(groups)({ jsonrpc: '2.0', id: 1, method: 'tools/list' })) as { result: { tools: { name: string }[] } }).result.tools
+  const callTool = (groups: string[], name: string) =>
+    handleFor(groups)({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: { query: 'retries' } } }) as Promise<{
+      result?: { content: { text: string }[]; isError?: boolean }
+      error?: { message: string }
+    }>
+
+  it('lists what the worker lists, after the built-in tools, and never under a built-in name', async () => {
+    expect((await list(['preview', 'plugins'])).map((tool) => tool.name)).toEqual([
+      'preview_start',
+      'preview_status',
+      'preview_logs',
+      'preview_stop',
+      'docs_search',
+    ])
+    expect(await list(['plugins'])).toEqual([listed[0]])
+  })
+
+  it('carries a call to the worker with its name and arguments, and returns the answer as text', async () => {
+    calls.length = 0
+    expect((await callTool(['plugins'], 'docs_search')).result).toEqual({ content: [{ type: 'text', text: 'Found 2 pages' }] })
+    expect(calls).toEqual([['tool.call', { name: 'docs_search', input: { query: 'retries' } }]])
+    const failed = await callTool(['plugins'], 'docs_gone')
+    expect(failed.result).toMatchObject({ isError: true, content: [{ text: 'There is no tool called that' }] })
+  })
+
+  it('offers nothing and calls nothing where the server was not asked for plugin tools', async () => {
+    calls.length = 0
+    expect(await list(['preview'])).toHaveLength(4)
+    expect((await callTool(['preview'], 'docs_search')).error?.message).toBe('There is no tool called docs_search.')
+    expect(calls).toEqual([])
+  })
+})

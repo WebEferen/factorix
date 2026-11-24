@@ -64,6 +64,14 @@ async function delegateTool(call: Call): Promise<object | null> {
   }
 }
 
+const BUILT_IN = new Set([...PREVIEW_TOOLS.map((tool) => tool.name), 'delegate'])
+
+/** The tools of the organization's plugins, listed by the worker, which also answers each call by asking the plugin. */
+async function pluginTools(call: Call): Promise<object[]> {
+  const tools = (await call('tool.list', {})) as { name: string }[]
+  return tools.filter((tool) => !BUILT_IN.has(tool.name))
+}
+
 interface Message {
   jsonrpc?: string
   id?: string | number | null
@@ -91,14 +99,19 @@ export function createMcpHandler(call: Call, groups: string[] = ['preview']) {
         return reply(id, {})
       case 'tools/list': {
         const delegate = groups.includes('helpers') ? await delegateTool(call).catch(() => null) : null
-        return reply(id, { tools: [...previews.map(({ op: _op, ...tool }) => tool), ...(delegate ? [delegate] : [])] })
+        const plugins = groups.includes('plugins') ? await pluginTools(call).catch(() => []) : []
+        return reply(id, { tools: [...previews.map(({ op: _op, ...tool }) => tool), ...(delegate ? [delegate] : []), ...plugins] })
       }
       case 'tools/call': {
-        const tool = previews.find((candidate) => candidate.name === message.params?.name)
-        const op = tool?.op ?? (groups.includes('helpers') && message.params?.name === 'delegate' ? 'helper.run' : null)
-        if (!op) return failure(id, -32602, `There is no tool called ${String(message.params?.name)}.`)
+        const name = message.params?.name
+        const tool = previews.find((candidate) => candidate.name === name)
+        const op = tool?.op ?? (groups.includes('helpers') && name === 'delegate' ? 'helper.run' : null)
+        const plugin = !op && groups.includes('plugins') && typeof name === 'string' && !BUILT_IN.has(name)
+        if (!op && !plugin) return failure(id, -32602, `There is no tool called ${String(name)}.`)
         try {
-          const value = await call(op, message.params?.arguments ?? {})
+          const value = op
+            ? await call(op, message.params?.arguments ?? {})
+            : await call('tool.call', { name, input: message.params?.arguments ?? {} })
           return reply(id, { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] })
         } catch (error) {
           return reply(id, { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true })

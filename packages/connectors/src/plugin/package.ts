@@ -317,6 +317,7 @@ export function packagedPluginManifest(manifest: PluginPackageManifest): PluginM
     pages: [],
     blocks: [],
     triggers: [],
+    tools: [],
   }
 }
 

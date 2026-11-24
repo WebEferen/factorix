@@ -17,6 +17,7 @@ import {
   type Ticket,
   type TicketProject,
   type TicketRequest,
+  type ToolCall,
   type Tracker,
   type TrackerEvent,
 } from './types.js'
@@ -71,6 +72,21 @@ export interface TriggerDefinition {
   options?(input: { field: string; org: { id: string } }): { value: string; label: string }[] | Promise<{ value: string; label: string }[]>
 }
 
+/**
+ * A tool the organization's agents can call while they work. Factorix's worker calls it for them, so it reaches your
+ * plugin even from a container with no network. Answer within 30 seconds, with text or anything JSON can hold, which the
+ * agent reads as text. Throw to tell the agent what went wrong.
+ */
+export interface ToolDefinition {
+  /** Lowercase letters, digits, and underscores, starting with a letter. Agents call it as `<plugin name>_<key>`. */
+  key: string
+  /** What the agent's model reads to decide when to call it and what to send. */
+  description: string
+  /** A JSON Schema of an object. Defaults to one with no fields. */
+  inputSchema?: Record<string, unknown>
+  run(call: ToolCall): unknown | Promise<unknown>
+}
+
 export interface PluginDefinition {
   name: string
   version: string
@@ -86,6 +102,8 @@ export interface PluginDefinition {
   blocks?: BlockDefinition[]
   /** What can start those workflows from inside the plugin. */
   triggers?: TriggerDefinition[]
+  /** Tools it gives the agents of each organization that turns it on. */
+  tools?: ToolDefinition[]
   /** Builds a tracker for one connection. Called per request, so keep it cheap and keep nothing in it. */
   tracker?(connection: Connection): Tracker
 }
@@ -132,10 +150,24 @@ export function definePlugin(definition: PluginDefinition): Plugin {
     if (trigger.fields.some((field) => field.kind !== 'text' && field.kind !== 'select'))
       throw new Error(`The fields of trigger ${trigger.key} can only be text or select`)
   }
-  if (!definition.tracker && pages.length === 0 && blocks.length === 0 && triggers.length === 0)
-    throw new Error('A plugin needs a tracker, a page, or a block')
+  const tools = (definition.tools ?? []).map((tool) => ({
+    key: tool.key,
+    description: tool.description,
+    inputSchema: tool.inputSchema ?? { type: 'object', properties: {} },
+  }))
+  for (const tool of tools) {
+    if (!/^[a-z][a-z0-9_]{0,39}$/.test(tool.key)) throw new Error(`Tool ${tool.key} needs a key of lowercase letters, digits, and underscores`)
+    if (tools.filter((other) => other.key === tool.key).length > 1) throw new Error(`Two tools share the key ${tool.key}`)
+    if (tool.inputSchema.type !== 'object') throw new Error(`The inputSchema of tool ${tool.key} has to describe an object`)
+  }
+  if (!definition.tracker && pages.length === 0 && blocks.length === 0 && triggers.length === 0 && tools.length === 0)
+    throw new Error('A plugin needs a tracker, a page, a block, or a tool')
   const workflows = blocks.length + triggers.length > 0
-  const permissions: Permission[] = [...(definition.permissions ?? []), ...(workflows ? (['workflows:blocks'] as const) : [])]
+  const permissions: Permission[] = [
+    ...(definition.permissions ?? []),
+    ...(workflows ? (['workflows:blocks'] as const) : []),
+    ...(tools.length > 0 ? (['agents:tools'] as const) : []),
+  ]
   return {
     ...definition,
     manifest: {
@@ -150,6 +182,7 @@ export function definePlugin(definition: PluginDefinition): Plugin {
       pages,
       blocks,
       triggers,
+      tools,
     },
   }
 }
@@ -208,6 +241,7 @@ export function createHandler(plugin: Plugin, options: HandlerOptions): (request
     if (call.protocol !== PROTOCOL) return json(400, { error: { message: `This plugin speaks protocol ${PROTOCOL}` } })
     if (call.method === 'manifest') return json(200, { result: plugin.manifest })
     if (call.method === 'workflow.block' || call.method === 'workflow.options') return workflow(call.method, call.params?.[0])
+    if (call.method === 'agent.tool') return agentTool(call.params?.[0] as ToolCall | undefined)
     const [scope, method] = String(call.method).split('.')
     if (scope !== 'tracker' || !method || !TRACKER_METHODS.has(method) || !plugin.tracker || !call.connection) {
       return json(404, { error: { message: `Unknown method ${String(call.method)}` } })
@@ -242,6 +276,16 @@ export function createHandler(plugin: Plugin, options: HandlerOptions): (request
       return json(200, { result: await block.options({ field, org }) })
     } catch (error) {
       return json(500, { error: { message: error instanceof Error ? error.message : 'The block failed' } })
+    }
+  }
+
+  const agentTool = async (call: ToolCall | undefined): Promise<Response> => {
+    const tool = plugin.tools?.find((candidate) => candidate.key === call?.tool)
+    if (!call || !tool) return json(404, { error: { message: `This plugin has no tool ${String(call?.tool)}` } })
+    try {
+      return json(200, { result: (await tool.run(call)) ?? null })
+    } catch (error) {
+      return json(500, { error: { message: error instanceof Error ? error.message : 'The tool failed' } })
     }
   }
 

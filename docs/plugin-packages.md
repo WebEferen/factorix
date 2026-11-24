@@ -214,4 +214,4 @@ The build refuses a zip without a `.sig`, or one no listed publisher signed. A p
 
 ## What comes next
 
-New things a plugin can provide, such as a code host, notification channels, and agent tools, land in the manifest and the SDK, and packages get them like every other plugin.
+New things a plugin can provide, such as a code host and notification channels, land in the manifest and the SDK, and packages get them like every other plugin, as they got tools for agents.

@@ -31,6 +31,7 @@ import { definitionOf, getEnvironmentRow } from './environments'
 import { EventBuffer } from './event-buffer'
 import { finalizePhase, StepFailed, type WorkRepo } from './finalize'
 import { releaseIssueLock } from './pipeline'
+import { answerPluginTool, pluginToolsFor } from './plugin-tools'
 import { answerPreviewTool } from './preview-tool'
 import { agentRedactor } from './redact'
 import { mergeRequestsOf, projectRepos } from './repos'
@@ -443,6 +444,8 @@ class RunExecution {
     const { resources, files } = await readIssueResources(this.deps, { run: this.run, issue: this.issue, project: this.project }, warn, redact)
     const mcp = this.mcp ?? (await agentMcp(this.deps, { run: this.run, project: this.project, proxy: null }))
     for (const warning of mcp.warnings) warn(warning)
+    const pluginTools = RUNTIME_CAPABILITIES[this.run.runtime].mcp.stdio ? await pluginToolsFor(this.deps.db, this.run, this.project) : []
+    if (pluginTools.length > 0) this.log('info', `Gave the agent tools from plugins: ${pluginTools.map((tool) => tool.name).join(', ')}.`)
     if (resources.length > 0)
       this.log(
         'info',
@@ -473,6 +476,7 @@ class RunExecution {
       extraNotes: notes,
       resumeSessionRef,
       previewTool,
+      pluginTools: pluginTools.length > 0,
       resources,
       files,
       redact,
@@ -630,7 +634,11 @@ class RunExecution {
   private async answer(event: Extract<RunEvent, { type: 'request' }>): Promise<void> {
     let response: RunCommand
     try {
-      const result = await answerPreviewTool(this.deps, { run: this.run, issue: this.issue, op: event.op, input: event.input })
+      const request = { run: this.run, issue: this.issue, op: event.op, input: event.input }
+      const result =
+        event.op === 'tool.list' || event.op === 'tool.call'
+          ? await answerPluginTool(this.deps, { ...request, project: this.project })
+          : await answerPreviewTool(this.deps, request)
       response = { type: 'response', requestId: event.requestId, ok: true, result }
     } catch (error) {
       response = { type: 'response', requestId: event.requestId, ok: false, error: (error as Error).message }

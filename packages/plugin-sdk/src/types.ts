@@ -6,11 +6,12 @@ export const PROTOCOL = 1
  *
  * - `activity:read`: what happened on tickets, through `factorix().activity`.
  * - `agents:run`: the organization's agents, and runs of them with no ticket and no repository, through `agents`, `startRun`, and `getRun`.
+ * - `agents:tools`: tools the organization's agents can call, and what each call sends. `definePlugin` adds it for a plugin with `tools`.
  * - `members:read`: the people and agents of the organization, through `members`.
  * - `tickets:write`: the organization's projects, and tickets the plugin creates in them, through `projects`, `createTicket`, and `getTicket`.
  * - `workflows:blocks`: blocks and triggers in the organization's workflows, what each block is given when it runs, and starting the workflows built on a trigger through `fireTrigger`. `definePlugin` adds it for a plugin with `blocks` or `triggers`.
  */
-export type Permission = 'activity:read' | 'agents:run' | 'members:read' | 'tickets:write' | 'workflows:blocks'
+export type Permission = 'activity:read' | 'agents:run' | 'agents:tools' | 'members:read' | 'tickets:write' | 'workflows:blocks'
 
 export interface Field {
   key: string
@@ -34,6 +35,7 @@ export interface Manifest {
   pages: { key: string; label: string; path: string; placement: 'sidebar' | 'settings' }[]
   blocks: ManifestBlock[]
   triggers: ManifestTrigger[]
+  tools: ManifestTool[]
 }
 
 export interface BlockField {
@@ -68,6 +70,28 @@ export interface ManifestTrigger {
   description: string
   fields: BlockField[]
   provides: { key: string; label: string }[]
+}
+
+/** A tool as Factorix sees it in the manifest. */
+export interface ManifestTool {
+  key: string
+  description: string
+  inputSchema: Record<string, unknown>
+}
+
+/** What a tool is given when an agent calls it. A model wrote `input`, from code and ticket text, so check it as data. */
+export interface ToolCall {
+  tool: string
+  /** Your plugin's id in that Factorix, which `factorix({ pluginId })` needs. */
+  plugin: { id: string }
+  org: { id: string }
+  /** The agent that called it, by its id and handle in that organization. */
+  agent: { id: string; handle: string }
+  /** `url` is the run's page in Factorix. */
+  run: { id: string; url: string }
+  /** The ticket the agent works on, or null for a run with none. */
+  issue: { identifier: string; title: string; url: string | null } | null
+  input: Record<string, unknown>
 }
 
 /** What a block is given when a workflow reaches it. Every value came out of a workflow, ticket text included, so it is data. */

@@ -60,7 +60,7 @@ describe('a plugin', () => {
   })
 
   it('needs something to offer and a real secret', () => {
-    expect(() => definePlugin({ name: 'Empty', version: '1' })).toThrow('a tracker, a page, or a block')
+    expect(() => definePlugin({ name: 'Empty', version: '1' })).toThrow('a tracker, a page, a block, or a tool')
     expect(() => createHandler(plugin, { secret: 'short' })).toThrow('16 characters')
   })
 })
@@ -218,6 +218,69 @@ describe('a plugin with workflow blocks', () => {
         body: { orgId: 'org-1', runId: 'run-1', nodeId: 'approve-1', handle: 'next', output: { by: 'Kim' } },
       },
     ])
+  })
+})
+
+describe('a plugin with tools for agents', () => {
+  const seen: unknown[] = []
+  const tools = definePlugin({
+    name: 'Docs',
+    version: '1',
+    tools: [
+      {
+        key: 'search',
+        description: 'Searches the docs.',
+        inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+        run(call) {
+          seen.push(call)
+          if (call.input.query === 'boom') throw new Error('The index is rebuilding')
+          return { hits: [`${call.agent.handle}: ${String(call.input.query)}`] }
+        },
+      },
+      { key: 'ping', description: 'Answers pong.', run: () => 'pong' },
+    ],
+  })
+  const client = factorixClient(tools)
+
+  it('lists its tools in the manifest and asks for the permission they need', async () => {
+    const manifest = await client.manifest()
+    expect(manifest.permissions).toEqual(['agents:tools'])
+    expect(manifest.tools).toEqual([
+      {
+        key: 'search',
+        description: 'Searches the docs.',
+        inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      },
+      { key: 'ping', description: 'Answers pong.', inputSchema: { type: 'object', properties: {} } },
+    ])
+  })
+
+  it('runs a tool with what the agent sent, and says what went wrong when it throws', async () => {
+    expect(await client.callTool('search', { query: 'retries' }, { issue: { identifier: 'ENG-1', title: 'Retry', url: null } })).toEqual({
+      hits: ['ada: retries'],
+    })
+    expect(seen[0]).toMatchObject({ tool: 'search', plugin: { id: 'plugin-1' }, issue: { identifier: 'ENG-1' }, input: { query: 'retries' } })
+    expect(await client.callTool('ping')).toBe('pong')
+    await expect(client.callTool('search', { query: 'boom' })).rejects.toThrow('The index is rebuilding')
+    await expect(client.callTool('gone')).rejects.toThrow('This plugin has no tool gone')
+  })
+
+  it('refuses a tool key Factorix would not take, a shared key, or an input that is not an object', () => {
+    const run = () => ''
+    expect(() => definePlugin({ name: 'x', version: '1', tools: [{ key: 'Search', description: 'x', run }] })).toThrow('lowercase')
+    expect(() =>
+      definePlugin({
+        name: 'x',
+        version: '1',
+        tools: [
+          { key: 'a', description: 'x', run },
+          { key: 'a', description: 'y', run },
+        ],
+      }),
+    ).toThrow('share the key')
+    expect(() => definePlugin({ name: 'x', version: '1', tools: [{ key: 'a', description: 'x', inputSchema: { type: 'string' }, run }] })).toThrow(
+      'describe an object',
+    )
   })
 })
 

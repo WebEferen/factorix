@@ -37,6 +37,7 @@ Your code never runs inside Factorix, and Factorix's database and sessions never
 - [Calling Factorix](#calling-factorix)
 - [Workflow blocks](#workflow-blocks)
 - [Workflow triggers](#workflow-triggers)
+- [Tools for agents](#tools-for-agents)
 - [Your own tables](#your-own-tables)
 - [Testing](#testing)
 - [Protocol reference](#protocol-reference)
@@ -197,6 +198,7 @@ Anything beyond its own settings is a permission the plugin names in `definePlug
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `activity:read`    | The organization's tickets that have an assignee or an agent and changed since a given moment or are still open (up to 31 days back), the merge requests of those tickets merged since then, and what agents reported on them.                                                                                                                                              |
 | `agents:run`       | The organization's agents, and runs of them with no ticket and no repository. A run gets your prompt and answers in the shape of `outputSchema`, a JSON Schema of an object. Close every object with `additionalProperties: false` and list every property under `required`, so both Claude and Codex can fill it. At most three of a plugin's runs are unfinished at once. |
+| `agents:tools`     | Tools the organization's agents can call, and what each call sends you. `definePlugin` adds it for a plugin with `tools`.                                                                                                                                                                                                                                                   |
 | `members:read`     | The organization's people and agents, with their names, handles, roles, and whether each is active. No email addresses.                                                                                                                                                                                                                                                     |
 | `tickets:write`    | The names of the organization's projects, and tickets you create in them, in whatever tracker each project follows. Give `agentId` to hand a ticket to an agent. You read back only tickets you created.                                                                                                                                                                    |
 | `workflows:blocks` | Blocks and triggers in the organization's workflows, and what each block receives when it runs. `definePlugin` adds it for a plugin with `blocks` or `triggers`.                                                                                                                                                                                                            |
@@ -282,6 +284,31 @@ await fx.fireTrigger(orgId, { trigger: 'reacted', data: { emoji: 'tada', who: 'K
 - The same `eventId` starts each workflow only once, so it is safe to send an event again when you are not sure it arrived. `fireTrigger` returns how many workflows started.
 - A trigger's key cannot be the same as a block's.
 
+## Tools for agents
+
+A tool is something the organization's agents can call while they work, such as a search over your own data.
+
+```ts
+definePlugin({
+  // ...
+  tools: [
+    {
+      key: 'search',
+      description: 'Searches the team handbook. Send the words to look for as query.',
+      inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+      async run(call) {
+        return search(String(call.input.query ?? ''))
+      },
+    },
+  ],
+})
+```
+
+- Agents see it as `<plugin name>_<key>`, here `handbook_search` for a plugin called Handbook. The description is all their model reads about it, so say what it does and what to send.
+- Factorix's worker makes the call for the agent, so your plugin never hears from the agent's container, and a project with no network gets no plugin tools.
+- `call.input` is what the model wrote, from code and ticket text. Check it before you use it. `call.agent`, `call.run`, and `call.issue` say who called and on what.
+- Answer within 30 seconds, with text or anything JSON can hold, which the agent reads as text. Throw to tell the agent what went wrong.
+
 ## Your own tables
 
 A plugin that stores data uses its own database. The SDK includes a small migration runner that goes both ways:
@@ -308,6 +335,7 @@ import { checkTracker, factorixClient, fakeFactorix } from '@moxxy/factorix-plug
 const client = factorixClient(plugin)
 await checkTracker(client.tracker({ config: { site: 'https://acme.test' }, secrets: { token: 't' } }))
 expect(await client.runBlock('post', { config: { channel: 'C1', text: 'Hi' } })).toEqual({ handle: 'sent', output: { ts: '1.5' } })
+expect(await client.callTool('search', { query: 'retries' })).toEqual(['handbook/retries.md'])
 expect((await client.openPage('reports')).status).toBe(200)
 expect((await client.openPage('notes', { account: { id: 'a', name: 'Kim', role: 'admin' } }, { form: { note: 'hi' } })).status).toBe(303)
 
@@ -334,7 +362,7 @@ You only need this to write a plugin without the SDK. Protocol version 1: everyt
 { "protocol": 1, "method": "tracker.listTeams", "params": [], "connection": { "id": "…", "config": {}, "secrets": {} } }
 ```
 
-The answer is `{ "result": … }`, or `{ "error": { "message": "…" } }` with a status of 400 or above. `manifest`, `workflow.block`, and `workflow.options` come without a connection. `workflow.block` has the block's call as its only param and answers `{ "handle", "output" }` or `{ "wait": true }`. `workflow.options` has `{ "block", "field", "org" }` and answers `[{ "value", "label" }]`. The manifest lists what the plugin asks of Factorix as `"permissions": ["activity:read", "agents:run"]`.
+The answer is `{ "result": … }`, or `{ "error": { "message": "…" } }` with a status of 400 or above. `manifest`, `workflow.block`, and `workflow.options` come without a connection. `workflow.block` has the block's call as its only param and answers `{ "handle", "output" }` or `{ "wait": true }`. `workflow.options` has `{ "block", "field", "org" }` and answers `[{ "value", "label" }]`. `agent.tool` has `{ "tool", "plugin", "org", "agent", "run", "issue", "input" }` and answers with anything JSON can hold. The manifest lists what the plugin asks of Factorix as `"permissions": ["activity:read", "agents:run"]`.
 
 **Plugin to Factorix** calls are `POST`s, signed the same way. Every path under `/webhooks/plugins/<pluginId>/` takes the organization as `orgId` in the body.
 
@@ -357,7 +385,7 @@ A refusal is a status of 400 or above with `{ "error": { "message": "…" } }`.
 
 ## Limits
 
-Today a plugin can provide a tracker, pages, settings, workflow blocks and triggers, and work for agents. It cannot serve a code host or attachments yet.
+Today a plugin can provide a tracker, pages, settings, workflow blocks and triggers, tools for agents, and work for agents. It cannot serve a code host or attachments yet.
 
 ## Developing the SDK
 

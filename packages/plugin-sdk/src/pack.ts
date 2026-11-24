@@ -61,7 +61,7 @@ interface FactorixField {
 const NAME = /^[a-z][a-z0-9-]{0,30}$/
 const VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,30})?$/
 const SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,99}$/
-const PERMISSIONS: Permission[] = ['activity:read', 'agents:run', 'members:read', 'tickets:write', 'workflows:blocks']
+const PERMISSIONS: Permission[] = ['activity:read', 'agents:run', 'agents:tools', 'members:read', 'tickets:write', 'workflows:blocks']
 
 function zipPath(path: string): string {
   const segments = path.split('/')
