@@ -144,7 +144,7 @@ describe('model plans', () => {
     const asked = new URL(url).searchParams
     expect(asked.get('client_id')).toBe('dynamic_agent_client')
     expect(asked.get('agent_name_hint')).toBe('Factorix')
-    expect(asked.get('ext_agent_host_id')).toBeTruthy()
+    expect(asked.get('ext_agent_host_id')).toMatch(/^urn:uuid:[0-9a-f-]{36}$/)
     expect(redirectUri).toBe('http://127.0.0.1:1455/auth/callback')
     const forged = await admin.request('POST', '/api/model-plans/chatgpt/complete', {
       callbackUrl: 'http://127.0.0.1:1455/auth/callback?code=c&state=not-ours&client_id=oaiapp_1',

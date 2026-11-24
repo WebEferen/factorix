@@ -65,7 +65,8 @@ async function hostId(db: Db): Promise<string> {
     .onConflict('key')
     .ignore()
   const row = await db('platform_settings').where({ key: HOST_ID_SETTING }).first('value')
-  return String(row?.value)
+  // OpenAI refuses a bare UUID: the id must be a URI (urn:uuid, a JWK thumbprint URN, or did:key).
+  return `urn:uuid:${row?.value}`
 }
 
 function readSecret(deps: Pick<AppDeps, 'secrets'>, row: ModelLoginRow): ChatgptSecret | null {
