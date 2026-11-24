@@ -163,7 +163,7 @@ function ConnectionDialog({
           ? { host, ...(email.trim() ? { email: email.trim() } : {}) }
           : kind === 'trello'
             ? { apiKey: apiKey.trim(), ...(apiSecret.trim() ? { webhookSecret: apiSecret.trim() } : {}) }
-            : kind === 'slack' && apiSecret.trim()
+            : (kind === 'slack' || kind === 'linear') && apiSecret.trim()
               ? { webhookSecret: apiSecret.trim() }
               : kind === 'mcp_http'
                 ? { url }
@@ -253,6 +253,14 @@ function ConnectionDialog({
               <Input type="password" autoComplete="off" value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} />
             </Field>
           </div>
+        ) : null}
+        {kind === 'linear' ? (
+          <Field
+            label="Webhook signing secret"
+            hint="Only for a webhook you created in Linear yourself: copy its signing secret here. Leave it blank when Factorix registered the webhook, or to keep the one stored."
+          >
+            <Input type="password" autoComplete="off" value={apiSecret} onChange={(event) => setApiSecret(event.target.value)} />
+          </Field>
         ) : null}
         {kind === 'slack' ? (
           <Field
@@ -778,8 +786,10 @@ export function ConnectionBoard({ tab }: { tab: keyof typeof TABS }) {
                     : webhookFor.kind === 'jira'
                       ? 'Paste the secret into the webhook in Jira, limit it to the project, and enable issue created, updated, and deleted, and comment created and updated. Data Center cannot sign webhooks, so it relies on polling.'
                       : webhookFor.kind === 'github'
-                        ? 'Send JSON, and enable pull requests, pull request reviews, pull request review comments, issue comments, check suites, and statuses.'
-                        : 'Enable issues, issue comments, and issue labels.'}
+                        ? 'Set Content type to application/json, since GitHub defaults to a form that Factorix refuses. Enable pull requests, pull request reviews, pull request review comments, issue comments, check suites, and statuses.'
+                        : webhookFor.kind === 'linear'
+                          ? 'Register automatically on the project works with an admin’s API key. Otherwise create a webhook in Linear under Settings, API, with this URL and Issues and Comments, then edit this connection and paste the signing secret Linear shows for it.'
+                          : 'Enable issues, issue comments, and issue labels.'}
             </p>
           </div>
         ) : null}

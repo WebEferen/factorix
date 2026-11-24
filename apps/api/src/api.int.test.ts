@@ -461,6 +461,18 @@ describe('API', () => {
         expect(await harness.deps.queues.trackerInbound.getJobCounts('waiting')).toEqual({ waiting: 1 })
       })
 
+      it('checks a webhook made in Linear with the signing secret saved from there', async () => {
+        const { connection } = await admin.ok('POST', '/api/connections', { kind: 'linear', name: 'Linear by hand', secret: 'lin_api_other' })
+        await admin.ok('PUT', `/api/connections/${connection.id}`, { config: { webhookSecret: 'lin_wh_from_linear' } })
+        const payload = issuePayload(harness.world.addIssue({ title: 'From a hand-made webhook' }), 'create')
+        expect((await sendLinearWebhook(harness.app, connection.id, connection.webhookSecret, payload)).statusCode).toBe(401)
+        expect((await sendLinearWebhook(harness.app, connection.id, 'lin_wh_from_linear', payload, 'by-hand')).statusCode).toBe(200)
+        await admin.ok('PUT', `/api/connections/${connection.id}`, { name: 'Linear by hand', config: {} })
+        expect((await sendLinearWebhook(harness.app, connection.id, 'lin_wh_from_linear', payload, 'by-hand-2')).statusCode).toBe(200)
+        for (const row of await harness.deps.db('webhook_deliveries').where({ connectionId: connection.id }))
+          await harness.deps.queues.trackerInbound.remove(`linear-${row.id}`)
+      })
+
       it('keeps a delivery id that another connection has already used', async () => {
         const payload = issuePayload(harness.world.addIssue({ title: 'Same id, other organization' }), 'create')
         const response = await sendLinearWebhook(harness.app, foreignLinearId, 'their-secret', payload, 'd1')
@@ -491,6 +503,21 @@ describe('API', () => {
             },
           })
         expect((await send('wrong')).statusCode).toBe(401)
+        // GitHub's default content type sends the JSON as a form field, signed like any other body.
+        const form = `payload=${encodeURIComponent(body)}`
+        const asForm = await harness.app.inject({
+          method: 'POST',
+          url: `/webhooks/github/${connection.id}`,
+          payload: form,
+          headers: {
+            'content-type': 'application/x-www-form-urlencoded',
+            'x-github-event': 'ping',
+            'x-github-delivery': 'gh-form',
+            'x-hub-signature-256': `sha256=${createHmac('sha256', connection.webhookSecret).update(form).digest('hex')}`,
+          },
+        })
+        expect(asForm.statusCode).toBe(400)
+        expect(asForm.body).toContain('Set the webhook to send application/json')
         expect((await send(connection.webhookSecret)).json()).toEqual({ ok: true, duplicate: false })
         const [row] = await harness.deps.db('webhook_deliveries').where({ connectionId: connection.id })
         expect(row).toMatchObject({ source: 'github', eventType: 'pull_request' })

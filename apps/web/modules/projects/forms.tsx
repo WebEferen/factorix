@@ -479,6 +479,13 @@ export function WebhookSetup({ project, onDone }: { project: ProjectDto; onDone?
             {connection.webhookSecret ? (
               <CopyField label={connection.kind === 'gitlab' ? 'Secret token' : 'Signing secret'} value={connection.webhookSecret} secret />
             ) : null}
+            {connection.kind === 'github' ? (
+              <p className="text-xs text-ink-2">Set Content type to application/json. GitHub defaults to a form, which Factorix refuses.</p>
+            ) : connection.kind === 'linear' ? (
+              <p className="text-xs text-ink-2">
+                Linear makes its own signing secret for a webhook created there. Paste it into this connection under Integrations, Connections.
+              </p>
+            ) : null}
           </div>
         ) : null,
       )}

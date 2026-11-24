@@ -71,6 +71,8 @@ A workspace with a run still going is never removed. A later run on that issue c
 | The model fails with 401           | The agent's or organization's model key. In the proxy logs, `No API key` means none is set.                         |
 | An agent cannot reach a host       | The run log names the denied host. Add it under the project's network settings.                                     |
 | Issues do not update               | Check webhook deliveries in Linear or GitLab, or press sync on the project.                                         |
+| GitHub deliveries fail with 400    | The webhook sends a form. Set its Content type to application/json.                                                 |
+| Linear deliveries fail with 401    | A webhook made in Linear signs with its own secret. Paste it into the connection as its webhook signing secret.     |
 | A setting seems to have no effect  | Settings, General shows the value in force and its environment default. The worker reads changes within 15 seconds. |
 | The tracker state stopped changing | Look for `sync.conflict` in the audit log. Someone moved the issue by hand.                                         |
 | A preview will not start           | Logs on the issue's Preview panel. [docs/environments.md](environments.md) lists the usual causes.                  |

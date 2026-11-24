@@ -30,7 +30,13 @@ export function webhookRoutes(app: FastifyInstance, deps: AppDeps): void {
       ? tracker.verify(rawBody, request.headers, secret, callbackUrl)
       : SCM_WEBHOOK_CODECS[source as keyof typeof SCM_WEBHOOK_CODECS].verify(rawBody, request.headers, secret)
     if (!verified) throw new HttpError(401, 'bad_signature', 'Webhook signature check failed')
-    return { connection, rawBody, payload: JSON.parse(rawBody.toString('utf8')) }
+    let payload: unknown
+    try {
+      payload = JSON.parse(rawBody.toString('utf8'))
+    } catch {
+      throw new HttpError(400, 'not_json', 'The webhook body is not JSON. Set the webhook to send application/json.')
+    }
+    return { connection, rawBody, payload }
   }
 
   const record = async (
