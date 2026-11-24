@@ -6,7 +6,6 @@ import {
   decodeEvent,
   type ErrorCode,
   encodeLine,
-  estimateCostUsd,
   estimateRunCostUsd,
   MODEL_DIALECTS,
   MODEL_PROVIDERS,
@@ -675,7 +674,7 @@ class RunExecution {
   private async onUsage(event: Extract<RunEvent, { type: 'usage' }>): Promise<void> {
     const { db } = this.deps
     this.usage = event
-    const estimated = event.costUsd === undefined
+    const estimated = this.run.runtime === 'codex' || event.costUsd === undefined
     const cost = event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event)
     await db('runs')
       .where({ id: this.run.id })
@@ -859,12 +858,13 @@ class RunExecution {
     const { db } = this.deps
     const cost =
       this.usage.costUsd ??
-      estimateCostUsd(this.run.model ?? undefined, {
+      estimateRunCostUsd(this.run.model ?? undefined, {
         inputTokens: this.usage.inputTokens ?? 0,
         outputTokens: this.usage.outputTokens ?? 0,
         cacheReadTokens: this.usage.cacheReadTokens ?? 0,
         cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
         turns: this.usage.turns ?? 0,
+        byModel: this.usage.byModel,
       })
     await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
@@ -878,7 +878,7 @@ class RunExecution {
           structuredOutput: input.structuredOutput === undefined ? null : json(input.structuredOutput),
           usage: json(this.usage),
           costUsd: cost ?? null,
-          costEstimated: this.usage.costUsd === undefined,
+          costEstimated: this.run.runtime === 'codex' || this.usage.costUsd === undefined,
           diff: input.diff ?? null,
           error: input.error ? json(input.error) : null,
           sessionRef: this.run.sessionRef,

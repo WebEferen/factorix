@@ -7,7 +7,7 @@ import { compactNumber, money } from '@/modules/lib/format'
 import { Avatar, ErrorState, ListSkeleton, SectionTitle } from '@/modules/ui'
 
 function Rows({ rows, agent }: { rows: SpendRowDto[]; agent?: boolean }) {
-  const top = Math.max(...rows.map((row) => row.costUsd), 0.01)
+  const top = Math.max(...rows.map((row) => row.costUsd + row.estimatedCostUsd), 0.01)
   if (rows.length === 0) return <p className="text-sm text-ink-3">No spend yet.</p>
   return (
     <div className="overflow-hidden rounded-lg border border-divider">
@@ -17,7 +17,7 @@ function Rows({ rows, agent }: { rows: SpendRowDto[]; agent?: boolean }) {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm">{row.label}</div>
             <div className="mt-1 h-1 overflow-hidden rounded-full bg-soft">
-              <div className="h-full rounded-full bg-signal" style={{ width: `${(row.costUsd / top) * 100}%` }} />
+              <div className="h-full rounded-full bg-signal" style={{ width: `${((row.costUsd + row.estimatedCostUsd) / top) * 100}%` }} />
             </div>
           </div>
           <span className="hidden w-16 text-right text-xs text-ink-2 sm:block">{row.runs === 1 ? '1 run' : `${row.runs} runs`}</span>
@@ -25,7 +25,7 @@ function Rows({ rows, agent }: { rows: SpendRowDto[]; agent?: boolean }) {
             {compactNumber(row.inputTokens)} in, {compactNumber(row.outputTokens)} out
           </span>
           <span className="w-20 text-right text-sm">
-            {money(row.costUsd)}
+            {row.unpricedRuns === row.runs ? 'Unpriced' : money(row.costUsd + row.estimatedCostUsd)}
             {row.estimatedCostUsd > 0 ? <span className="block text-xs text-ink-3">{money(row.estimatedCostUsd)} est.</span> : null}
           </span>
         </div>
@@ -36,6 +36,7 @@ function Rows({ rows, agent }: { rows: SpendRowDto[]; agent?: boolean }) {
 
 export default function SpendPage() {
   const { data, error, mutate } = useSWR<SpendDto>('/api/spend', fetcher as never)
+  const unpricedRuns = data?.byAgent.reduce((sum, row) => sum + row.unpricedRuns, 0) ?? 0
   return (
     <div className="mx-auto max-w-4xl p-4 sm:p-6">
       <h1 className="text-xl font-semibold">Spend</h1>
@@ -47,7 +48,10 @@ export default function SpendPage() {
       ) : (
         <div className="flex flex-col gap-6">
           <div>
-            <div className="text-2xl font-bold">{money(data.totalUsd)}</div>
+            <div className="text-2xl font-bold">{unpricedRuns > 0 && data.totalUsd === 0 ? 'Cost unavailable' : money(data.totalUsd)}</div>
+            {unpricedRuns > 0 ? (
+              <p className="text-xs text-ink-2">{unpricedRuns === 1 ? '1 run has' : `${unpricedRuns} runs have`} no cost available.</p>
+            ) : null}
             <div className="text-xs text-ink-2">since {new Date(data.from).toLocaleDateString(undefined, { dateStyle: 'medium' })}</div>
           </div>
           <section>

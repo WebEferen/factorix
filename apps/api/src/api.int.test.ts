@@ -1600,6 +1600,28 @@ describe('API', () => {
       const spend = await admin.ok('GET', '/api/spend')
       expect(spend.totalUsd).toBe(0)
     })
+
+    it('totals estimates and distinguishes runs with usage but no price', async () => {
+      const { db } = harness.deps
+      const { agents } = await admin.ok('GET', '/api/agents')
+      const agent = await db('accounts').where({ id: agents[0].id }).first()
+      const run = {
+        orgId: agent.orgId,
+        agentId: agent.id,
+        agentSnapshot: json({}),
+        phase: 'implement',
+        state: 'succeeded',
+        runtime: 'codex',
+        usage: json({ inputTokens: 100_000 }),
+      }
+      await db('runs').insert([
+        { ...run, costUsd: 0.25, costEstimated: true },
+        { ...run, costUsd: null },
+      ])
+      const spend = await admin.ok('GET', '/api/spend')
+      expect(spend.totalUsd).toBe(0.25)
+      expect(spend.byAgent[0]).toMatchObject({ estimatedCostUsd: 0.25, unpricedRuns: 1 })
+    })
   })
 
   it('reports health', async () => {

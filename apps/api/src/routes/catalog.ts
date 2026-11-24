@@ -251,18 +251,20 @@ export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
           db.raw(`COALESCE(${column}::text, 'none') AS key`),
           db.raw(`COALESCE(${label}, 'Ad-hoc') AS label`),
           db.raw('COUNT(*) AS runs'),
+          db.raw("COUNT(*) FILTER (WHERE runs.cost_usd IS NULL AND runs.usage <> '{}'::jsonb) AS unpriced_runs"),
           db.raw('COALESCE(SUM(runs.cost_usd) FILTER (WHERE NOT runs.cost_estimated), 0) AS cost_usd'),
           db.raw('COALESCE(SUM(runs.cost_usd) FILTER (WHERE runs.cost_estimated), 0) AS estimated_cost_usd'),
           db.raw(`COALESCE(SUM((runs.usage->>'inputTokens')::bigint), 0) AS input_tokens`),
           db.raw(`COALESCE(SUM((runs.usage->>'outputTokens')::bigint), 0) AS output_tokens`),
         )
-        .orderBy('cost_usd', 'desc')
+        .orderByRaw('COALESCE(SUM(runs.cost_usd), 0) DESC')
     const [byAgent, byProject] = await Promise.all([totals('runs.agent_id', 'accounts.display_name'), totals('runs.project_id', 'projects.name')])
     const normalize = (rows: Record<string, unknown>[]) =>
       rows.map((row) => ({
         key: String(row.key),
         label: String(row.label),
         runs: Number(row.runs),
+        unpricedRuns: Number(row.unpricedRuns),
         costUsd: Number(row.costUsd),
         estimatedCostUsd: Number(row.estimatedCostUsd),
         inputTokens: Number(row.inputTokens),
