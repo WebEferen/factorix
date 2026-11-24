@@ -9,6 +9,7 @@ import { requireAdmin, requireAuth } from '../lib/auth'
 import { proxyTokenKey, runProxyChannel } from '../lib/channels'
 import { randomToken, sha256 } from '../lib/crypto'
 import { conflict, HttpError, isUniqueViolation, notFound, parseBody } from '../lib/errors'
+import { withPlanKeys } from '../services/model-logins'
 import { isRunnerOnline, RUNNER_PRESENCE_SECONDS, RUNNER_TOKEN_PREFIX, runnerKeys } from '../services/runner-link'
 import { openSse } from '../sse'
 
@@ -164,8 +165,8 @@ export function runnerRoutes(app: FastifyInstance, deps: AppDeps): void {
   /** A grant holds model keys and MCP headers, so a runner only ever reads those of its own organization. */
   const grantFor = async (runner: RunnerRow, token: unknown): Promise<{ orgId?: string; runId?: string; channel?: string } | null> => {
     const raw = typeof token === 'string' && token ? await redis.get(proxyTokenKey(token)) : null
-    const grant = raw ? (JSON.parse(raw) as { orgId?: string }) : null
-    return grant && grant.orgId === runner.orgId ? grant : null
+    const grant = raw ? (JSON.parse(raw) as { orgId?: string; models?: Record<string, { key: string; login?: string }> }) : null
+    return grant && grant.orgId === runner.orgId ? withPlanKeys(redis, grant) : null
   }
 
   app.post('/api/runner/grant', async (request) => {

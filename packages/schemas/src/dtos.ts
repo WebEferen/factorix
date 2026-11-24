@@ -1,4 +1,13 @@
-import type { AgentHelper, PermissionPolicy, RunEvent, RuntimeCapabilities, RuntimeId, RuntimeModel, UsageSnapshot } from '@factorix/runtime'
+import type {
+  AgentHelper,
+  ModelPlanId,
+  PermissionPolicy,
+  RunEvent,
+  RuntimeCapabilities,
+  RuntimeId,
+  RuntimeModel,
+  UsageSnapshot,
+} from '@factorix/runtime'
 import type { ApiTokenScope, ConnectionKind, IssueSort } from './inputs'
 
 export interface AccountDto {
@@ -22,6 +31,33 @@ export interface ApiTokenDto {
   expiresAt: string | null
   lastUsedAt: string | null
   createdAt: string
+}
+
+/** A person's own model plan. Tokens never leave the API. */
+export interface ModelLoginDto {
+  id: string
+  provider: ModelPlanId
+  status: 'active' | 'needs_login'
+  email: string | null
+  plan: string | null
+  /** When the sign-in ends, where the vendor says. */
+  expiresAt: string | null
+  lastUsedAt: string | null
+  lastError: string | null
+  createdAt: string
+}
+
+export interface ModelPlansDto {
+  /** Whether this organization lets members run their own work on their own plans. */
+  enabled: boolean
+  logins: ModelLoginDto[]
+}
+
+/** A Claude sign-in in progress: the CLI starting, waiting for the code from Anthropic's page, checking it, then done or failed. */
+export interface ModelPlanAttemptDto {
+  status: 'starting' | 'waiting' | 'checking' | 'done' | 'failed'
+  url: string | null
+  error: string | null
 }
 
 export interface PluginFieldDto {
@@ -407,6 +443,8 @@ export interface RunDto {
   attempt: number
   runtime: RuntimeId
   model: string | null
+  /** Ran on its author's own plan, so the organization paid nothing for it. */
+  modelPlan: ModelPlanId | null
   outcome: string | null
   result: string | null
   summary: string | null

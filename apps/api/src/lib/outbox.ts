@@ -12,7 +12,8 @@ export type DomainEvent =
   | { type: 'scm.revert'; issueId: string }
   | { type: 'run.ping'; runId: string }
   | { type: 'project.sync'; projectId: string }
-  | { type: 'workflow.event'; issueId: string; event: WorkflowEvent }
+  /** `by` is the person whose action in Factorix caused the event. */
+  | { type: 'workflow.event'; issueId: string; event: WorkflowEvent; by?: string | null }
   | { type: 'workflow.advance'; runId: string }
   | { type: 'workflow.step'; runId: string; nodeId: string }
   | { type: 'environment.action'; instanceId: string; action: EnvironmentAction }

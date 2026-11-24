@@ -17,8 +17,16 @@ import { mergeRequestSnapshot, mergeRequestsOf } from './repos'
 
 type Trx = Knex.Transaction
 
-/** Serialized per issue by the row lock, so concurrent webhooks and run completions apply in some order, never interleaved. */
-export async function advanceIssue(db: Db, issueId: string, event: PipelineEvent): Promise<AdvanceResult | null> {
+/**
+ * Serialized per issue by the row lock, so concurrent webhooks and run completions apply in some order, never interleaved.
+ * `by` is the person who started the pass from inside Factorix. Its runs are theirs, so they may run on their own plan.
+ */
+export async function advanceIssue(
+  db: Db,
+  issueId: string,
+  event: PipelineEvent,
+  options: { by?: string | null } = {},
+): Promise<AdvanceResult | null> {
   return db.transaction(async (trx) => {
     const issue = await trx<IssueRow>('issues').where({ id: issueId }).forUpdate().first()
     if (!issue) return null
@@ -37,11 +45,20 @@ export async function advanceIssue(db: Db, issueId: string, event: PipelineEvent
     if (!result.handled) return result
 
     const patch: Record<string, unknown> = { cursor: json(result.cursor), updatedAt: trx.fn.now() }
+    if (event.type === 'start') {
+      issue.startedBy = options.by ?? null
+      patch.startedBy = issue.startedBy
+    }
     if (result.factoryState && canTransitionIssue(issue.factoryState, result.factoryState)) {
       patch.factoryState = result.factoryState
       const agentResult = agentResultOf(issue.factoryState, result.factoryState)
       if (agentResult)
-        await emit(trx, issue.orgId, { type: 'workflow.event', issueId: issue.id, event: { kind: 'agent.finished', result: agentResult } })
+        await emit(trx, issue.orgId, {
+          type: 'workflow.event',
+          issueId: issue.id,
+          event: { kind: 'agent.finished', result: agentResult },
+          by: issue.startedBy,
+        })
     }
     await trx('issues').where({ id: issue.id }).update(patch)
 
@@ -150,6 +167,7 @@ async function enqueueRun(trx: Trx, issue: IssueRow, project: ProjectRow, action
       phase: action.phase,
       pipelineStep: action.step,
       attempt: action.attempt,
+      createdBy: issue.startedBy,
       runtime: agent.runtime,
       model: agent.model,
     })

@@ -9,9 +9,11 @@ import {
   estimateCostUsd,
   estimateRunCostUsd,
   MODEL_DIALECTS,
+  MODEL_PLANS,
   MODEL_PROVIDERS,
   type ModelDialect,
   type ModelDialectSpec,
+  type ModelPlanId,
   type ModelProviderId,
   type Phase,
   providersSpeaking,
@@ -36,6 +38,7 @@ import { PREVIEW_DOMAIN } from './environment-runtime'
 import { definitionOf, getEnvironmentRow } from './environments'
 import { EventBuffer } from './event-buffer'
 import { finalizePhase, StepFailed, type WorkRepo } from './finalize'
+import { claudeLoginVolume, noteClaudePlanFailure, planForRun } from './model-logins'
 import { releaseIssueLock } from './pipeline'
 import { answerPluginTool, pluginToolsFor } from './plugin-tools'
 import { answerPreviewTool } from './preview-tool'
@@ -122,8 +125,8 @@ class RunExecution {
   private forceStop: NodeJS.Timeout | null = null
   private runTimeout: NodeJS.Timeout | null = null
   private proxyToken: string | null = null
-  /** The provider each dialect's SDK calls through the proxy in this run. */
-  private modelProviders: Partial<Record<ModelDialect, ModelProviderId>> = {}
+  /** The provider or plan each dialect's SDK calls through the proxy in this run. */
+  private modelProviders: Partial<Record<ModelDialect, ModelProviderId | ModelPlanId>> = {}
   private mcp: AgentMcp | null = null
   private lostLease = false
   private suspended = false
@@ -350,8 +353,16 @@ class RunExecution {
     const proxy = new URL(env.FACTORIX_PROXY_URL)
     if (!this.proxyToken) {
       this.proxyToken = randomToken(24)
-      const models: Record<string, { upstream: string; auth: string; key: string }> = {}
+      const models: Record<string, { upstream: string; auth: string; key: string; login?: string }> = {}
+      const runDialect = RUNTIME_CAPABILITIES[this.run.runtime].dialect
       for (const dialect of Object.keys(MODEL_DIALECTS) as ModelDialect[]) {
+        const plan = dialect === runDialect ? await this.usePlan(dialect) : null
+        if (plan) {
+          const spec = MODEL_PLANS[plan.plan]
+          if (spec.via === 'proxy') models[plan.plan] = { upstream: spec.upstream as string, auth: 'bearer', key: '', login: plan.loginId }
+          this.modelProviders[dialect] = plan.plan
+          continue
+        }
         const resolved = await resolveModelProvider(this.deps, this.run.orgId, this.run.agentId, dialect)
         if (!resolved) continue
         const { upstream, auth } = MODEL_PROVIDERS[resolved.provider]
@@ -364,7 +375,7 @@ class RunExecution {
         JSON.stringify({
           orgId: this.run.orgId,
           runId: this.run.id,
-          allow: await this.allowlist(),
+          allow: [...(await this.allowlist()), ...(this.cliPlan()?.hosts ?? [])],
           models,
           // What a proxy on a runner not yet updated reads.
           anthropicKey: models.anthropic?.key ?? null,
@@ -392,11 +403,37 @@ class RunExecution {
     for (const [dialect, spec] of Object.entries(MODEL_DIALECTS) as [ModelDialect, ModelDialectSpec][]) {
       // Without a key the SDK still gets a route, where the proxy says that no key is configured.
       const provider = this.modelProviders[dialect] ?? providersSpeaking(dialect)[0]
-      if (!provider) continue
+      // The CLI then signs in from its own store. A key or a base URL here would win over it.
+      if (!provider || (provider === this.run.modelPlan && this.cliPlan())) continue
       values[spec.env.baseUrl] = `${proxy.origin}/${provider}${spec.basePath}`
       for (const name of spec.env.apiKeys) values[name] = this.proxyToken
     }
     return values
+  }
+
+  private cliPlan() {
+    const plan = this.run.modelPlan ? MODEL_PLANS[this.run.modelPlan] : undefined
+    return plan?.via === 'cli' ? plan : undefined
+  }
+
+  /** The author's own plan when the run has one, recorded on the run so its cost is not the organization's. */
+  private async usePlan(dialect: ModelDialect): Promise<{ plan: ModelPlanId; loginId: string } | null> {
+    const pinned = this.workspace ? await this.deps.db('workspace_runners').where({ workspaceKey: this.workspace.key }).first() : undefined
+    const decided = await planForRun(this.deps, this.run, dialect, {
+      networkPolicy: this.project?.networkPolicy ?? null,
+      onRunner: Boolean(pinned?.runnerId),
+    })
+    if (decided && 'skip' in decided) this.log('warn', decided.skip)
+    const use = decided && 'use' in decided ? decided.use : null
+    const next = { modelPlan: use?.plan ?? null, modelLoginId: use?.login.id ?? null }
+    if (next.modelPlan !== (this.run.modelPlan ?? null) || next.modelLoginId !== (this.run.modelLoginId ?? null)) {
+      await this.deps.db('runs').where({ id: this.run.id }).update(next)
+      Object.assign(this.run, next)
+    }
+    if (!use) return null
+    const who = use.login.email ? ` (${use.login.email})` : ''
+    this.log('info', `This run uses its author's own ${MODEL_PLANS[use.plan].label} plan${who}, so the organization pays nothing for it.`)
+    return { plan: use.plan, loginId: use.login.id }
   }
 
   private async allowlist(): Promise<string[]> {
@@ -510,6 +547,11 @@ class RunExecution {
       scripted: this.deps.scriptFor?.(this.run.phase, this.run.attempt),
     })
     resumeSessionRef = undefined
+    if (this.run.modelPlan) {
+      spec.model.plan = this.run.modelPlan
+      // The plan is the author's, with its own limits, so no dollar budget of the organization's applies.
+      spec.model.maxBudgetUsd = undefined
+    }
 
     const options: StartAgentOptions = {
       runId: this.run.id,
@@ -519,6 +561,7 @@ class RunExecution {
       env: withServices(await this.containerEnv(), services.started),
       networks: services.started?.network ? [services.started.network] : undefined,
       isolation: this.isolation(),
+      claudeLogin: this.run.modelPlan === 'claude' && this.run.createdBy ? claudeLoginVolume(this.run.createdBy) : undefined,
       image: this.project?.sandboxImage ?? undefined,
       limits:
         this.project?.limits.memoryMb || this.project?.limits.cpus
@@ -643,7 +686,9 @@ class RunExecution {
         await this.onUsage(event)
         break
       case 'error':
-        this.lastError = { code: event.code, message: event.message }
+        this.lastError = { code: event.code, message: planErrorMessage(this.run.modelPlan, event.message) }
+        if (event.code === 'auth' && this.run.modelPlan === 'claude' && this.run.modelLoginId)
+          await noteClaudePlanFailure(this.deps.db, this.run.modelLoginId, event.message)
         break
       case 'done':
         this.doneEvent = event
@@ -675,8 +720,8 @@ class RunExecution {
   private async onUsage(event: Extract<RunEvent, { type: 'usage' }>): Promise<void> {
     const { db } = this.deps
     this.usage = event
-    const estimated = event.costUsd === undefined
-    const cost = event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event)
+    const estimated = !this.run.modelPlan && event.costUsd === undefined
+    const cost = this.run.modelPlan ? null : (event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event))
     await db('runs')
       .where({ id: this.run.id })
       .update({
@@ -857,15 +902,16 @@ class RunExecution {
   }): Promise<void> {
     await this.events.flush()
     const { db } = this.deps
-    const cost =
-      this.usage.costUsd ??
-      estimateCostUsd(this.run.model ?? undefined, {
-        inputTokens: this.usage.inputTokens ?? 0,
-        outputTokens: this.usage.outputTokens ?? 0,
-        cacheReadTokens: this.usage.cacheReadTokens ?? 0,
-        cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
-        turns: this.usage.turns ?? 0,
-      })
+    const cost = this.run.modelPlan
+      ? null
+      : (this.usage.costUsd ??
+        estimateCostUsd(this.run.model ?? undefined, {
+          inputTokens: this.usage.inputTokens ?? 0,
+          outputTokens: this.usage.outputTokens ?? 0,
+          cacheReadTokens: this.usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
+          turns: this.usage.turns ?? 0,
+        }))
     await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
       await trx('runs')
@@ -878,7 +924,7 @@ class RunExecution {
           structuredOutput: input.structuredOutput === undefined ? null : json(input.structuredOutput),
           usage: json(this.usage),
           costUsd: cost ?? null,
-          costEstimated: this.usage.costUsd === undefined,
+          costEstimated: !this.run.modelPlan && this.usage.costUsd === undefined,
           diff: plainText(input.diff) ?? null,
           error: input.error ? json(input.error) : null,
           sessionRef: this.run.sessionRef,
@@ -932,6 +978,21 @@ function withServices(env: Record<string, string>, services: RunServices | null)
     merged.no_proxy = merged.NO_PROXY
   }
   return merged
+}
+
+/** A plan's failures in words a person can act on. OpenAI reports a spent plan with codes nobody reading the run would know. */
+export function planErrorMessage(plan: ModelPlanId | null | undefined, message: string): string {
+  if (plan === 'claude') {
+    if (/\b(401|403|unauthorized|authentication|not logged in|run \/login)\b/i.test(message))
+      return `The author's Claude plan needs signing in again under Settings, Model plans. (${message})`
+    if (/usage limit|rate.?limit|\b429\b/i.test(message)) return `The author's Claude plan reached its usage limit for now. (${message})`
+    return message
+  }
+  if (plan !== 'chatgpt') return message
+  if (message.includes('subscription_sharing_usage_limit_exceeded'))
+    return `The author's ChatGPT plan reached the share of its usage it allows Factorix. Raise the limit for Factorix in ChatGPT's settings or wait for it to reset. (${message})`
+  if (message.includes('subscription_sharing_usage_unavailable')) return `The author's ChatGPT plan cannot be used for this right now. (${message})`
+  return message
 }
 
 function summaryOf(output: unknown, finalText: string | undefined): string | undefined {

@@ -18,6 +18,7 @@ import {
   type RuntimeModelCatalog,
 } from '@factorix/runtime'
 import { serveBridge } from './bridge'
+import { runClaudeCli } from './claude-cli'
 import { writeIssueFiles } from './files'
 import { createHelperDesk } from './helpers'
 import { runMcpServer } from './mcp'
@@ -130,5 +131,7 @@ async function printModels(): Promise<void> {
   process.exit(0)
 }
 
-if (process.argv.includes('--mcp')) void runMcpServer().then(() => process.exit(0))
+const claudeAt = process.argv.indexOf('--claude')
+if (claudeAt >= 0) runClaudeCli(process.argv.slice(claudeAt + 1))
+else if (process.argv.includes('--mcp')) void runMcpServer().then(() => process.exit(0))
 else void (process.argv.includes('--models') ? printModels() : main())

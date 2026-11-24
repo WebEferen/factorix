@@ -2,6 +2,7 @@ import { anthropic } from './anthropic'
 import { openai } from './openai'
 import type { ModelDialectSpec, ModelProviderSpec } from './types'
 
+export { isModelPlan, MODEL_PLAN_IDS, MODEL_PLANS, type ModelPlanId, type ModelPlanSpec } from './plans'
 export type { ModelDialectSpec, ModelProviderSpec } from './types'
 
 export const MODEL_DIALECTS = {

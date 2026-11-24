@@ -1,5 +1,6 @@
 'use client'
 
+import { MODEL_PLANS } from '@factorix/runtime'
 import type { ApprovalDto } from '@factorix/schemas'
 import { Ban, Send } from 'lucide-react'
 import Link from 'next/link'
@@ -162,11 +163,19 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
           hint={run.startedAt ? `Started ${fullDate(run.startedAt)}` : undefined}
         />
         <Stat label="Tokens" value={`${compactNumber(usage.inputTokens)} in, ${compactNumber(usage.outputTokens)} out`} />
-        <Stat
-          label="Cost"
-          value={cost ? `${estimated ? 'est. ' : ''}${money(cost)}` : '$0.00'}
-          hint={estimated ? 'This runtime reports tokens, so cost is estimated from the price table.' : undefined}
-        />
+        {run.modelPlan ? (
+          <Stat
+            label="Cost"
+            value={`${MODEL_PLANS[run.modelPlan].label} plan`}
+            hint="Ran on its author's own plan, so the organization paid nothing for it."
+          />
+        ) : (
+          <Stat
+            label="Cost"
+            value={cost ? `${estimated ? 'est. ' : ''}${money(cost)}` : '$0.00'}
+            hint={estimated ? 'This runtime reports tokens, so cost is estimated from the price table.' : undefined}
+          />
+        )}
         {Object.entries(usage.byModel ?? {}).map(([model, spent]) => (
           <Stat
             key={model}

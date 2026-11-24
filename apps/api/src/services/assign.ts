@@ -15,7 +15,8 @@ export async function assignIssue(
   deps: Pick<AppDeps, 'db' | 'secrets' | 'connectors'>,
   issue: IssueRow,
   agentId: string | null,
-  actor: { accountId: string | null; via: string },
+  /** `by` is whose plan the started runs may use when that is not the actor, as for a workflow a person set off. */
+  actor: { accountId: string | null; via: string; by?: string | null },
 ): Promise<void> {
   const { db } = deps
   if (agentId && isTrackerClosed(issue) && STARTABLE.includes(issue.factoryState)) throw conflict(CLOSED_MESSAGE)
@@ -51,7 +52,7 @@ export async function assignIssue(
     metadata: { handle: nextHandle, identifier: issue.identifier, via: actor.via },
   })
 
-  if (agentId && STARTABLE.includes(issue.factoryState)) await advanceIssue(db, issue.id, { type: 'start' })
+  if (agentId && STARTABLE.includes(issue.factoryState)) await advanceIssue(db, issue.id, { type: 'start' }, { by: actor.by ?? actor.accountId })
   else if (!agentId && !STARTABLE.includes(issue.factoryState)) await advanceIssue(db, issue.id, { type: 'cancel' })
   await emit(db, issue.orgId, { type: 'notify', kind: 'issue', id: issue.id, projectId: issue.projectId })
 }

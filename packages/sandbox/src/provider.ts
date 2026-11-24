@@ -56,6 +56,11 @@ export interface StartAgentOptions {
   /** Joined before the agent starts, such as the network of the services its run gets. */
   networks?: string[]
   isolation?: TenantIsolation
+  /**
+   * The volume of the person whose Claude plan the run uses. Only its sign-in file is mounted, where the Claude CLI keeps it,
+   * so the CLI renews it in place and the rest of that person's volume stays out of the run.
+   */
+  claudeLogin?: string
 }
 
 export interface AgentHandle {
@@ -163,4 +168,13 @@ export interface SandboxProvider {
   removeEnvironmentVolumes(key: string, options: { source: boolean }): Promise<void>
   /** Empties an environment's source volume and unpacks a gzipped tar into it, such as a plugin package's files. */
   writeEnvironmentSource(key: string, archive: Buffer): Promise<void>
+  /**
+   * Starts the Claude CLI's own sign-in, which keeps what it gets in `volume`, a volume that holds one person's sign-in and nothing
+   * else. Its output names the address to sign in at, and `send` answers its prompt for the code. Nothing but the CLI runs there.
+   */
+  startClaudeLogin(volume: string): Promise<AgentHandle>
+  /** What `claude auth status --json` says of the sign-in in `volume`. */
+  claudeLoginStatus(volume: string): Promise<{ exitCode: number; output: string }>
+  /** Signs the CLI out and removes the volume. Throws while a run still has it mounted. */
+  forgetClaudeLogin(volume: string): Promise<void>
 }

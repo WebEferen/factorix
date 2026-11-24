@@ -13,6 +13,7 @@ import { syncBundledPlugins } from './services/bundled-plugins'
 import { abandonActiveRuns, executeRun, newWorkerId, releaseActiveRuns } from './services/executor'
 import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from './services/maintenance'
 import { refreshRegistries } from './services/market'
+import { refreshPlanLogins, runClaudeLoginStep } from './services/model-logins'
 import { advanceIssue } from './services/pipeline'
 import { runPluginAction, sweepPluginInstances } from './services/plugin-packages'
 import { runPreviewAction, stopAllPumps, sweepPreviews } from './services/preview-runner'
@@ -32,6 +33,7 @@ const SETTINGS_INTERVAL_MS = 15_000
 const PREVIEW_SWEEP_INTERVAL_MS = 30_000
 const BUNDLED_PLUGINS_INTERVAL_MS = 60_000
 const REGISTRY_INTERVAL_MS = 60 * 60_000
+const PLAN_REFRESH_INTERVAL_MS = 5 * 60_000
 
 export interface WorkerHandle {
   runConcurrency(): number
@@ -127,9 +129,13 @@ export function startWorkers(
     new Worker(
       QUEUE_NAMES.environments,
       async (job) =>
-        job.name.startsWith('plugin.')
-          ? runPluginAction({ ...deps, sandbox: deps.sandbox }, job.data.pluginId, job.data.action)
-          : runPreviewAction({ ...deps, sandbox: deps.sandbox, owner }, job.data.instanceId, job.data.action),
+        job.name === 'plan.claude-forget'
+          ? deps.sandbox.forgetClaudeLogin(job.data.volume)
+          : job.name.startsWith('plan.')
+            ? runClaudeLoginStep({ ...deps, sandbox: deps.sandbox }, job.data)
+            : job.name.startsWith('plugin.')
+              ? runPluginAction({ ...deps, sandbox: deps.sandbox }, job.data.pluginId, job.data.action)
+              : runPreviewAction({ ...deps, sandbox: deps.sandbox, owner }, job.data.instanceId, job.data.action),
       { ...base, concurrency: 4, lockDuration: 60_000 },
     ),
     new Worker(
@@ -202,11 +208,18 @@ export function startWorkers(
     deps.timings?.workflowSweepMs ?? WORKFLOW_SWEEP_INTERVAL_MS,
   )
 
+  // Every worker renews, and the row lock in chatgptAccess keeps two of them from spending one refresh token.
+  const plansTimer = setInterval(
+    () => void refreshPlanLogins(deps, log).catch((error: Error) => log(`plan renewal failed: ${error.message}`)),
+    PLAN_REFRESH_INTERVAL_MS,
+  )
+
   const syncPlugins = () => void syncBundledPlugins(deps, log).catch((error: Error) => log(`could not reach the plugin host: ${error.message}`))
   syncPlugins()
   const pluginsTimer = setInterval(syncPlugins, BUNDLED_PLUGINS_INTERVAL_MS)
 
   const stopTimers = () => {
+    clearInterval(plansTimer)
     clearInterval(previewTimer)
     clearInterval(pluginsTimer)
     stopAllPumps()

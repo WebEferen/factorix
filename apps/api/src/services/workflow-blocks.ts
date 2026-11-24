@@ -122,11 +122,11 @@ export const BLOCK_HANDLERS: Record<ActionBlock, Handler> = {
     wakeAt: new Date(Date.now() + Number(config.timeoutHours ?? 72) * 3_600_000),
   }),
 
-  'agent.run': onTicket(async ({ deps, issue, config }) => {
+  'agent.run': onTicket(async ({ deps, run, issue, config }) => {
     const agentId = optional(config.agentId)
     if (isTrackerClosed(issue) && STARTABLE.includes(issue.factoryState)) throw new Error(CLOSED_MESSAGE)
-    if (agentId) await assignIssue(deps, issue, agentId, { accountId: null, via: 'workflow' })
-    else if (STARTABLE.includes(issue.factoryState)) await advanceIssue(deps.db, issue.id, { type: 'start' })
+    if (agentId) await assignIssue(deps, issue, agentId, { accountId: null, via: 'workflow', by: run.causedBy })
+    else if (STARTABLE.includes(issue.factoryState)) await advanceIssue(deps.db, issue.id, { type: 'start' }, { by: run.causedBy })
     if (issue.factoryState === 'awaiting_merge') return { status: 'done', handle: 'next', output: { result: 'succeeded' } }
     return { status: 'wait' }
   }),
@@ -173,6 +173,7 @@ export const BLOCK_HANDLERS: Record<ActionBlock, Handler> = {
           agentSnapshot: json(snapshot) as never,
           phase: 'prompt',
           trigger: json({ workflowRunId: run.id, nodeId, prompt, post: config.post !== 'none' }) as never,
+          createdBy: run.causedBy,
           runtime: agent.runtime,
           model,
         })

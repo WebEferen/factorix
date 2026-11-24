@@ -1,5 +1,14 @@
 import type { Autonomy, FactoryState, PipelineCursor, PipelineDefinition, RunState, TrackerStateKey } from '@factorix/core'
-import type { AgentHelper, ModelProviderId, PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
+import type {
+  AgentHelper,
+  ModelPlanId,
+  ModelProviderId,
+  PermissionPolicy,
+  RunOutcome,
+  RuntimeCapabilities,
+  RuntimeId,
+  UsageSnapshot,
+} from '@factorix/runtime'
 
 export type ConnectionKind =
   | 'linear'
@@ -22,6 +31,8 @@ export interface OrganizationRow {
   slug: string
   networkMode: 'extend' | 'replace'
   networkAllowlist: string[]
+  /** Lets members run their own work on their own model plans. */
+  personalModelLogins: boolean
   createdAt: Date
 }
 
@@ -64,6 +75,29 @@ export interface AuthSessionRow {
   userAgent: string | null
   createdAt: Date
   lastSeenAt: Date
+}
+
+/** A person's own model plan. ChatGPT's tokens are in the secret. Claude's login stays in the CLI's own store, never here. */
+export interface ModelLoginRow {
+  id: string
+  orgId: string
+  accountId: string
+  provider: ModelPlanId
+  status: 'active' | 'needs_login'
+  email: string | null
+  subject: string | null
+  plan: string | null
+  clientId: string | null
+  secretCiphertext: Buffer | null
+  secretNonce: Buffer | null
+  keyVersion: number
+  accessExpiresAt: Date | null
+  refreshedAt: Date | null
+  expiresAt: Date | null
+  lastUsedAt: Date | null
+  lastError: string | null
+  createdAt: Date
+  updatedAt: Date
 }
 
 export interface ApiTokenRow {
@@ -366,6 +400,8 @@ export interface IssueRow {
   cursor: PipelineCursor | null
   branchName: string | null
   lockedByRunId: string | null
+  /** Who set the current pass going from inside Factorix. Null when a tracker, a workflow, or Factorix itself did. */
+  startedBy: string | null
   createdAt: Date
   updatedAt: Date
 }
@@ -409,6 +445,9 @@ export interface RunRow {
   createdBy: string | null
   runtime: RuntimeId
   model: string | null
+  /** The author's own plan this run used, in place of the organization's key. */
+  modelPlan: ModelPlanId | null
+  modelLoginId: string | null
   sessionRef: string | null
   workspaceId: string | null
   containerId: string | null
@@ -522,6 +561,8 @@ export interface WorkflowRunRow {
   trigger: { nodeId: string; event: { kind: string } & Record<string, unknown> }
   triggerEventId: string | null
   startedBy: string | null
+  /** The person whose action in Factorix fired the trigger, or who started the run by hand. */
+  causedBy: string | null
   error: string | null
   createdAt: Date
   finishedAt: Date | null

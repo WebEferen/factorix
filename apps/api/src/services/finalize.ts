@@ -162,7 +162,12 @@ async function openMissingMergeRequests(context: FinalizeContext, outcomes: Push
           updatedAt: trx.fn.now(),
         })
       await trx('issues').where({ id: issue.id }).update({ updatedAt: trx.fn.now() })
-      await emit(trx, run.orgId, { type: 'workflow.event', issueId: issue.id, event: { kind: 'merge_request', event: 'opened', url: mr.url } })
+      await emit(trx, run.orgId, {
+        type: 'workflow.event',
+        issueId: issue.id,
+        event: { kind: 'merge_request', event: 'opened', url: mr.url },
+        by: run.createdBy,
+      })
       await emit(trx, run.orgId, {
         type: 'tracker.comment',
         issueId: issue.id,

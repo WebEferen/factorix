@@ -1,5 +1,6 @@
+import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
-import type { AccountDto, AgentDto, ApprovalDto, IssueDto, PreviewDto, RunDto } from '@factorix/schemas'
+import type { AccountDto, AgentDto, ApprovalDto, IssueDto, ModelPlansDto, PreviewDto, RunDto } from '@factorix/schemas'
 import { ApiError, Client } from './client'
 import { readConfig, writeConfig } from './config'
 import {
@@ -19,6 +20,8 @@ import {
 } from './handoff'
 import { runMcpServer } from './mcp'
 import {
+  connectChatgptPlan,
+  connectClaudePlan,
   decide,
   describeApproval,
   describeIssue,
@@ -76,6 +79,11 @@ const HELP = `fx hands work to Factorix agents from a terminal.
   fx approve <id|issue> [-m message] [--choice retry|revert|keep]
   fx reject <id|issue> -m <message>
 
+  fx plan                                    Your own model plans, which your runs use in place of the organization's keys
+  fx plan login chatgpt [--no-open]          Connect your ChatGPT plan: sign in in the browser, fx catches the answer
+  fx plan login claude [--no-open]           Connect your Claude plan: sign in in the browser, then paste the code it shows
+  fx plan logout <chatgpt|claude>
+
   fx agents
   fx mcp                                     Run as an MCP server over stdio, for a local coding agent
 
@@ -84,6 +92,15 @@ FACTORIX_URL, FACTORIX_TOKEN, and FACTORIX_AGENT override what fx login saved.`
 const out = (line: string) => process.stdout.write(`${line}\n`)
 const issueKey = (identifier: string) => `issue-${identifier.toLowerCase()}`
 const runKey = (runId: string) => `run-${runId}`
+
+async function askLine(question: string): Promise<string> {
+  const prompt = createInterface({ input: process.stdin, output: process.stdout })
+  try {
+    return await prompt.question(question)
+  } finally {
+    prompt.close()
+  }
+}
 
 async function readStdin(): Promise<string> {
   if (process.stdin.isTTY) return ''
@@ -364,6 +381,35 @@ async function main(argv: string[]): Promise<number> {
       })
       out(`${command === 'approve' ? 'Approved' : 'Rejected'}: ${describeApproval(approval)}`)
       return 0
+    }
+    case 'plan': {
+      const action = rest[0] ?? 'list'
+      const { enabled, logins } = await client.get<ModelPlansDto>('/api/model-plans')
+      if (action === 'list') {
+        if (!enabled) out('This organization does not let members use their own plans. An admin can allow it under Settings, Model plans.')
+        for (const login of logins)
+          out(`${login.provider}: ${login.status === 'active' ? 'connected' : 'sign in again'}${login.email ? ` as ${login.email}` : ''}`)
+        if (enabled && logins.length === 0) out('No plan connected. Run fx plan login chatgpt or fx plan login claude.')
+        return 0
+      }
+      const plan = arg(1, 'the plan, chatgpt or claude')
+      if (plan !== 'chatgpt' && plan !== 'claude') throw new UsageError('A plan is chatgpt or claude. See fx help.')
+      const label = plan === 'chatgpt' ? 'ChatGPT' : 'Claude'
+      if (action === 'login') {
+        if (plan === 'chatgpt') await connectChatgptPlan(client, { open: !values['no-open'], onLine: out })
+        else await connectClaudePlan(client, { open: !values['no-open'], onLine: out, ask: askLine })
+        const login = (await client.get<ModelPlansDto>('/api/model-plans')).logins.find((candidate) => candidate.provider === plan)
+        out(`Connected your ${label} plan${login?.email ? ` as ${login.email}` : ''}. Runs you start now use it.`)
+        return 0
+      }
+      if (action === 'logout') {
+        const login = logins.find((candidate) => candidate.provider === plan)
+        if (!login) throw new UsageError(`No ${label} plan is connected.`)
+        await client.request('DELETE', `/api/model-plans/${login.id}`)
+        out(`Disconnected your ${label} plan.`)
+        return 0
+      }
+      throw new UsageError(`There is no fx plan ${action}. See fx help.`)
     }
     case 'mcp':
       await runMcpServer(client, process.cwd())

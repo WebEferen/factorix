@@ -696,6 +696,13 @@ describe('workflows', () => {
       expect(ticketRow).toMatchObject({ factoryState: 'untracked', lockedByRunId: row.id, assignedAgentId: null })
     })
 
+    it('asks as the person who ran the workflow, so their own plan can serve the run', async () => {
+      const { account } = await admin.ok('GET', '/api/auth/me')
+      const { run, row } = await asked({ prompt: 'Whose run is this?' })
+      expect(row.createdBy).toBe(account.id)
+      expect(await db()('workflow_runs').where({ id: run.id }).first()).toMatchObject({ startedBy: account.id, causedBy: account.id })
+    })
+
     it('continues with the answer when the run succeeds', async () => {
       const { run, row } = await asked({ prompt: 'Is it safe?', post: 'none' })
       expect(row.trigger.post).toBe(false)
@@ -884,6 +891,20 @@ describe('workflows', () => {
       await applyTrackerIssue(harness.deps, await projectRow(), closed)
       await drain()
       expect(await runsOf(id)).toHaveLength(1)
+      await retireWorkflows()
+    })
+
+    it('credits a run to whoever set it off in Factorix, never to a tracker, and still counts it as automatic', async () => {
+      const { account } = await admin.ok('GET', '/api/auth/me')
+      const id = await publish(notifyOn('trigger.issue_created'), { enabled: true })
+      await ticket('Made here')
+      await applyTrackerIssue(harness.deps, await projectRow(), world().addIssue({ title: 'Made in Linear' }))
+      await drain()
+      const rows = await db()('workflow_runs').where({ workflowId: id }).orderBy('created_at')
+      expect(rows.map((row: { causedBy: string | null; startedBy: string | null }) => [row.causedBy, row.startedBy])).toEqual([
+        [account.id, null],
+        [null, null],
+      ])
       await retireWorkflows()
     })
 

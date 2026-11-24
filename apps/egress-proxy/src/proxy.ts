@@ -16,6 +16,8 @@ export interface ModelGrant {
   upstream: string
   auth: 'x-api-key' | 'bearer'
   key: string
+  /** A person's plan login, whose short-lived token the store fills into `key` on each lookup. */
+  login?: string
 }
 
 export interface ProxyGrant {
@@ -216,6 +218,7 @@ export function createEgressProxy(options: ProxyOptions): Server {
     if (!grant) return { status: 401, message: 'Unknown run token' }
     const model = modelGrant(grant, provider)
     if (!model) return { status: 401, message: 'No API key is configured for this provider' }
+    if (!model.key) return { status: 401, message: 'The plan this run uses needs signing in again under Settings, Model plans' }
     const upstream = options.upstreams?.[provider] ?? model.upstream
     const target = new URL(path, upstream.endsWith('/') ? upstream : `${upstream}/`)
     delete headers.authorization

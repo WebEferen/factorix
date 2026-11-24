@@ -360,7 +360,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
       metadata: { identifier: issue.identifier, fields: Object.keys(input) },
     })
     // The same path a tracker's webhook takes, so a status change starts, cancels, and announces exactly as it would from outside.
-    await applyTrackerIssue(deps, project, fresh)
+    await applyTrackerIssue(deps, project, fresh, { announce: true, by: account.id })
     return { issue: issueDto(await load(account.orgId, issue.id)) }
   })
 
@@ -386,7 +386,7 @@ export function issueRoutes(app: FastifyInstance, deps: AppDeps): void {
       targetId: issue.id,
       metadata: { identifier: issue.identifier },
     })
-    await advanceIssue(db, issue.id, { type: 'start' })
+    await advanceIssue(db, issue.id, { type: 'start' }, { by: account.id })
     return { issue: issueDto(await load(account.orgId, issue.id)) }
   })
 

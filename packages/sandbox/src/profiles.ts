@@ -100,6 +100,36 @@ export function stepContainerConfig(workspace: Workspace, request: StepRequest, 
   }
 }
 
+/**
+ * Runs `claude auth <args>` with its config in one person's sign-in volume. Only the unmodified CLI runs here, never agent or
+ * repository code, so it reaches Anthropic over the step network. The volume sits where the image's HOME is, so a new volume
+ * takes that folder's owner and the CLI can write to it.
+ */
+export function claudeLoginContainerConfig(volume: string, args: string[], defaults: ContainerDefaults): ContainerCreateOptions {
+  const home = '/workspace/.home'
+  return {
+    Image: defaults.image,
+    Cmd: ['node', '/opt/factorix/runner/index.mjs', '--claude', 'auth', ...args],
+    Env: toEnv({
+      HOME: home,
+      CLAUDE_CONFIG_DIR: home,
+      DISABLE_AUTOUPDATER: '1',
+      DISABLE_TELEMETRY: '1',
+      DISABLE_ERROR_REPORTING: '1',
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    }),
+    WorkingDir: home,
+    OpenStdin: true,
+    StdinOnce: false,
+    AttachStdin: true,
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
+    Labels: { ...managedLabels(defaults), 'factorix.kind': 'login', 'factorix.login': volume },
+    HostConfig: { ...hardening(DEFAULT_LIMITS), Mounts: [volumeMount(volume, home, 'rw')], NetworkMode: networkFor('step', defaults) },
+  }
+}
+
 /** Lists what the SDKs offer. It needs no credentials, so it gets no network, no volumes, and no token. */
 export function catalogContainerConfig(defaults: ContainerDefaults): ContainerCreateOptions {
   return {
@@ -112,6 +142,31 @@ export function catalogContainerConfig(defaults: ContainerDefaults): ContainerCr
   }
 }
 
+/** Where the runner points the Claude CLI's config: `$HOME/.claude`, with the sandbox image's HOME. */
+export const CLAUDE_CONFIG_DIR = '/workspace/.home/.claude'
+
+/**
+ * A single file, so a run sees nothing else of the person's sign-in volume. The CLI writes it by renaming a new file over it, which
+ * a mounted file refuses with EBUSY, and the CLI then rewrites it in place: a renewed sign-in lands in the person's volume.
+ */
+export function claudeCredentialsMount(volume: string): MountConfig[number] {
+  return {
+    ...volumeMount(volume, `${CLAUDE_CONFIG_DIR}/.credentials.json`, 'rw'),
+    VolumeOptions: { Subpath: '.credentials.json' } as unknown as NonNullable<MountConfig[number]['VolumeOptions']>,
+  }
+}
+
+/** Makes the folder the sign-in file mounts into as the agent's user. Docker would make a missing one as root, and the CLI could not write to it. */
+export function claudeConfigDirConfig(workspace: Workspace, defaults: ContainerDefaults): ContainerCreateOptions {
+  return {
+    Image: defaults.image,
+    Cmd: ['mkdir', '-p', CLAUDE_CONFIG_DIR],
+    WorkingDir: '/',
+    Labels: { ...managedLabels(defaults), 'factorix.kind': 'step', 'factorix.workspace': workspace.key },
+    HostConfig: { ...hardening(DEFAULT_LIMITS), Mounts: [volumeMount(workspace.volume, '/workspace', 'rw')], NetworkMode: 'none' },
+  }
+}
+
 export function agentContainerConfig(workspace: Workspace, options: StartAgentOptions, defaults: ContainerDefaults): ContainerCreateOptions {
   const mounts: MountConfig = [volumeMount(workspace.volume, '/workspace', 'rw')]
   if (options.readOnlyRepo) {
@@ -120,6 +175,7 @@ export function agentContainerConfig(workspace: Workspace, options: StartAgentOp
       VolumeOptions: { Subpath: 'repos' } as unknown as NonNullable<MountConfig[number]['VolumeOptions']>,
     })
   }
+  if (options.claudeLogin) mounts.push(claudeCredentialsMount(options.claudeLogin))
   return {
     Image: options.image ?? defaults.image,
     Cmd: ['node', '/opt/factorix/runner/index.mjs'],

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   agentContainerConfig,
   catalogContainerConfig,
+  claudeLoginContainerConfig,
   IMAGE_SERVICE_CAPS,
   parseStepValues,
   STEP_PROFILES,
@@ -156,6 +157,34 @@ describe('agentContainerConfig', () => {
   it('applies the hardening defaults and accepts overrides', () => {
     const config = agentContainerConfig(workspace, { runId: 'r', issueKey: 'k', readOnlyRepo: false, limits: { cpus: 4 } }, defaults)
     expect(config.HostConfig).toMatchObject({ NanoCpus: 4e9, PidsLimit: 1024, CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'] })
+  })
+
+  it('mounts only the sign-in file of a Claude plan, where the CLI looks for it', () => {
+    const mounts = agentContainerConfig(workspace, { runId: 'r', issueKey: 'k', readOnlyRepo: false, claudeLogin: 'fx-login-claude-a' }, defaults)
+      .HostConfig?.Mounts
+    expect(mounts).toEqual([
+      expect.objectContaining({ Source: 'fx-ws-k', Target: '/workspace' }),
+      {
+        Type: 'volume',
+        Source: 'fx-login-claude-a',
+        Target: '/workspace/.home/.claude/.credentials.json',
+        ReadOnly: false,
+        VolumeOptions: { Subpath: '.credentials.json' },
+      },
+    ])
+    expect(agentContainerConfig(workspace, { runId: 'r', issueKey: 'k', readOnlyRepo: false }, defaults).HostConfig?.Mounts).toHaveLength(1)
+  })
+})
+
+describe('claudeLoginContainerConfig', () => {
+  it('runs only the CLI, on the sign-in volume alone, with no token and no workspace', () => {
+    const config = claudeLoginContainerConfig('fx-login-claude-a', ['login', '--claudeai'], defaults)
+    expect(config.Cmd).toEqual(['node', '/opt/factorix/runner/index.mjs', '--claude', 'auth', 'login', '--claudeai'])
+    expect(config.HostConfig?.Mounts).toEqual([{ Type: 'volume', Source: 'fx-login-claude-a', Target: '/workspace/.home', ReadOnly: false }])
+    expect(config.HostConfig?.NetworkMode).toBe('fx-egress')
+    expect(config.Env).toContain('CLAUDE_CONFIG_DIR=/workspace/.home')
+    expect(config.Env?.some((entry) => /TOKEN|API_KEY/.test(entry))).toBe(false)
+    expect(config.HostConfig).toMatchObject({ CapDrop: ['ALL'], SecurityOpt: ['no-new-privileges'] })
   })
 })
 
