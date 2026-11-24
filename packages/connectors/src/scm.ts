@@ -93,7 +93,7 @@ export interface ScmConnector {
   openMergeRequest(input: OpenMergeRequestInput): Promise<MergeRequest>
   updateMergeRequest(repoId: string, iid: number, change: { title?: string; description?: string }): Promise<MergeRequest>
   getMergeRequest(repoId: string, iid: number): Promise<MergeRequest>
-  listDiscussions(repoId: string, iid: number): Promise<ScmDiscussion[]>
+  listDiscussions(repoId: string, iid: number, options?: { allPages?: boolean }): Promise<ScmDiscussion[]>
   postDiffDiscussion(
     repoId: string,
     iid: number,

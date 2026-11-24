@@ -156,10 +156,13 @@ class RunExecution {
     await this.deps.subscriber.subscribe(runCommandChannel(this.run.id), runProxyChannel(this.run.id))
     try {
       await this.loadContext()
-      if (this.run.state === 'finalizing') {
+      const finalizing = this.run.state === 'finalizing'
+      if (finalizing || this.run.state === 'running' || this.run.state === 'waiting_approval') {
         await this.restoreOutcome()
-        await this.finalize(null)
-        return
+        if (finalizing || this.doneEvent) {
+          await this.finalize(null)
+          return
+        }
       }
       const handle = await this.attachOrStart()
       if (!handle) return
@@ -749,17 +752,22 @@ class RunExecution {
     this.handle?.detach()
   }
 
-  /** A run found in finalizing lost its worker after the agent finished. What it ended with is in its events, stored before finalizing. */
+  /** The runner response and replay cursor can be durable before the worker enters finalizing. */
   private async restoreOutcome(): Promise<void> {
     const last = (type: 'done' | 'error') => this.deps.db('run_events').where({ runId: this.run.id, type }).orderBy('seq', 'desc').first()
-    const [done, error] = await Promise.all([last('done'), this.run.outcome === null ? last('error') : undefined])
+    const done = await last('done')
+    if (!done && this.run.state !== 'finalizing') return
     if (this.run.outcome !== null) {
       const stored = this.run.error
       this.lastError = stored ? { code: (stored.code as ErrorCode | undefined) ?? 'unknown', message: stored.message } : null
-    } else if (error) this.lastError = { code: error.payload.code, message: error.payload.message }
+    } else {
+      const error = await last('error')
+      if (error) this.lastError = { code: error.payload.code, message: error.payload.message }
+    }
     if (!done) return
     this.doneEvent = { ...done.payload, seq: done.seq, ts: new Date(done.ts).toISOString(), runId: this.run.id }
     this.usage = done.payload.usage
+    if (this.doneEvent?.sessionRef) this.run.sessionRef = this.doneEvent.sessionRef
   }
 
   private async finalize(handle: AgentHandle | null): Promise<void> {
@@ -787,7 +795,7 @@ class RunExecution {
     const structuredOutput = done?.structuredOutput ?? this.run.structuredOutput
     let result = 'failed'
     let diff: string | undefined
-    let reviewComment: Extract<DomainEvent, { type: 'tracker.comment' }> | undefined
+    let trackerComment: Extract<DomainEvent, { type: 'tracker.comment' }> | undefined
     try {
       const finalized = await finalizePhase({
         db: this.deps.db,
@@ -808,7 +816,7 @@ class RunExecution {
       })
       result = finalized.result
       diff = finalized.diff
-      reviewComment = finalized.reviewComment
+      trackerComment = finalized.trackerComment
     } catch (error) {
       const message = (error as Error).message
       this.log('error', message, 'finalize')
@@ -831,7 +839,7 @@ class RunExecution {
       summary: summaryOf(structuredOutput, done?.finalText),
       structuredOutput,
       diff,
-      reviewComment,
+      trackerComment,
       error: state === 'failed' ? (this.lastError ?? { code: 'unknown', message: done?.finalText || 'The run failed.' }) : null,
       retryable: code ? RETRYABLE.includes(code) : false,
     })
@@ -876,7 +884,7 @@ class RunExecution {
     summary?: string
     structuredOutput?: unknown
     diff?: string
-    reviewComment?: Extract<DomainEvent, { type: 'tracker.comment' }>
+    trackerComment?: Extract<DomainEvent, { type: 'tracker.comment' }>
     error: { code?: string; message: string } | null
     retryable: boolean
   }): Promise<void> {
@@ -913,7 +921,7 @@ class RunExecution {
           updatedAt: trx.fn.now(),
         })
       if (!updated) return false
-      if (input.reviewComment) await emit(trx, this.run.orgId, input.reviewComment)
+      if (input.trackerComment) await emit(trx, this.run.orgId, input.trackerComment)
       await trx('approvals')
         .where({ runId: this.run.id, status: 'pending' })
         .whereIn('kind', ['tool', 'question'])

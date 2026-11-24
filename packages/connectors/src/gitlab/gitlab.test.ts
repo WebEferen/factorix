@@ -148,6 +148,24 @@ describe('GitlabConnector against a stub REST server', () => {
     ])
   })
 
+  it('reaches a review receipt past the normal five discussion pages on request', async () => {
+    const path = '/api/v4/projects/42/merge_requests/7/discussions'
+    stub.handle((request) => {
+      if (request.method !== 'GET' || request.path !== path) return undefined
+      const page = Number(request.query.get('page') ?? 1)
+      if (page === 6) return { body: [{ id: 'receipt', notes: [{ id: 501, body: 'review receipt' }] }] }
+      return {
+        body: Array.from({ length: 100 }, (_, index) => ({ id: `${page}-${index}`, notes: [] })),
+        headers: { link: `<${stub.url}${path}?page=${page + 1}&per_page=100>; rel="next"` },
+      }
+    })
+    expect(await gitlab.listDiscussions('42', 7)).toHaveLength(500)
+    expect((await gitlab.listDiscussions('42', 7, { allPages: true })).at(-1)).toMatchObject({
+      id: 'receipt',
+      notes: [{ body: 'review receipt' }],
+    })
+  })
+
   it('treats a refused self-approval as a soft failure', async () => {
     stub.handle((request) => (request.path.endsWith('/approve') ? { status: 401, body: { message: '401 Unauthorized' } } : undefined))
     expect(await gitlab.approve('42', 7)).toBe(false)

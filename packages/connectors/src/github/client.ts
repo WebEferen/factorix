@@ -275,11 +275,11 @@ export class GithubConnector implements ScmConnector {
     return mapPull(await this.request('GET', `${this.repo(repoId)}/pulls/${iid}`))
   }
 
-  private async threads(repoId: string, iid: number): Promise<Loose[]> {
+  private async threads(repoId: string, iid: number, maxPages = MAX_PAGES): Promise<Loose[]> {
     const pull = await this.request('GET', `${this.repo(repoId)}/pulls/${iid}`)
     const threads: Loose[] = []
     let after: string | null = null
-    for (let page = 0; page < MAX_PAGES; page += 1) {
+    for (let page = 0; page < maxPages; page += 1) {
       const data = await this.graphql(THREADS_QUERY, { id: pull.node_id, after })
       const connection = data.node?.reviewThreads as Loose | undefined
       threads.push(...((connection?.nodes as Loose[]) ?? []))
@@ -289,11 +289,12 @@ export class GithubConnector implements ScmConnector {
     return threads
   }
 
-  async listDiscussions(repoId: string, iid: number): Promise<ScmDiscussion[]> {
+  async listDiscussions(repoId: string, iid: number, options?: { allPages?: boolean }): Promise<ScmDiscussion[]> {
+    const maxPages = options?.allPages ? Infinity : MAX_PAGES
     const [comments, reviews, threads] = await Promise.all([
-      this.pages(`${this.repo(repoId)}/issues/${iid}/comments`),
-      this.pages(`${this.repo(repoId)}/pulls/${iid}/reviews`),
-      this.threads(repoId, iid),
+      this.pages(`${this.repo(repoId)}/issues/${iid}/comments`, {}, maxPages),
+      this.pages(`${this.repo(repoId)}/pulls/${iid}/reviews`, {}, maxPages),
+      this.threads(repoId, iid, maxPages),
     ])
     const discussions: ScmDiscussion[] = comments.map((comment) => ({ id: `c${comment.id}`, notes: [mapIssueComment(comment)] }))
     for (const review of reviews) {
@@ -345,7 +346,8 @@ export class GithubConnector implements ScmConnector {
 
   async approve(repoId: string, iid: number, receipt?: string): Promise<boolean> {
     const path = `${this.repo(repoId)}/pulls/${iid}/reviews`
-    if (receipt && (await this.pages(path)).some((review) => review.state !== 'PENDING' && review.body?.trim() === receipt.trim())) return true
+    if (receipt && (await this.pages(path, {}, Infinity)).some((review) => review.state !== 'PENDING' && review.body?.trim() === receipt.trim()))
+      return true
     try {
       await this.request('POST', path, { body: { event: 'APPROVE', body: receipt } })
       return true

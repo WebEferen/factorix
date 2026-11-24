@@ -50,7 +50,7 @@ export interface FinalizeContext {
 export interface FinalizeResult {
   result: string
   diff?: string
-  reviewComment?: Extract<DomainEvent, { type: 'tracker.comment' }>
+  trackerComment?: Extract<DomainEvent, { type: 'tracker.comment' }>
 }
 
 async function step(context: FinalizeContext, repo: WorkRepo, op: 'bundle' | 'push' | 'diff', gitToken?: string): Promise<StepResult> {
@@ -293,7 +293,9 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
   // Look at the host: a worker can die after a write is accepted but before it records anything locally.
   const posted = new Map<string, string[]>()
   const refreshPosted = async (mr: LinkedMergeRequest) => {
-    const bodies = (await scm.listDiscussions(mr.repo.scmRepoId, mr.mrIid)).flatMap(({ notes }) => notes.map(({ body }) => body.trimEnd()))
+    const bodies = (await scm.listDiscussions(mr.repo.scmRepoId, mr.mrIid, { allPages: true })).flatMap(({ notes }) =>
+      notes.map(({ body }) => body.trimEnd()),
+    )
     posted.set(mr.id, bodies)
     return bodies
   }
@@ -351,7 +353,7 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
   }
   return {
     result: `verdict:${output.verdict}`,
-    reviewComment: {
+    trackerComment: {
       type: 'tracker.comment',
       issueId: issue.id,
       template: 'review_verdict',
@@ -362,20 +364,20 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
   }
 }
 
-async function finalizeTask({ db, run, issue, agentHandle, structuredOutput }: FinalizeContext): Promise<FinalizeResult> {
+function finalizeTask({ run, issue, agentHandle, structuredOutput }: FinalizeContext): FinalizeResult {
   const report = (structuredOutput as TaskOutput | undefined)?.summary
   if (!issue) throw new Error('A task needs a ticket')
   if (!report) throw new Error('The agent finished without a report')
-  await emit(db, run.orgId, { type: 'tracker.comment', issueId: issue.id, template: 'task_report', runId: run.id, agentHandle, body: report })
-  return { result: 'completed' }
+  return {
+    result: 'completed',
+    trackerComment: { type: 'tracker.comment', issueId: issue.id, template: 'task_report', runId: run.id, agentHandle, body: report },
+  }
 }
 
-async function finalizePrompt({ db, run, issue, agentHandle, structuredOutput }: FinalizeContext): Promise<FinalizeResult> {
-  const answer = (structuredOutput as TaskOutput | undefined)?.summary
+function finalizePrompt(context: FinalizeContext): FinalizeResult {
+  const answer = (context.structuredOutput as TaskOutput | undefined)?.summary
   if (!answer) throw new Error('The agent finished without an answer')
-  if (issue && run.trigger.post)
-    await emit(db, run.orgId, { type: 'tracker.comment', issueId: issue.id, template: 'task_report', runId: run.id, agentHandle, body: answer })
-  return { result: 'completed' }
+  return context.issue && context.run.trigger.post ? finalizeTask(context) : { result: 'completed' }
 }
 
 export async function finalizePhase(context: FinalizeContext): Promise<FinalizeResult> {

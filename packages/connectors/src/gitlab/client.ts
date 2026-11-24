@@ -178,8 +178,11 @@ export class GitlabConnector implements ScmConnector {
     return mapMr((await this.api.MergeRequests.show(repoId, iid)) as Loose)
   }
 
-  async listDiscussions(repoId: string, iid: number): Promise<ScmDiscussion[]> {
-    const discussions = (await this.api.MergeRequestDiscussions.all(repoId, iid, { perPage: 100, maxPages: 5 })) as unknown as Loose[]
+  async listDiscussions(repoId: string, iid: number, options?: { allPages?: boolean }): Promise<ScmDiscussion[]> {
+    const discussions = (await this.api.MergeRequestDiscussions.all(repoId, iid, {
+      perPage: 100,
+      maxPages: options?.allPages ? undefined : 5,
+    })) as unknown as Loose[]
     return discussions.map((discussion) => ({ id: discussion.id, notes: ((discussion.notes as Loose[]) ?? []).map(mapNote) }))
   }
 

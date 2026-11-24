@@ -171,6 +171,24 @@ describe('GithubConnector against a stub server', () => {
     expect(sent('POST', '/api/graphql')?.body.variables).toEqual({ id: 'PR_1', after: null })
   })
 
+  it('looks beyond five pages of comments and review threads when checking receipts', async () => {
+    stub.handle((request) => {
+      if (request.path === `${REPO}/pulls/7`) return { body: rawPull }
+      if (request.path === `${REPO}/pulls/7/reviews`) return { body: [] }
+      if (request.path === `${REPO}/issues/7/comments`) {
+        const page = Number(request.query.get('page'))
+        return { body: page === 6 ? [{ id: 501, body: 'summary receipt' }] : Array.from({ length: 100 }, (_, id) => ({ id })) }
+      }
+      if (request.path === '/api/graphql') {
+        const page = Number(request.body.variables.after ?? 0) + 1
+        const reviewThreads = { pageInfo: { hasNextPage: page < 6, endCursor: String(page) }, nodes: page === 6 ? [thread] : [] }
+        return { body: { data: { node: { reviewThreads } } } }
+      }
+    })
+    expect(await github.listDiscussions('42', 7)).toHaveLength(500)
+    expect((await github.listDiscussions('42', 7, { allPages: true })).slice(-2).map(({ id }) => id)).toEqual(['c501', 'r55'])
+  })
+
   it('resolves a review thread by its first comment, and has nothing to resolve on a conversation comment', async () => {
     route({ [`GET ${REPO}/pulls/7`]: rawPull, 'POST /api/graphql': threads })
     const before = stub.requests.length

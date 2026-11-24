@@ -92,7 +92,7 @@ describe('projects with several repositories', () => {
     handleScmEvent(harness.deps, gitlabId, { kind, repoId: scmRepoId, iid, url: null, sourceBranch: null, sha: null })
   const issueRow = (id: string) => db()('issues').where({ id }).first()
 
-  async function interruptedReview(title: string, done: Extract<RunEventBody, { type: 'done' }>, effective: Record<string, unknown> = {}) {
+  async function interruptedRun(title: string, done: Extract<RunEventBody, { type: 'done' }>, effective: Record<string, unknown> = {}) {
     const issueId = await issueAt(title, 'review')
     const { orgId } = await issueRow(issueId)
     const archetypeId = (await admin.ok('GET', '/api/archetypes')).archetypes[0].id
@@ -124,7 +124,7 @@ describe('projects with several repositories', () => {
     return { issueId, runId: run.id as string }
   }
 
-  function reviewWorker(owner: string): ExecutorDeps {
+  function recoveryWorker(owner: string): ExecutorDeps {
     return {
       ...harness.deps,
       owner,
@@ -136,8 +136,8 @@ describe('projects with several repositories', () => {
     }
   }
 
-  it('recovers a review after the host accepts comments without posting them again', async () => {
-    const { issueId, runId } = await interruptedReview('Interrupted review', {
+  it('recovers a review without reposting comments beyond the normal discussion limit', async () => {
+    const { issueId, runId } = await interruptedRun('Interrupted review', {
       type: 'done',
       outcome: 'completed',
       finalText: '',
@@ -150,13 +150,17 @@ describe('projects with several repositories', () => {
       },
     })
     const iid = await openMr(issueId, '42')
-    const firstWorker = reviewWorker('first')
-    const secondWorker = reviewWorker('second')
+    const firstWorker = recoveryWorker('first')
+    const secondWorker = recoveryWorker('second')
     const scm = harness.world.scm('y')
     const notes: Awaited<ReturnType<typeof scm.listDiscussions>> = []
-    const trackingScm = {
+    const older = Array.from({ length: 500 }, (_, index) => ({ id: `older-${index}`, notes: [] }))
+    const trackingScm: typeof scm = {
       ...scm,
-      listDiscussions: async (repoId: string, iid: number) => [...(await scm.listDiscussions(repoId, iid)), ...notes],
+      listDiscussions: async (repoId, iid, options) => {
+        const all = [...older, ...(await scm.listDiscussions(repoId, iid)), ...notes]
+        return options?.allPages ? all : all.slice(0, 500)
+      },
       postNote: async (repoId: string, iid: number, body: string) => {
         const receipt = await scm.postNote(repoId, iid, body)
         notes.push({
@@ -188,7 +192,9 @@ describe('projects with several repositories', () => {
       secondWorker.connectors = firstWorker.connectors
       await executeRun(firstWorker, runId)
       expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'finalizing', outcome: 'completed' })
-      await db()('runs').where({ id: runId }).update({ leaseExpiresAt: new Date(0) })
+      await db()('runs')
+        .where({ id: runId })
+        .update({ leaseExpiresAt: new Date(0) })
       await executeRun(secondWorker, runId)
       expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded' })
       expect(await scm.listDiscussions('42', iid)).toHaveLength(1)
@@ -200,14 +206,58 @@ describe('projects with several repositories', () => {
     }
   })
 
+  it.each(['task', 'prompt'])('recovers a %s whose done event was saved without posting its answer twice', async (phase) => {
+    const { runId } = await interruptedRun(
+      `Interrupted ${phase}`,
+      {
+        type: 'done',
+        outcome: 'completed',
+        finalText: 'Answered.',
+        sessionRef: 'saved-session',
+        usage: EMPTY_USAGE,
+        structuredOutput: { summary: 'Answered.' },
+      },
+      { phase, state: 'running', containerId: 'gone', trigger: json({ post: true }) },
+    )
+    const first = recoveryWorker('stops-before-terminal')
+    const second = recoveryWorker('finishes-answer')
+    const runStep = first.sandbox.runStep
+    const comments = () => db()('domain_events').where({ type: 'tracker.comment' }).whereRaw("payload->>'runId' = ?", [runId])
+    try {
+      first.sandbox.runStep = async (workspace, request) => {
+        // Cache cleanup runs after the phase finalizer but before the terminal transaction.
+        if (request.op === 'clear-cache') await abandonActiveRuns()
+        return runStep(workspace, request)
+      }
+      await executeRun(first, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({
+        state: 'finalizing',
+        outcome: 'completed',
+        sessionRef: 'saved-session',
+        lastRunnerSeq: 1,
+      })
+      expect(await comments()).toHaveLength(0)
+
+      await db()('runs')
+        .where({ id: runId })
+        .update({ leaseExpiresAt: new Date(0), containerId: null })
+      await executeRun(second, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded', outcome: 'completed', summary: 'Answered.' })
+      expect(await comments()).toMatchObject([{ payload: { template: 'task_report', body: 'Answered.' } }])
+    } finally {
+      first.subscriber.disconnect()
+      second.subscriber.disconnect()
+    }
+  })
+
   it('keeps a worker timeout when the runner acknowledged cancellation before recovery', async () => {
     const error = { code: 'timeout', message: 'The run hit its time limit.' }
-    const { issueId, runId } = await interruptedReview(
+    const { issueId, runId } = await interruptedRun(
       'Timed out review',
       { type: 'done', outcome: 'cancelled', finalText: '', sessionRef: 'timeout', usage: EMPTY_USAGE },
       { outcome: 'failed', error: json(error) },
     )
-    const worker = reviewWorker('recovery')
+    const worker = recoveryWorker('recovery')
     try {
       await executeRun(worker, runId)
       expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'failed', outcome: 'failed', error })
