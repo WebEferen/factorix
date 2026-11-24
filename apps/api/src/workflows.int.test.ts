@@ -264,6 +264,32 @@ describe('workflows', () => {
       expect(row.workflowDepth).toBe(1)
     })
 
+    it('edits ticket fields in the tracker and makes them visible to later blocks', async () => {
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('title', 'tracker.set_title', { title: 'Updated {{issue.identifier}}' }),
+          block('description', 'tracker.set_description', { description: 'New title: {{issue.title}}' }),
+          block('priority', 'tracker.set_priority', { priority: '2' }),
+        ],
+        edges: [link('t', 'title'), link('title', 'description'), link('description', 'priority')],
+      })
+      const issue = await ticket()
+      expect((await runOn(id, issue.id)).status).toBe('succeeded')
+      const title = `Updated ${issue.identifier}`
+      const expected = { title, description: `New title: ${title}`, priority: 2 }
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
+
+      const clear = await publish({
+        nodes: [block('t', 'trigger.manual'), block('clear', 'tracker.set_description')],
+        edges: [link('t', 'clear')],
+      })
+      expect((await runOn(clear, issue.id)).status).toBe('succeeded')
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject({ ...expected, description: null })
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ ...expected, description: null })
+    })
+
     it('moves status and changes labels in the tracker and the mirror', async () => {
       const id = await publish({
         nodes: [

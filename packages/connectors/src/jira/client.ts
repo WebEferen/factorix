@@ -11,6 +11,7 @@ import type {
   TrackerState,
   TrackerStateType,
   TrackerTeam,
+  UpdateIssueInput,
 } from '../tracker'
 import { markdownToJira } from './markup'
 
@@ -244,6 +245,20 @@ export class JiraConnector implements TrackerConnector {
     if (input.stateId) await this.updateIssueState(String(created.id), input.stateId).catch(() => undefined)
     const issue = await this.getIssue(String(created.id))
     if (!issue) throw new Error(`Jira created ${created.key} but would not return it`)
+    return issue
+  }
+
+  async updateIssue(issueId: string, change: UpdateIssueInput): Promise<TrackerIssue> {
+    const { title, description, priority } = change
+    await this.request('PUT', `/rest/api/2/issue/${encodeURIComponent(issueId)}`, {
+      fields: {
+        summary: title,
+        description: description == null ? description : markdownToJira(description),
+        priority: priority === undefined ? undefined : priority === 0 ? null : { name: PRIORITY_NAMES[priority] },
+      },
+    })
+    const issue = await this.getIssue(issueId)
+    if (!issue) throw new Error('Jira updated the issue but would not return it')
     return issue
   }
 

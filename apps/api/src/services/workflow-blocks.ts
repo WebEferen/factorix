@@ -1,4 +1,4 @@
-import { TRACKER_SOURCES } from '@factorix/connectors'
+import { TRACKER_SOURCES, type UpdateIssueInput } from '@factorix/connectors'
 import { type ConditionRule, escapeMarkdown, evaluateRules, renderTemplate } from '@factorix/core'
 import { type AccountRow, type AgentRow, type IssueRow, json, type ProjectRow, type RunRow, type SkillRow, type WorkflowRunRow } from '@factorix/db'
 import { type BlockType, SLACK_REPLY } from '@factorix/schemas'
@@ -13,7 +13,7 @@ import { recordEcho } from './echo'
 import { advanceIssue } from './pipeline'
 import { mergeRequestsOf } from './repos'
 import { readSettings } from './settings'
-import { changeIssueLabel, moveIssueToStatus, postTrackerComment, upsertIssueMirror } from './tracker-sync'
+import { applyTrackerIssue, changeIssueLabel, moveIssueToStatus, postTrackerComment, upsertIssueMirror } from './tracker-sync'
 
 export const MAX_CREATED_TICKET_DEPTH = 3
 
@@ -103,6 +103,18 @@ export async function templateValues(
     trigger: run.trigger.event,
     steps: Object.fromEntries(steps.map((step: { nodeId: string; output: unknown }) => [step.nodeId, step.output])),
   }
+}
+
+async function updateTicket({ deps, issue, project }: TicketContext, change: UpdateIssueInput): Promise<BlockResult> {
+  const connection = await getConnection(deps.db, issue.orgId, project.trackerConnectionId)
+  const tracker = trackerFor(deps, connection)
+  if (!tracker.updateIssue) throw new Error('This tracker does not support editing ticket fields from a workflow.')
+  for (const [field, value] of Object.entries(change)) {
+    await recordEcho(deps.db, connection.kind, 'issue', issue.trackerIssueId, field, value)
+  }
+  const fresh = await tracker.updateIssue(issue.trackerIssueId, change)
+  await applyTrackerIssue(deps, project, fresh)
+  return { status: 'done', handle: 'next' }
 }
 
 /** New blocks add a catalog entry and a handler here. The compiler refuses a catalog entry with no handler. */
@@ -204,6 +216,23 @@ export const BLOCK_HANDLERS: Record<ActionBlock, Handler> = {
       body: markdown(context, 'body'),
     })
     return { status: 'done', handle: 'next' }
+  }),
+
+  'tracker.set_title': onTicket(async (context) => {
+    const title = text(context, 'title').trim().slice(0, 255)
+    if (!title) throw new Error('The ticket title came out empty.')
+    return updateTicket(context, { title })
+  }),
+
+  'tracker.set_description': onTicket(async (context) => {
+    const description = markdown(context, 'description')
+    return updateTicket(context, { description: description.trim() ? description : null })
+  }),
+
+  'tracker.set_priority': onTicket(async (context) => {
+    const priority = Number(context.config.priority)
+    if (!['0', '1', '2', '3', '4'].includes(String(context.config.priority))) throw new Error('Choose a ticket priority.')
+    return updateTicket(context, { priority })
   }),
 
   'tracker.set_status': onTicket(async (context) => {

@@ -182,6 +182,11 @@ export class FakeWorld {
           priority: input.priority ?? 0,
           labels: this.labels.filter((label) => input.labelIds?.includes(label.id)),
         }),
+      updateIssue: async (issueId, change) => {
+        const issue = this.issues.get(issueId)
+        if (!issue) throw new Error('Issue not found')
+        return this.touch(issue, change)
+      },
       updateIssueState: async (issueId, stateId) => {
         this.stateWrites.push({ issueId, stateId })
         const issue = this.issues.get(issueId)

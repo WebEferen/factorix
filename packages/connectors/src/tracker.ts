@@ -82,6 +82,12 @@ export type TrackerWebhookEvent =
   | { kind: 'comment.upserted'; comment: TrackerComment; action: 'create' | 'update' }
   | { kind: 'ignored'; reason: string }
 
+export interface UpdateIssueInput {
+  title?: string
+  description?: string | null
+  priority?: number
+}
+
 export interface CreateIssueInput {
   teamId: string
   projectId?: string | null
@@ -124,6 +130,7 @@ export interface TrackerConnector {
   listComments(issueId: string): Promise<TrackerComment[]>
   listResources(issueId: string): Promise<TrackerResource[]>
   createIssue(input: CreateIssueInput): Promise<TrackerIssue>
+  updateIssue?(issueId: string, change: UpdateIssueInput): Promise<TrackerIssue>
   updateIssueState(issueId: string, stateId: string): Promise<void>
   updateIssueLabels(issueId: string, change: { add?: string[]; remove?: string[] }): Promise<void>
   createLabel(input: { teamId: string; name: string; parentId?: string; isGroup?: boolean; color?: string }): Promise<TrackerLabel>

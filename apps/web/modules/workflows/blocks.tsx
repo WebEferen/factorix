@@ -15,6 +15,7 @@ import {
 } from '@factorix/schemas'
 import { type BuiltInEdge, MarkerType, type Node } from '@xyflow/react'
 import {
+  AlignLeft,
   ArrowRightLeft,
   AtSign,
   Bot,
@@ -27,6 +28,7 @@ import {
   CircleX,
   Clock,
   FilePlus,
+  Flag,
   GitMerge,
   Hash,
   Hourglass,
@@ -40,6 +42,7 @@ import {
   Tag,
   Tags,
   Timer,
+  Type,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { Chip } from '../ui'
@@ -58,6 +61,9 @@ const BLOCK_ICONS: Record<BlockType, ReactNode> = {
   'agent.run': <Bot />,
   'agent.prompt': <MessageSquareText />,
   'tracker.comment': <MessageSquare />,
+  'tracker.set_title': <Type />,
+  'tracker.set_description': <AlignLeft />,
+  'tracker.set_priority': <Flag />,
   'tracker.set_status': <CircleDot />,
   'tracker.label': <Tags />,
   'tracker.create_issue': <FilePlus />,
@@ -126,6 +132,12 @@ export function summarizeBlock(type: string, config: Record<string, unknown>, na
       return clip(config.prompt) || 'No prompt yet'
     case 'tracker.comment':
       return clip(config.body) || 'No comment yet'
+    case 'tracker.set_title':
+      return clip(config.title) || 'No title yet'
+    case 'tracker.set_description':
+      return clip(config.description) || 'Clear description'
+    case 'tracker.set_priority':
+      return fieldLabel('priority') || 'No priority selected'
     case 'tracker.set_status':
       return clip(config.status) ? `To ${clip(config.status)}` : 'No status yet'
     case 'tracker.label':
