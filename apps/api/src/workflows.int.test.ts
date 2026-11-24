@@ -290,6 +290,23 @@ describe('workflows', () => {
       expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ ...expected, description: null })
     })
 
+    it('routes an empty rendered title to the failure branch without editing the ticket', async () => {
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('title', 'tracker.set_title', { title: '{{issue.description}}' }),
+          block('recover', 'tracker.comment', { body: 'Ticket title was empty' }),
+        ],
+        edges: [link('t', 'title'), link('title', 'recover', 'failed')],
+      })
+      const issue = await ticket()
+      expect(world().issues.get(issue.trackerIssueId)?.description).toBeFalsy()
+      const run = await runOn(id, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', title: 'failed', recover: 'succeeded' })
+      expect(world().issues.get(issue.trackerIssueId)?.title).toBe(issue.title)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ title: issue.title })
+    })
+
     it('moves status and changes labels in the tracker and the mirror', async () => {
       const id = await publish({
         nodes: [
