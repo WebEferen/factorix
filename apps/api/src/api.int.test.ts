@@ -524,6 +524,41 @@ describe('API', () => {
         expect(issue.factoryState).toBe('untracked')
       })
 
+      it('offers the tracker’s own priorities and its labels but the agents’, and puts the chosen ones on the issue', async () => {
+        harness.world.labels.push(
+          { id: 'label-chore', name: 'Chore', parentId: null },
+          { id: 'label-kind', name: 'Kind', parentId: null, isGroup: true },
+          { id: 'label-feature', name: 'Feature', parentId: 'label-kind' },
+        )
+        const agentLabelId = Object.values((await admin.ok('GET', `/api/projects/${projectId}`)).project.agentLabels)[0] as string
+        const fields = await admin.ok('GET', `/api/projects/${projectId}/issue-fields`)
+        expect(fields.priorities[0]).toEqual({ value: 0, label: 'No priority' })
+        expect(fields.priorities).toHaveLength(5)
+        expect(fields.labels).toEqual(
+          expect.arrayContaining([
+            { id: 'label-chore', name: 'Chore' },
+            { id: 'label-feature', name: 'Kind / Feature' },
+          ]),
+        )
+        const offered = fields.labels.map((label: { id: string }) => label.id)
+        expect(offered).not.toContain(agentLabelId)
+        expect(offered).not.toContain('label-kind')
+
+        const refused = await admin.request('POST', `/api/projects/${projectId}/issues`, { title: 'Labelled', labelIds: [agentLabelId] })
+        expect(refused.status).toBe(400)
+        const { issue } = await admin.ok('POST', `/api/projects/${projectId}/issues`, {
+          title: 'Labelled',
+          priority: 2,
+          labelIds: ['label-chore', 'label-feature'],
+        })
+        const created = [...harness.world.issues.values()].find((candidate) => candidate.title === 'Labelled')
+        expect(created?.labels.map((label) => label.id)).toEqual(['label-chore', 'label-feature'])
+        expect(created?.priority).toBe(2)
+        // The label filter further down expects only the labels it seeds.
+        await harness.deps.db('issues').where({ id: issue.id }).delete()
+        if (created) harness.world.issues.delete(created.id)
+      })
+
       it('shows the new tracker state as soon as the factory writes it, with no webhook needed', async () => {
         const { issue } = await admin.ok('POST', `/api/projects/${projectId}/issues`, { title: 'State mirror' })
         await setTrackerState(harness.deps, { issueId: issue.id, key: 'in_review' })

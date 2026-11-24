@@ -1,13 +1,13 @@
-import { hasWebhookOf } from '@factorix/connectors'
+import { hasWebhookOf, TRACKER_SOURCES, type TrackerConnector } from '@factorix/connectors'
 import { BUILTIN_PIPELINE_NAME } from '@factorix/core'
 import { type ConnectionRow, type IssueRow, json, type PipelineRow, type ProjectRepoRow, type ProjectRow } from '@factorix/db'
-import { createIssueInput, projectInput, projectUpdateInput } from '@factorix/schemas'
+import { createIssueInput, type IssueFieldsDto, projectInput, projectUpdateInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
 import { CLOSED_SQL, issueDto, projectDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
-import { conflict, isUniqueViolation, notFound, parseBody } from '../lib/errors'
+import { badRequest, conflict, isUniqueViolation, notFound, parseBody } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { getConnection, scmFor, trackerFor } from '../services/connections'
 import { recordEcho } from '../services/echo'
@@ -21,6 +21,21 @@ export async function getProject(deps: Pick<AppDeps, 'db'>, orgId: string, id: s
   const row = await deps.db<ProjectRow>('projects').where({ id, orgId }).first()
   if (!row) throw notFound('Project')
   return row
+}
+
+/** Labels a person may put on a new issue: none of the agents', since those assign the issue. */
+async function issueLabels(project: ProjectRow, tracker: TrackerConnector): Promise<IssueFieldsDto['labels']> {
+  const labels = await tracker.listLabels(project.trackerTeamId)
+  const agentIds = new Set(Object.values(project.agentLabels))
+  const agentGroups = new Set(labels.flatMap((label) => (agentIds.has(label.id) && label.parentId ? [label.parentId] : [])))
+  const byId = new Map(labels.map((label) => [label.id, label]))
+  return labels
+    .filter((label) => !label.isGroup && !agentIds.has(label.id) && !(label.parentId && agentGroups.has(label.parentId)))
+    .map((label) => {
+      const group = label.parentId ? byId.get(label.parentId) : undefined
+      return { id: label.id, name: group ? `${group.name} / ${label.name}` : label.name }
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
@@ -246,6 +261,19 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { ok: true }
   })
 
+  app.get('/api/projects/:id/issue-fields', async (request): Promise<IssueFieldsDto> => {
+    const { account } = requireAuth(request)
+    const project = await getProject(deps, account.orgId, (request.params as { id: string }).id)
+    const connection = await getConnection(db, account.orgId, project.trackerConnectionId)
+    const source = Object.hasOwn(TRACKER_SOURCES, connection.kind) ? TRACKER_SOURCES[connection.kind as keyof typeof TRACKER_SOURCES] : undefined
+    const priorities = Object.entries(source?.priorityLabels ?? {})
+      .map(([value, label]) => ({ value: Number(value), label }))
+      .sort((a, b) => a.value - b.value)
+    // The issue matters more than its labels, so a tracker that cannot list them only leaves the picker empty.
+    const labels = await issueLabels(project, trackerFor(deps, connection)).catch(() => [])
+    return { priorities: priorities.length > 1 ? priorities : [], labels }
+  })
+
   app.post('/api/projects/:id/issues', async (request) => {
     const { account } = requireAuth(request)
     const project = await getProject(deps, account.orgId, (request.params as { id: string }).id)
@@ -260,6 +288,11 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
       handle = agent.handle
     }
     const labelId = handle ? project.agentLabels[handle] : undefined
+    if (input.labelIds?.length) {
+      const allowed = new Set((await issueLabels(project, tracker)).map((label) => label.id))
+      if (input.labelIds.some((id) => !allowed.has(id))) throw badRequest("A label is not one of this project's tracker labels")
+    }
+    const labelIds = [...new Set([...(input.labelIds ?? []), ...(labelId ? [labelId] : [])])]
     await recordEcho(db, 'linear', 'issue', 'create', 'title', input.title)
     const created = await tracker.createIssue({
       teamId: project.trackerTeamId,
@@ -267,7 +300,7 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
       title: input.title,
       description: input.description,
       priority: input.priority,
-      labelIds: labelId ? [labelId] : undefined,
+      labelIds: labelIds.length > 0 ? labelIds : undefined,
       creatorName: account.displayName,
     })
     const { row } = await upsertIssueMirror(deps, project, created)

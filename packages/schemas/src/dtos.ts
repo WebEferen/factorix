@@ -332,6 +332,12 @@ export interface IssueListDto {
   limit: number
 }
 
+/** What a new issue can carry in a project's tracker. No priorities means the tracker has none. */
+export interface IssueFieldsDto {
+  priorities: { value: number; label: string }[]
+  labels: { id: string; name: string }[]
+}
+
 export interface IssueFilterOptionDto {
   value: string
   label: string

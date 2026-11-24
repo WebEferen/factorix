@@ -1,14 +1,15 @@
 'use client'
 
-import type { IssueDto } from '@factorix/schemas'
+import type { IssueDto, IssueFieldsDto } from '@factorix/schemas'
+import { ChevronDown } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { type FormEvent, useEffect, useState } from 'react'
 import { toast } from 'sonner'
-import { api } from '../lib/api'
+import useSWR from 'swr'
+import { api, fetcher } from '../lib/api'
 import { useAgents, useProjects } from '../lib/data'
-import { Button, Dialog, DialogColumns, DialogFooter, Field, Input, Select, Textarea } from '../ui'
+import { Button, Dialog, DialogColumns, DialogFooter, Field, Input, Menu, MenuCheckboxItem, MenuContent, MenuTrigger, Select, Textarea } from '../ui'
 import { refreshIssueData } from './agent-picker'
-import { PRIORITY_LABEL } from './icons'
 
 const NO_AGENT = 'none'
 
@@ -20,8 +21,11 @@ export function NewIssueDialog({ open, onOpenChange, projectId }: { open: boolea
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [priority, setPriority] = useState('0')
+  const [labels, setLabels] = useState<string[]>([])
   const [agent, setAgent] = useState(NO_AGENT)
   const [loading, setLoading] = useState(false)
+  const { data: fields } = useSWR<IssueFieldsDto>(open && project ? `/api/projects/${project}/issue-fields` : null, fetcher as never)
+  const labelNames = new Map(fields?.labels.map((label) => [label.id, label.name]))
 
   useEffect(() => {
     if (!open) return
@@ -29,8 +33,15 @@ export function NewIssueDialog({ open, onOpenChange, projectId }: { open: boolea
     setTitle('')
     setDescription('')
     setPriority('0')
+    setLabels([])
     setAgent(NO_AGENT)
   }, [open, projectId, projects])
+
+  const pickProject = (next: string) => {
+    setProject(next)
+    setPriority('0')
+    setLabels([])
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -40,7 +51,8 @@ export function NewIssueDialog({ open, onOpenChange, projectId }: { open: boolea
       const { issue } = await api.post<{ issue: IssueDto }>(`/api/projects/${project}/issues`, {
         title,
         description: description || undefined,
-        priority: Number(priority),
+        priority: fields?.priorities.length ? Number(priority) : undefined,
+        labelIds: labels.length > 0 ? labels : undefined,
         assignAgentId: agent === NO_AGENT ? null : agent,
       })
       refreshIssueData()
@@ -98,13 +110,45 @@ export function NewIssueDialog({ open, onOpenChange, projectId }: { open: boolea
               <Field label="Project">
                 <Select
                   value={project}
-                  onChange={setProject}
+                  onChange={pickProject}
                   options={projects?.projects.map((item) => ({ value: item.id, label: item.name })) ?? []}
                 />
               </Field>
-              <Field label="Priority">
-                <Select value={priority} onChange={setPriority} options={PRIORITY_LABEL.map((label, index) => ({ value: String(index), label }))} />
-              </Field>
+              {fields?.priorities.length ? (
+                <Field label="Priority">
+                  <Select
+                    value={priority}
+                    onChange={setPriority}
+                    options={fields.priorities.map((item) => ({ value: String(item.value), label: item.label }))}
+                  />
+                </Field>
+              ) : null}
+              {fields?.labels.length ? (
+                <Field label="Labels">
+                  <Menu>
+                    <MenuTrigger asChild>
+                      <Button className="w-full justify-between font-normal">
+                        <span className="truncate">{labels.length > 0 ? labels.map((id) => labelNames.get(id) ?? id).join(', ') : 'None'}</span>
+                        <ChevronDown className="text-ink-3" />
+                      </Button>
+                    </MenuTrigger>
+                    <MenuContent className="max-h-72 overflow-y-auto">
+                      {fields.labels.map((label) => (
+                        <MenuCheckboxItem
+                          key={label.id}
+                          checked={labels.includes(label.id)}
+                          onSelect={(event) => event.preventDefault()}
+                          onCheckedChange={(checked) =>
+                            setLabels((current) => (checked ? [...current, label.id] : current.filter((id) => id !== label.id)))
+                          }
+                        >
+                          {label.name}
+                        </MenuCheckboxItem>
+                      ))}
+                    </MenuContent>
+                  </Menu>
+                </Field>
+              ) : null}
               <Field label="Agent">
                 <Select
                   value={agent}

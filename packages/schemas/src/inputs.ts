@@ -315,6 +315,7 @@ export const createIssueInput = z.object({
   title: z.string().min(1).max(500),
   description: z.string().max(100_000).optional(),
   priority: z.number().int().min(0).max(4).optional(),
+  labelIds: z.array(z.string().min(1).max(200)).max(25).optional(),
   assignAgentId: z.uuid().nullable().optional(),
 })
 export type CreateIssueInput = z.infer<typeof createIssueInput>
