@@ -263,12 +263,18 @@ describe('projects with several repositories', () => {
     const iid = await openMr(issueId, '42')
     const first = recoveryWorker('paused-worker')
     const second = recoveryWorker('replacement-worker')
-    const paused = Promise.withResolvers<void>()
-    const resume = Promise.withResolvers<void>()
+    let signalPaused = () => {}
+    let resume = () => {}
+    const paused = new Promise<void>((resolve) => {
+      signalPaused = resolve
+    })
+    const resumed = new Promise<void>((resolve) => {
+      resume = resolve
+    })
     const ensureWorkspace = first.sandbox.ensureWorkspace
     first.sandbox.ensureWorkspace = async (key) => {
-      paused.resolve()
-      await resume.promise
+      signalPaused()
+      await resumed
       return ensureWorkspace(key)
     }
     const scm = harness.world.scm('y')
@@ -279,20 +285,20 @@ describe('projects with several repositories', () => {
     const { executeRun: executeReplacement } = await import('./services/executor')
     const pending = executeRun(first, runId)
     try {
-      await paused.promise
+      await paused
       await db()('runs')
         .where({ id: runId })
         .update({ leaseExpiresAt: new Date(0) })
       await executeReplacement(second, runId)
       expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded', leaseOwner: null })
 
-      resume.resolve()
+      resume()
       await pending
       expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded', leaseOwner: null })
       expect(listDiscussions).not.toHaveBeenCalled()
       expect(harness.world.notes.filter((note) => note.iid === iid)).toHaveLength(1)
     } finally {
-      resume.resolve()
+      resume()
       await pending
       first.subscriber.disconnect()
       second.subscriber.disconnect()
