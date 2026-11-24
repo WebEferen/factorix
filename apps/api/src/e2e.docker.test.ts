@@ -443,6 +443,41 @@ describe('factory end to end', () => {
     expect(events.filter((row) => row.payload.type === 'done')).toHaveLength(1)
   })
 
+  it('finishes a run whose worker died while finalizing with what the agent ended with', async () => {
+    await setAutonomy('human_merge')
+    script = (phase) =>
+      phase === 'implement'
+        ? {
+            steps: [
+              { writeFile: { path: 'finalizing.txt', content: 'survived\n' } },
+              { exec: 'git add finalizing.txt && git commit -qm "feat: survive finalizing"' },
+            ],
+            structuredOutput: { summary: 'Recovered.', approach: 'None.', testing: 'None.', notes: '' },
+          }
+        : undefined
+    const sandbox = harness.deps.sandbox as NonNullable<AppDeps['sandbox']>
+    const runStep = sandbox.runStep
+    let pushes = 0
+    // The dying worker's push never returns, so only the next worker can finish the run.
+    sandbox.runStep = (workspace, request) =>
+      request.op === 'push' && pushes++ === 0 ? new Promise(() => undefined) : runStep.call(sandbox, workspace, request)
+    try {
+      const { issueId } = await labelledIssue('Crash while finalizing')
+      const run = await waitFor(
+        async () => (await runsOf(issueId)).find((candidate) => candidate.phase === 'implement' && candidate.state === 'finalizing'),
+        'the implement run to finalize',
+      )
+      await waitFor(async () => (pushes > 0 ? true : null), 'the push to start')
+      await worker.crash()
+      worker = startWorker()
+      await untilStep(issueId, 'await_merge', 180_000)
+      const finished = (await harness.deps.db('runs').where({ id: run.id }).first()) as RunRow
+      expect(finished).toMatchObject({ state: 'succeeded', outcome: 'completed', summary: 'Recovered.' })
+    } finally {
+      sandbox.runStep = runStep
+    }
+  })
+
   it('finishes a run whose tools print NUL characters, which Postgres refuses in JSON', async () => {
     await setAutonomy('human_merge')
     script = (phase) =>
