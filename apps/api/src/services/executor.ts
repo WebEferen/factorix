@@ -44,6 +44,7 @@ import { answerPluginTool, pluginToolsFor } from './plugin-tools'
 import { answerPreviewTool } from './preview-tool'
 import { agentRedactor } from './redact'
 import { mergeRequestsOf, projectRepos } from './repos'
+import { BREAKDOWNS, MAX_LOST_WORKERS, retryAskedRun } from './retries'
 import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
 import { type AgentMcp, agentMcp, buildRunSpec, readIssueResources, sessionToResume } from './spec'
@@ -55,7 +56,6 @@ const HEARTBEAT_MS = 20_000
 const SUSPEND_AFTER_MS = 20 * 60_000
 const FORCE_STOP_AFTER_CANCEL_MS = 60_000
 const MAX_STDERR_LOG_LINES = 200
-const RETRYABLE: readonly ErrorCode[] = ['rate_limit', 'runtime_crash', 'timeout']
 
 export interface ExecutorDeps extends AppDeps {
   sandbox: SandboxProvider
@@ -72,7 +72,13 @@ async function claimRun(deps: ExecutorDeps, runId: string): Promise<RunRow | nul
     .where({ id: runId })
     .whereNotIn('state', ['succeeded', 'failed', 'cancelled'])
     .where((builder) => builder.whereNull('lease_owner').orWhere('lease_expires_at', '<', deps.db.fn.now()).orWhere('lease_owner', deps.owner))
+    .where((builder) => builder.whereNull('not_before').orWhere('not_before', '<=', deps.db.fn.now()))
     .update({
+      // A lease another worker still held when its time ran out means that worker died with the run. A shutdown hands it over unowned.
+      lostCount: deps.db.raw(
+        `lost_count + CASE WHEN state IN ('preparing', 'running', 'waiting_approval', 'finalizing') AND lease_owner IS NOT NULL AND lease_owner <> ? THEN 1 ELSE 0 END`,
+        [deps.owner],
+      ),
       leaseOwner: deps.owner,
       leaseExpiresAt: deps.db.raw(`now() + interval '${leaseSeconds} seconds'`),
       state: deps.db.raw(`CASE WHEN state IN ('queued', 'suspended') THEN 'preparing' ELSE state END`),
@@ -159,6 +165,10 @@ class RunExecution {
     await this.deps.subscriber.subscribe(runCommandChannel(this.run.id), runProxyChannel(this.run.id))
     try {
       await this.loadContext()
+      if (this.run.lostCount > MAX_LOST_WORKERS) {
+        await this.giveUp()
+        return
+      }
       if (this.run.state === 'finalizing') {
         await this.restoreOutcome()
         await this.finalize(null)
@@ -196,7 +206,10 @@ class RunExecution {
     this.lostLease = true
     this.handle?.detach()
     await this.events.flush().catch(() => undefined)
-    await this.deps.db('runs').where({ id: this.run.id, leaseOwner: this.deps.owner }).update({ leaseExpiresAt: this.deps.db.fn.now() })
+    await this.deps
+      .db('runs')
+      .where({ id: this.run.id, leaseOwner: this.deps.owner })
+      .update({ leaseOwner: null, leaseExpiresAt: this.deps.db.fn.now() })
   }
 
   private async loadContext(): Promise<void> {
@@ -502,6 +515,10 @@ class RunExecution {
       )
     if (checkout.setupFailures.length > 0)
       notes.push(`The setup command failed in ${checkout.setupFailures.join(', ')}. Some dependencies may be missing.`)
+    const previous =
+      this.run.attempt > 1 && this.run.parentRunId ? await this.deps.db<RunRow>('runs').where({ id: this.run.parentRunId }).first('error') : undefined
+    if (previous?.error)
+      notes.push(`This is attempt ${this.run.attempt}. The previous attempt broke down with this error:\n${previous.error.message.trim()}`)
 
     const warn = (message: string) => this.log('warn', message)
     const redact = await agentRedactor(this.deps, { orgId: this.run.orgId, projectId: this.project?.id ?? null }, warn)
@@ -794,6 +811,18 @@ class RunExecution {
     this.handle?.detach()
   }
 
+  /** It ends as a crash, which the project's retry loop starts afresh in a new container, rather than taking down its next worker too. */
+  private async giveUp(): Promise<void> {
+    if (this.run.containerId) await this.deps.sandbox.stop(this.run.containerId, 5).catch(() => undefined)
+    if (this.run.cancelRequestedAt) {
+      await this.finish({ state: 'cancelled', outcome: 'cancelled', result: 'cancelled', error: null, retryable: false })
+      return
+    }
+    const message = `${this.run.lostCount} workers stopped while running this, so Factorix stopped resuming it.`
+    this.log('error', message)
+    await this.finish({ state: 'failed', outcome: 'failed', result: 'failed', error: { code: 'runtime_crash', message }, retryable: true })
+  }
+
   /** A run found in finalizing lost its worker after the agent finished. What it ended with is in its events, stored before finalizing. */
   private async restoreOutcome(): Promise<void> {
     const last = (type: 'done' | 'error') => this.deps.db('run_events').where({ runId: this.run.id, type }).orderBy('seq', 'desc').first()
@@ -866,7 +895,7 @@ class RunExecution {
       structuredOutput,
       diff,
       error: state === 'failed' ? (this.lastError ?? { code: 'unknown', message: done?.finalText || 'The run failed.' }) : null,
-      retryable: code ? RETRYABLE.includes(code) : false,
+      retryable: code ? BREAKDOWNS.includes(code) : false,
     })
     if (state === 'succeeded' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
     else if (state === 'cancelled' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
@@ -969,6 +998,7 @@ class RunExecution {
           })
         }
       }
+      if (input.state === 'failed' && input.retryable) await retryAskedRun(trx, this.run, this.project)
     })
     this.run.state = input.state
     const asked = this.run.trigger as { workflowRunId?: string; nodeId?: string }

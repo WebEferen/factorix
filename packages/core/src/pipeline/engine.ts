@@ -146,7 +146,8 @@ export function advance(
     case 'run.finished': {
       if (current.kind !== 'run' || cursor.waitingFor !== null) return noop()
       const attempts = cursor.attempts[cursor.step] ?? 1
-      if (event.result === 'failed' && event.retryable && attempts < (current.maxAttempts ?? 1)) {
+      const limit = current.maxAttempts === undefined ? 1 : (context.maxAttempts ?? current.maxAttempts)
+      if (event.result === 'failed' && event.retryable && attempts < limit) {
         cursor.attempts[cursor.step] = attempts + 1
         actions.push({ type: 'enqueueRun', role: current.role, phase: current.phase, step: cursor.step, attempt: attempts + 1 })
         return { cursor, actions, factoryState: 'active', handled: true }

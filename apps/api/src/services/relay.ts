@@ -15,7 +15,7 @@ export async function relayDomainEvents(deps: Pick<AppDeps, 'db' | 'queues' | 'r
       const jobId = `de-${row.id}`
       switch (row.type) {
         case 'run.enqueue':
-          await queues.runsExecute.add('execute', { runId: payload.runId }, { jobId })
+          await queues.runsExecute.add('execute', { runId: payload.runId }, { jobId, delay: payload.delayMs })
           break
         case 'pipeline.advance':
           await queues.pipelineAdvance.add('advance', { issueId: payload.issueId, event: payload.event }, { jobId })

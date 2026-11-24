@@ -334,6 +334,9 @@ export interface ProjectDto {
   /** The runner its sandboxes start on, or null for the machine Factorix runs on. */
   runnerId: string | null
   runTimeoutMinutes: number
+  /** Attempts a run gets when it breaks down rather than fails on its own: a crash, a lost worker, a model limit, the time limit. */
+  retryAttempts: number
+  retryDelaySeconds: number
   monthlyBudgetUsd: number | null
   defaultEngineerAgentId: string | null
   defaultReviewerAgentId: string | null

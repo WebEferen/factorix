@@ -163,6 +163,8 @@ export function projectDto(row: ProjectRow, repos: ProjectRepoRow[], extra: Part
     reviewComments: row.reviewComments,
     runnerId: row.runnerId,
     runTimeoutMinutes: row.runTimeoutMinutes,
+    retryAttempts: row.retryAttempts,
+    retryDelaySeconds: row.retryDelaySeconds,
     monthlyBudgetUsd: row.monthlyBudgetUsd,
     defaultEngineerAgentId: row.defaultEngineerAgentId,
     defaultReviewerAgentId: row.defaultReviewerAgentId,

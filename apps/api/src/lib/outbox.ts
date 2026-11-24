@@ -3,7 +3,7 @@ import { type Db, json } from '@factorix/db'
 import type { Knex } from 'knex'
 
 export type DomainEvent =
-  | { type: 'run.enqueue'; runId: string }
+  | { type: 'run.enqueue'; runId: string; delayMs?: number }
   | { type: 'pipeline.advance'; issueId: string; event: PipelineEvent }
   | { type: 'tracker.setState'; issueId: string; key: TrackerStateKey }
   | { type: 'tracker.comment'; issueId: string; template: string; agentHandle?: string; runId?: string; body?: string; step?: string }

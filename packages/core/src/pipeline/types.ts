@@ -91,6 +91,8 @@ export interface AdvanceContext {
   autonomy: Autonomy
   now: string
   assignedRole?: string
+  /** The project's attempts for a run step that retries, in place of the step's own. */
+  maxAttempts?: number
 }
 
 export interface AdvanceResult {

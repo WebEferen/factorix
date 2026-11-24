@@ -207,6 +207,25 @@ describe('builtin pipeline', () => {
     expect(second.last.actions).toContainEqual({ type: 'setTrackerState', key: 'blocked' })
   })
 
+  it('retries as many times as the project allows', () => {
+    let { cursor } = advance(BUILTIN_PIPELINE, null, { autonomy: 'human_merge', now, maxAttempts: 3 }, { type: 'start' })
+    const attempts: number[] = []
+    for (let failures = 0; failures < 3; failures++) {
+      const result = advance(BUILTIN_PIPELINE, cursor, { autonomy: 'human_merge', now, maxAttempts: 3 }, finished('failed', true))
+      for (const action of result.actions) if (action.type === 'enqueueRun') attempts.push(action.attempt)
+      cursor = result.cursor
+    }
+    expect(attempts).toEqual([2, 3])
+    expect(cursor?.step).toBe('fail')
+    const once = advance(
+      BUILTIN_PIPELINE,
+      drive('human_merge', []).cursor,
+      { autonomy: 'human_merge', now, maxAttempts: 1 },
+      finished('failed', true),
+    )
+    expect(once.cursor?.step).toBe('fail')
+  })
+
   it('does not retry a non-retryable failure', () => {
     expect(drive('human_merge', [finished('failed', false)]).cursor?.step).toBe('fail')
   })

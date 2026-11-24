@@ -6,6 +6,7 @@ import { DockerSandboxProvider, dockerClientFromEnv } from '@factorix/sandbox'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
 import type { AppDeps } from './deps'
 import { reapSandboxes } from './services/maintenance'
+import { MAX_LOST_WORKERS } from './services/retries'
 import { STATES, TEAM_ID } from './testing/fakes'
 import {
   ApiClient,
@@ -475,6 +476,85 @@ describe('factory end to end', () => {
       expect(finished).toMatchObject({ state: 'succeeded', outcome: 'completed', summary: 'Recovered.' })
     } finally {
       sandbox.runStep = runStep
+    }
+  })
+
+  it('stops resuming a run that keeps losing its workers, and starts it afresh after the project’s delay', async () => {
+    await setAutonomy('human_merge')
+    await admin.ok('PUT', `/api/projects/${projectId}`, { retryAttempts: 2, retryDelaySeconds: 2 })
+    script = (phase, attempt) =>
+      phase !== 'implement'
+        ? undefined
+        : attempt === 1
+          ? { steps: [{ say: 'working' }, { sleepMs: 120_000 }] }
+          : {
+              steps: [{ writeFile: { path: 'lost.txt', content: 'again\n' } }, { exec: 'git add lost.txt && git commit -qm "feat: start again"' }],
+              structuredOutput: { summary: 'Again.', approach: 'None.', testing: 'None.', notes: '' },
+            }
+    try {
+      const { issueId } = await labelledIssue('Lose the worker')
+      const first = await waitFor(async () => (await runsOf(issueId)).find((candidate) => candidate.phase === 'implement'), 'the implement run')
+      await untilEvent(first.id, (payload) => payload.type === 'message' && payload.text === 'working')
+      await harness.deps.db('runs').where({ id: first.id }).update({ lostCount: MAX_LOST_WORKERS })
+      await worker.crash()
+      worker = startWorker()
+
+      await untilStep(issueId, 'await_merge', 180_000)
+      const [lost, retry] = (await runsOf(issueId)).filter((candidate) => candidate.phase === 'implement')
+      expect(lost).toMatchObject({ state: 'failed', lostCount: MAX_LOST_WORKERS + 1, error: { code: 'runtime_crash' } })
+      expect((await docker.getContainer(lost?.containerId as string).inspect()).State.Running).toBe(false)
+      expect(retry).toMatchObject({ state: 'succeeded', attempt: 2, parentRunId: lost?.id, lostCount: 0 })
+      const waited = new Date(retry?.startedAt as Date).getTime() - new Date(retry?.createdAt as Date).getTime()
+      expect(waited).toBeGreaterThanOrEqual(2000)
+    } finally {
+      await admin.ok('PUT', `/api/projects/${projectId}`, { retryAttempts: 2, retryDelaySeconds: 30 })
+    }
+  })
+
+  it('asks a workflow’s agent again when its run broke down, and the workflow goes on with the answer', async () => {
+    await admin.ok('PUT', `/api/projects/${projectId}`, { retryDelaySeconds: 1 })
+    script = (phase, attempt) =>
+      phase !== 'prompt'
+        ? undefined
+        : attempt === 1
+          ? { steps: [{ say: 'Busy.' }], fail: { code: 'rate_limit', message: 'Slow down' } }
+          : { steps: [{ say: 'Again.' }], structuredOutput: { summary: 'Fine now.' } }
+    try {
+      const { agents } = await admin.ok('GET', '/api/agents')
+      const engineer = agents.find((agent: { handle: string }) => agent.handle === 'engineer-1')
+      const position = { x: 0, y: 0 }
+      const { workflow } = await admin.ok('POST', '/api/workflows', {
+        name: 'Ask through a limit',
+        definition: {
+          nodes: [
+            { id: 'start', type: 'trigger.manual', position, config: {} },
+            { id: 'ask', type: 'agent.prompt', position, config: { agentId: engineer.id, prompt: 'Is {{issue.identifier}} fine?', post: 'none' } },
+          ],
+          edges: [{ id: 'a', source: 'start', sourceHandle: 'next', target: 'ask' }],
+        },
+      })
+      await admin.ok('POST', `/api/workflows/${workflow.id}/publish`)
+      const tracker = harness.world.addIssue({ title: 'Asked through a limit' })
+      await sendLinearWebhook(harness.app, linear.id, linear.webhookSecret, issuePayload(tracker, 'create'))
+      const row = await waitFor(() => harness.deps.db('issues').where({ trackerIssueId: tracker.id }).first(), 'the issue mirror row')
+
+      const { started } = await admin.ok('POST', `/api/workflows/${workflow.id}/runs`, { issueIds: [row.id] })
+      const finished = await waitFor(
+        async () => {
+          const { run } = await admin.ok('GET', `/api/workflow-runs/${started[0]}`)
+          return run.status === 'running' ? null : run
+        },
+        'the workflow run to finish',
+        180_000,
+      )
+      expect(finished.status, JSON.stringify(finished.steps)).toBe('succeeded')
+      const [broke, retry] = (await harness.deps.db<RunRow>('runs').where({ issueId: row.id }).orderBy('created_at')) as RunRow[]
+      expect(broke).toMatchObject({ phase: 'prompt', attempt: 1, state: 'failed', error: { code: 'rate_limit' } })
+      expect(retry).toMatchObject({ phase: 'prompt', attempt: 2, state: 'succeeded', parentRunId: broke?.id })
+      expect(finished.steps.find((step: { nodeId: string }) => step.nodeId === 'ask').output).toMatchObject({ runId: retry?.id, text: 'Fine now.' })
+      expect(await issueOf(row.id)).toMatchObject({ lockedByRunId: null })
+    } finally {
+      await admin.ok('PUT', `/api/projects/${projectId}`, { retryDelaySeconds: 30 })
     }
   })
 

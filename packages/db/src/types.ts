@@ -360,6 +360,8 @@ export interface ProjectRow {
   runnerId: string | null
   limits: { memoryMb?: number; cpus?: number }
   runTimeoutMinutes: number
+  retryAttempts: number
+  retryDelaySeconds: number
   monthlyBudgetUsd: number | null
   defaultEngineerAgentId: string | null
   defaultReviewerAgentId: string | null
@@ -468,6 +470,8 @@ export interface RunRow {
   lastRunnerSeq: number
   cancelRequestedAt: Date | null
   discardOnCancel: boolean
+  lostCount: number
+  notBefore: Date | null
   createdAt: Date
   updatedAt: Date
 }

@@ -317,6 +317,8 @@ export const projectInput = z.object({
   reviewComments: z.enum(['inline', 'summary']).default('inline'),
   runnerId: z.uuid().nullable().default(null),
   runTimeoutMinutes: z.number().int().min(1).max(1440).default(90),
+  retryAttempts: z.number().int().min(1).max(5).default(2),
+  retryDelaySeconds: z.number().int().min(0).max(3600).default(30),
   monthlyBudgetUsd: z.number().positive().nullable().default(null),
   defaultEngineerAgentId: z.uuid().nullable().default(null),
   defaultReviewerAgentId: z.uuid().nullable().default(null),
