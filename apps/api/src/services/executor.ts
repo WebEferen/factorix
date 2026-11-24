@@ -163,8 +163,9 @@ class RunExecution {
       const handle = await this.attachOrStart()
       if (!handle) return
       this.handle = handle
-      await this.flushCommands()
       if (this.run.cancelRequestedAt) this.armForceStop()
+      // If stdin is unavailable, keep listening. The heartbeat retries delivery and enforces cancellation.
+      await this.flushCommands().catch(() => undefined)
       await this.ingest(handle)
       if (this.lostLease) return
       if (this.suspended) return
@@ -711,14 +712,16 @@ class RunExecution {
 
   private async beat(): Promise<void> {
     const { db } = this.deps
-    const updated = await db('runs')
+    const [run] = await db<RunRow>('runs')
       .where({ id: this.run.id, leaseOwner: this.deps.owner })
       .update({ leaseExpiresAt: db.raw(`now() + interval '${this.deps.timings?.leaseSeconds ?? LEASE_SECONDS} seconds'`) })
-    if (updated === 0) {
+      .returning('cancelRequestedAt')
+    if (!run) {
       this.lostLease = true
       this.handle?.detach()
       return
     }
+    if (run.cancelRequestedAt) this.armForceStop()
     await this.flushCommands()
     if (this.waitingSince && Date.now() - this.waitingSince > (this.deps.timings?.suspendAfterMs ?? SUSPEND_AFTER_MS)) await this.suspend()
   }
@@ -729,24 +732,39 @@ class RunExecution {
     const { db } = this.deps
     const commands = await db('run_commands').where({ runId: this.run.id }).whereNull('deliveredAt').orderBy('id')
     for (const command of commands) {
-      handle.send(encodeLine(command.payload))
       if (command.payload.type === 'cancel') this.armForceStop()
+      handle.send(encodeLine(command.payload))
       await db('run_commands').where({ id: command.id }).update({ deliveredAt: db.fn.now() })
     }
   }
 
   /** Nobody answered, so stop paying for an idle container. The session stays on the volume for the resume. */
   private async suspend(): Promise<void> {
+    const { db } = this.deps
     const containerId = this.run.containerId
+    await this.events.flush()
+    // Cancellation may have arrived after the heartbeat read the run.
+    const changed = await db('runs')
+      .where({ id: this.run.id, state: 'waiting_approval', leaseOwner: this.deps.owner })
+      .whereNull('cancelRequestedAt')
+      .update({
+        state: 'suspended',
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        containerId: null,
+        lastRunnerSeq: this.events.lastRunnerSeq,
+        updatedAt: db.fn.now(),
+      })
+    if (!changed) return
     this.suspended = true
     this.waitingSince = null
-    this.log('info', 'No decision yet, so the container is stopping. The run resumes when someone decides.')
-    await this.events.flush()
-    await this.setState('suspended', { leaseOwner: null, leaseExpiresAt: null, containerId: null, lastRunnerSeq: this.events.lastRunnerSeq })
+    this.run.state = 'suspended'
     this.run.containerId = null
+    this.log('info', 'No decision yet, so the container is stopping. The run resumes when someone decides.')
     if (containerId) await this.deps.sandbox.stop(containerId, 5).catch(() => undefined)
     await stopRunServices(this.deps, this.run.id).catch(() => undefined)
     this.handle?.detach()
+    await this.deps.redis.publish(orgChannel(this.run.orgId), JSON.stringify({ kind: 'run', id: this.run.id, projectId: this.run.projectId }))
   }
 
   private async finalize(handle: AgentHandle | null): Promise<void> {
