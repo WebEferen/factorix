@@ -11,9 +11,10 @@ import useSWR from 'swr'
 import { NewIssueDialog } from '../issues/new-issue-dialog'
 import { ApiError, fetcher, SWITCHED_KEY } from '../lib/api'
 import { useAgents, useMe, useProjects } from '../lib/data'
-import { Dialog, ErrorState, Kbd, Skeleton } from '../ui'
+import { Dialog, ErrorState, Kbd, Skeleton, Toggle } from '../ui'
 import { Boundary } from '../ui/boundary'
 import { LiveUpdates } from './live'
+import { setSingleKeys, useSingleKeys } from './shortcuts'
 import { Sidebar } from './sidebar'
 import { ShellContext } from './state'
 import { useTheme } from './theme'
@@ -194,6 +195,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [navOpen, setNavOpen] = useState(false)
   const [newIssue, setNewIssue] = useState<{ open: boolean; projectId?: string }>({ open: false })
   const lastG = useRef(0)
+  const singleKeys = useSingleKeys()
 
   // Only a real 401 signs you out. An API restart or a dropped connection must not throw you onto the login page.
   useEffect(() => {
@@ -229,7 +231,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         setPaletteOpen((open) => !open)
         return
       }
-      if (event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return
+      if (!singleKeys || event.metaKey || event.ctrlKey || event.altKey || isTyping(event.target)) return
       const key = event.key.toLowerCase()
       if (Date.now() - lastG.current < 900) {
         lastG.current = 0
@@ -248,7 +250,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [openNewIssue, router])
+  }, [openNewIssue, router, singleKeys])
 
   const actions = useMemo(
     () => ({ openPalette: () => setPaletteOpen(true), openNewIssue, openShortcuts: () => setShortcutsOpen(true), openNav: () => setNavOpen(true) }),
@@ -325,6 +327,14 @@ export function AppShell({ children }: { children: ReactNode }) {
               </li>
             ))}
           </ul>
+          <div className="mt-3 border-t border-divider pt-4">
+            <Toggle
+              checked={singleKeys}
+              onChange={setSingleKeys}
+              label="Single-key shortcuts"
+              hint="Turn them off if they clash with a screen reader or a browser extension. ⌘K and the arrow keys keep working. Remembered in this browser."
+            />
+          </div>
         </Dialog>
       </LiveUpdates>
     </ShellContext.Provider>

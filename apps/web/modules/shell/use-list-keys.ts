@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useSingleKeys } from './shortcuts'
 
 export function useListKeys<T>(items: T[], open: (item: T) => void): { selected: number; setSelected: (index: number) => void } {
   const [selected, setSelected] = useState(-1)
+  const singleKeys = useSingleKeys()
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -16,6 +18,7 @@ export function useListKeys<T>(items: T[], open: (item: T) => void): { selected:
         target?.closest('[role="dialog"],[role="menu"],[role="listbox"]')
       )
         return
+      if (!singleKeys && (event.key === 'j' || event.key === 'k')) return
       if (event.key === 'j' || event.key === 'ArrowDown') {
         event.preventDefault()
         setSelected((index) => Math.min(index + 1, items.length - 1))
@@ -29,6 +32,6 @@ export function useListKeys<T>(items: T[], open: (item: T) => void): { selected:
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [items, open, selected])
+  }, [items, open, selected, singleKeys])
   return { selected, setSelected }
 }
