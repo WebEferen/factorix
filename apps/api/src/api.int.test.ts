@@ -231,7 +231,7 @@ describe('API', () => {
       harness.world.pingRefusal = 'Anthropic answered 400 when claude-opus-5-6 was asked to answer: Your credit balance is too low'
       expect(await admin.ok('POST', `/api/connections/${connection.id}/test`)).toEqual({ ok: false, message: harness.world.pingRefusal })
       harness.world.pingRefusal = null
-      await admin.ok('DELETE', `/api/connections/${connection.id}`)
+      expect((await admin.request('DELETE', `/api/connections/${connection.id}`)).status).toBe(200)
     })
   })
 
@@ -404,6 +404,54 @@ describe('API', () => {
       expect((await admin.request('PUT', `/api/projects/${projectId}`, { trackerConnectionId: foreignLinearId })).status).toBe(404)
       expect((await admin.request('PUT', `/api/projects/${projectId}`, { scmConnectionId: foreignLinearId })).status).toBe(404)
       expect(await db('projects').where({ id: projectId }).first()).toMatchObject({ trackerConnectionId: linearId, scmConnectionId: gitlabId })
+    })
+
+    it('deletes a project once nothing runs in it, and leaves its workspaces for the sweep', async () => {
+      const { db } = harness.deps
+      const { project } = await admin.ok('POST', '/api/projects', {
+        name: 'Short lived',
+        trackerConnectionId: linearId,
+        trackerTeamId: TEAM_ID,
+        trackerProjectId: 'short-lived',
+        scmConnectionId: gitlabId,
+        repos: [{ scmRepoId: '44', scmRepoPath: 'g/t', scmCloneUrl: 'https://gitlab.com/g/t.git', defaultBranch: 'main' }],
+        stateMap: { in_progress: 'st-progress', in_review: 'st-review', done: 'st-done', blocked: 'st-blocked' },
+      })
+      const { issue } = await admin.ok('POST', `/api/projects/${project.id}/issues`, { title: 'Going away' })
+      const { orgId } = await db('projects').where({ id: project.id }).first()
+      const [workspace] = await db('workspaces')
+        .insert({ orgId, issueId: issue.id, volumeName: 'fx-ws-gone', mirrorVolumeName: 'fx-mirror-gone' })
+        .returning('id')
+      const agent = await db('agents').first()
+      const [run] = await db('runs')
+        .insert({
+          orgId,
+          issueId: issue.id,
+          projectId: project.id,
+          agentId: agent.accountId,
+          agentSnapshot: json({ handle: 'engineer-1' }),
+          phase: 'implement',
+          state: 'running',
+          runtime: 'scripted',
+          model: 'scripted',
+        })
+        .returning('id')
+
+      const member = new ApiClient(harness.app)
+      await member.ok('POST', '/api/auth/login', { email: 'bo@example.com', password: 'long enough password' })
+      expect((await member.request('DELETE', `/api/projects/${project.id}`)).status).toBe(403)
+      const refused = await admin.request('DELETE', `/api/projects/${project.id}`)
+      expect(refused.status).toBe(409)
+      expect(refused.body.error.message).toBe('Short lived has runs in progress. Cancel them first.')
+
+      await db('runs').where({ id: run.id }).update({ state: 'cancelled' })
+      expect(await admin.request('DELETE', `/api/projects/${project.id}`)).toMatchObject({ status: 200, body: { ok: true } })
+      expect((await admin.request('GET', `/api/projects/${project.id}`)).status).toBe(404)
+      expect(await db('issues').where({ id: issue.id }).first()).toBeUndefined()
+      expect(await db('runs').where({ id: run.id }).first()).toMatchObject({ projectId: null, issueId: null })
+      expect(await db('workspaces').where({ id: workspace.id }).first()).toMatchObject({ issueId: null, state: 'ready' })
+      const { entries } = await admin.ok('GET', `/api/audit?targetType=project&targetId=${project.id}`)
+      expect(entries[0]).toMatchObject({ action: 'project.deleted', metadata: { name: 'Short lived' } })
     })
 
     it('deletes a connection only once nothing uses it, and says what still does', async () => {

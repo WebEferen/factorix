@@ -12,6 +12,7 @@ import { emit } from '../lib/outbox'
 import { getConnection, scmFor, trackerFor } from '../services/connections'
 import { recordEcho } from '../services/echo'
 import { advanceIssue } from '../services/pipeline'
+import { LIVE_STATES } from '../services/previews'
 import { projectRepos, saveProjectRepos } from '../services/repos'
 import { readSettings } from '../services/settings'
 import { IMPORT_STALE_MS, requestProjectImport, upsertIssueMirror } from '../services/tracker-sync'
@@ -158,6 +159,34 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
     })
     const [project] = await withStats([await getProject(deps, account.orgId, id)], account.id)
     return { project }
+  })
+
+  app.delete('/api/projects/:id', async (request) => {
+    const { account } = requireAdmin(request)
+    const { id } = request.params as { id: string }
+    const project = await getProject(deps, account.orgId, id)
+    await db.transaction(async (trx) => {
+      await trx('projects').where({ id }).forUpdate().first('id')
+      if (await trx('runs').where({ projectId: id }).whereNotIn('state', ['succeeded', 'failed', 'cancelled']).first('id'))
+        throw conflict(`${project.name} has runs in progress. Cancel them first.`)
+      if (await trx('environment_instances').where({ projectId: id }).whereIn('state', LIVE_STATES).first('id'))
+        throw conflict(`${project.name} has previews running. Stop them first.`)
+      // The sweep frees a workspace's disk by its row, which would otherwise go with the issue. Detached, it expires like any ad hoc one.
+      await trx('workspaces')
+        .whereIn('issue_id', trx('issues').where({ projectId: id }).select('id'))
+        .update({ issueId: null })
+      await trx('projects').where({ id }).delete()
+      await writeAudit(trx, {
+        orgId: account.orgId,
+        actorAccountId: account.id,
+        actorKind: 'human',
+        action: 'project.deleted',
+        targetType: 'project',
+        targetId: id,
+        metadata: { name: project.name },
+      })
+    })
+    return { ok: true }
   })
 
   app.post('/api/projects/:id/sync', async (request) => {

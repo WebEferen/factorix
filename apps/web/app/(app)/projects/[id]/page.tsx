@@ -3,6 +3,7 @@
 import type { ProjectDto, RunnerDto } from '@factorix/schemas'
 import { AlertTriangle, Container, Loader2, Plus, RefreshCw, Settings2 } from 'lucide-react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { Suspense, use, useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import useSWR, { useSWRConfig } from 'swr'
@@ -65,6 +66,25 @@ function ProjectSettings({
     monthlyBudgetUsd: project.monthlyBudgetUsd?.toString() ?? '',
   })
   const [loading, setLoading] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const router = useRouter()
+  const { mutate: refresh } = useSWRConfig()
+  const remove = async () => {
+    setRemoving(true)
+    try {
+      await api.delete(`/api/projects/${project.id}`)
+      toast.success(`Deleted ${project.name}`)
+      setConfirming(false)
+      onOpenChange(false)
+      await refresh('/api/projects')
+      router.push('/projects')
+    } catch (error) {
+      toast.error((error as Error).message)
+    } finally {
+      setRemoving(false)
+    }
+  }
   const options = (role: string) => [
     { value: DEFAULT_AGENT, label: 'First available' },
     ...(agents?.agents.filter((agent) => agent.archetype.role === role).map((agent) => ({ value: agent.id, label: agent.displayName })) ?? []),
@@ -172,10 +192,28 @@ function ProjectSettings({
         }
       />
       <DialogFooter>
+        <Button className="mr-auto" variant="danger" onClick={() => setConfirming(true)}>
+          Delete project
+        </Button>
         <Button variant="primary" loading={loading} disabled={repos.length === 0} onClick={() => void save()}>
           Save changes
         </Button>
       </DialogFooter>
+      <Dialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title={`Delete ${project.name}?`}
+        description="Its issues, previews, and the workflows made for it go with it, and runs stay in history without it. Tickets stay in your tracker and merge requests stay open. This cannot be undone."
+      >
+        <DialogFooter>
+          <Button size="sm" onClick={() => setConfirming(false)}>
+            Keep it
+          </Button>
+          <Button size="sm" variant="danger" loading={removing} onClick={() => void remove()}>
+            Delete project
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </Dialog>
   )
 }
