@@ -1,7 +1,7 @@
-import { TRACKER_SOURCES } from '@factorix/connectors'
+import { TRACKER_SOURCES, type UpdateIssueInput } from '@factorix/connectors'
 import { type ConditionRule, escapeMarkdown, evaluateRules, renderTemplate } from '@factorix/core'
 import { type AccountRow, type AgentRow, type IssueRow, json, type ProjectRow, type RunRow, type SkillRow, type WorkflowRunRow } from '@factorix/db'
-import { type BlockType, SLACK_REPLY } from '@factorix/schemas'
+import { type BlockType, SLACK_REPLY, updateIssueInput } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { isTrackerClosed } from '../dto'
 import { writeAudit } from '../lib/audit'
@@ -13,7 +13,7 @@ import { recordEcho } from './echo'
 import { advanceIssue } from './pipeline'
 import { mergeRequestsOf } from './repos'
 import { readSettings } from './settings'
-import { changeIssueLabel, moveIssueToStatus, postTrackerComment, upsertIssueMirror } from './tracker-sync'
+import { applyTrackerIssue, changeIssueLabel, moveIssueToStatus, postTrackerComment, upsertIssueMirror } from './tracker-sync'
 
 export const MAX_CREATED_TICKET_DEPTH = 3
 
@@ -103,6 +103,22 @@ export async function templateValues(
     trigger: run.trigger.event,
     steps: Object.fromEntries(steps.map((step: { nodeId: string; output: unknown }) => [step.nodeId, step.output])),
   }
+}
+
+async function updateTicket({ deps, issue, project }: TicketContext, change: UpdateIssueInput): Promise<BlockResult> {
+  const connection = await getConnection(deps.db, issue.orgId, project.trackerConnectionId)
+  if (connection.kind === 'factorix') {
+    const validation = updateIssueInput.safeParse(change)
+    if (!validation.success) throw new Error(validation.error.issues[0]?.message ?? 'Invalid ticket update.')
+  }
+  const tracker = trackerFor(deps, connection)
+  if (!tracker.updateIssue) throw new Error('This tracker does not support editing ticket fields from a workflow.')
+  for (const [field, value] of Object.entries(change)) {
+    await recordEcho(deps.db, 'linear', 'issue', issue.trackerIssueId, field, value)
+  }
+  const fresh = await tracker.updateIssue(issue.trackerIssueId, change)
+  await applyTrackerIssue(deps, project, fresh)
+  return { status: 'done', handle: 'next' }
 }
 
 /** New blocks add a catalog entry and a handler here. The compiler refuses a catalog entry with no handler. */
@@ -205,6 +221,32 @@ export const BLOCK_HANDLERS: Record<ActionBlock, Handler> = {
       body: markdown(context, 'body'),
     })
     return { status: 'done', handle: 'next' }
+  }),
+
+  'tracker.set_title': onTicket(async (context) => {
+    const title = text(context, 'title').trim()
+    if (!title) throw new Error('The ticket title came out empty.')
+    return updateTicket(context, { title })
+  }),
+
+  'tracker.set_description': onTicket(async (context) => {
+    const template = context.config.description
+    if (template !== undefined && typeof template !== 'string') throw new Error('The ticket description must be text.')
+    if (!template?.trim()) return updateTicket(context, { description: null })
+    const { kind } = await getConnection(context.deps.db, context.issue.orgId, context.project.trackerConnectionId)
+    const markup = TRACKER_SOURCES[kind as keyof typeof TRACKER_SOURCES]?.markup
+    // The mirror keeps the tracker's own dialect, and updateIssue takes Markdown, so Jira's wiki markup is converted first.
+    const description = renderTemplate(template, context.values, (value, path) =>
+      path === 'issue.description' ? (markup?.toMarkdown(value) ?? value) : escapeMarkdown(value),
+    )
+    if (!description.trim()) throw new Error('The ticket description came out empty. Leave the field blank to clear it.')
+    return updateTicket(context, { description })
+  }),
+
+  'tracker.set_priority': onTicket(async (context) => {
+    const priority = Number(context.config.priority)
+    if (!['0', '1', '2', '3', '4'].includes(String(context.config.priority))) throw new Error('Choose a ticket priority.')
+    return updateTicket(context, { priority })
   }),
 
   'tracker.set_status': onTicket(async (context) => {

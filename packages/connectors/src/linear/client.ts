@@ -12,6 +12,7 @@ import type {
   TrackerState,
   TrackerStateType,
   TrackerTeam,
+  UpdateIssueInput,
 } from '../tracker'
 import { linearMarkup } from './markup'
 
@@ -232,6 +233,17 @@ export class LinearConnector implements TrackerConnector {
       },
     )
     return mapIssue(issueCreate.issue)
+  }
+
+  async updateIssue(issueId: string, change: UpdateIssueInput): Promise<TrackerIssue> {
+    const { issueUpdate } = await this.request<{ issueUpdate: { success: boolean; issue: RawIssue } }>(
+      `mutation IssueEdit($id: String!, $input: IssueUpdateInput!) {
+        issueUpdate(id: $id, input: $input) { success issue { ${ISSUE_FIELDS} } }
+      }`,
+      { id: issueId, input: change },
+    )
+    if (!issueUpdate.success) throw new Error('Linear did not update the issue')
+    return mapIssue(issueUpdate.issue)
   }
 
   async updateIssueState(issueId: string, stateId: string): Promise<void> {

@@ -15,8 +15,8 @@ function asText(value: unknown): string {
 }
 
 /** One pass only, so a ticket title that contains {{...}} stays text. Ticket text is untrusted, so callers escape values for where they end up. */
-export function renderTemplate(template: string, values: unknown, escapeValue: (text: string) => string = (text) => text): string {
-  return template.replace(PLACEHOLDER, (_, path: string) => escapeValue(asText(lookup(values, path))))
+export function renderTemplate(template: string, values: unknown, escapeValue: (text: string, path: string) => string = (text) => text): string {
+  return template.replace(PLACEHOLDER, (_, path: string) => escapeValue(asText(lookup(values, path)), path))
 }
 
 /** Lets a ticket title sit inside Markdown as plain text, unable to become a link or a mention. */

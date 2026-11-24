@@ -264,6 +264,136 @@ describe('workflows', () => {
       expect(row.workflowDepth).toBe(1)
     })
 
+    it('edits ticket fields in the tracker and makes them visible to later blocks', async () => {
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('title', 'tracker.set_title', { title: 'Updated {{issue.identifier}}' }),
+          block('description', 'tracker.set_description', { description: 'New title: {{issue.title}}' }),
+          block('priority', 'tracker.set_priority', { priority: '2' }),
+        ],
+        edges: [link('t', 'title'), link('title', 'description'), link('description', 'priority')],
+      })
+      const issue = await ticket()
+      expect((await runOn(id, issue.id)).status).toBe('succeeded')
+      const title = `Updated ${issue.identifier}`
+      const expected = { title, description: `New title: ${title}`, priority: 2 }
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
+
+      const unresolved = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('description', 'tracker.set_description', { description: '{{issue.descripton}}' }),
+          block('recover', 'tracker.comment', { body: 'Ticket description was empty' }),
+        ],
+        edges: [link('t', 'description'), link('description', 'recover', 'failed')],
+      })
+      const run = await runOn(unresolved, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', description: 'failed', recover: 'succeeded' })
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
+
+      const clear = await publish({
+        nodes: [block('t', 'trigger.manual'), block('clear', 'tracker.set_description')],
+        edges: [link('t', 'clear')],
+      })
+      expect((await runOn(clear, issue.id)).status).toBe('succeeded')
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject({ ...expected, description: null })
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ ...expected, description: null })
+    })
+
+    it('preserves description markup when appending and keeps the edit when a later block gets malformed config', async () => {
+      const description = '[spec](https://example.com/spec)'
+      const { issue } = await admin.ok('POST', `/api/projects/${projectId}/issues`, { title: '*Review*', description })
+      await drain()
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('append', 'tracker.set_description', { description: '{{issue.description}}\n\nReviewed: {{issue.title}}' }),
+          block('invalid', 'tracker.set_description', { description: false }),
+          block('recover', 'tracker.comment', { body: 'Invalid description' }),
+        ],
+        edges: [link('t', 'append'), link('append', 'invalid'), link('invalid', 'recover', 'failed')],
+      })
+      const run = await runOn(id, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', append: 'succeeded', invalid: 'failed', recover: 'succeeded' })
+      const expected = { description: `${description}\n\nReviewed: \\*Review\\*` }
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
+    })
+
+    it("hands a Jira ticket's own wiki markup back as Markdown when appending to its description", async () => {
+      const jira = await admin.ok('POST', '/api/connections', {
+        kind: 'jira',
+        name: 'Jira',
+        config: { host: 'https://acme.atlassian.net' },
+        secret: 't',
+      })
+      const { project } = await admin.ok('POST', '/api/projects', {
+        name: 'Jira workflows',
+        trackerConnectionId: jira.connection.id,
+        trackerTeamId: TEAM_ID,
+        scmConnectionId: gitlabId,
+        repos: [REPO],
+        stateMap: STATE_MAP,
+      })
+      const typed = world().addIssue({ title: 'Spec review', description: '# Read *this* first, [spec|https://example.com/spec]' })
+      await applyTrackerIssue(harness.deps, await db()('projects').where({ id: project.id }).first(), typed, { announce: false })
+      const issue = await db()('issues').where({ projectId: project.id, trackerIssueId: typed.id }).first()
+      const id = await publish({
+        nodes: [block('t', 'trigger.manual'), block('append', 'tracker.set_description', { description: '{{issue.description}}\n\nReviewed' })],
+        edges: [link('t', 'append')],
+      })
+      expect((await runOn(id, issue.id)).status).toBe('succeeded')
+      expect(world().issues.get(typed.id)?.description).toBe('1. Read **this** first, [spec](https://example.com/spec)\n\nReviewed')
+    })
+
+    it('writes a long built-in ticket title in full and rejects one above the limit', async () => {
+      const { connection } = await admin.ok('POST', '/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
+      const { team } = await admin.ok('POST', '/api/tracker/teams', { connectionId: connection.id, key: 'WF', name: 'Workflows' })
+      const { project } = await admin.ok('POST', '/api/projects', {
+        name: 'Built-in workflows',
+        trackerConnectionId: connection.id,
+        trackerTeamId: team.id,
+        scmConnectionId: gitlabId,
+        repos: [REPO],
+        stateMap: { in_progress: 'in_progress', in_review: 'in_review', done: 'done', blocked: 'blocked' },
+      })
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('long', 'tracker.set_title', { title: 'Updated {{issue.title}}' }),
+          block('over', 'tracker.set_title', { title: '{{issue.title}} {{issue.title}}' }),
+          block('recover', 'tracker.comment', { body: 'Ticket title was too long' }),
+        ],
+        edges: [link('t', 'long'), link('long', 'over'), link('over', 'recover', 'failed')],
+      })
+      const issue = await ticket('x'.repeat(300), project.id)
+      const run = await runOn(id, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', long: 'succeeded', over: 'failed', recover: 'succeeded' })
+      const title = `Updated ${issue.title}`
+      expect(await db()('tickets').where({ id: issue.trackerIssueId }).first()).toMatchObject({ title })
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ title })
+    })
+
+    it('routes an empty rendered title to the failure branch without editing the ticket', async () => {
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('title', 'tracker.set_title', { title: '{{issue.description}}' }),
+          block('recover', 'tracker.comment', { body: 'Ticket title was empty' }),
+        ],
+        edges: [link('t', 'title'), link('title', 'recover', 'failed')],
+      })
+      const issue = await ticket()
+      expect(world().issues.get(issue.trackerIssueId)?.description).toBeFalsy()
+      const run = await runOn(id, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', title: 'failed', recover: 'succeeded' })
+      expect(world().issues.get(issue.trackerIssueId)?.title).toBe(issue.title)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ title: issue.title })
+    })
+
     it('moves status and changes labels in the tracker and the mirror', async () => {
       const id = await publish({
         nodes: [

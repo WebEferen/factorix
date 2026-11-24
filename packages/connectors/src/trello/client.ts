@@ -11,6 +11,7 @@ import type {
   TrackerState,
   TrackerStateType,
   TrackerTeam,
+  UpdateIssueInput,
 } from '../tracker'
 
 // biome-ignore lint/suspicious/noExplicitAny: Trello response bodies, read field by field
@@ -220,6 +221,16 @@ export class TrelloConnector implements TrackerConnector {
     })
     const issue = await this.getIssue(card.id)
     if (!issue) throw new Error('Trello created the card but would not return it')
+    return issue
+  }
+
+  async updateIssue(issueId: string, change: UpdateIssueInput): Promise<TrackerIssue> {
+    if (change.priority !== undefined) throw new Error('Trello cards do not have a priority field')
+    await this.request('PUT', `/cards/${encodeURIComponent(issueId)}`, {
+      body: { name: change.title, desc: change.description === null ? '' : change.description },
+    })
+    const issue = await this.getIssue(issueId)
+    if (!issue) throw new Error('Trello updated the card but would not return it')
     return issue
   }
 

@@ -104,6 +104,17 @@ describe('a ticketless trigger', () => {
     ).toEqual([])
   })
 
+  it.each([
+    ['tracker.set_title', { title: 'New title' }, 'Set ticket title'],
+    ['tracker.set_description', {}, 'Set ticket description'],
+    ['tracker.set_priority', { priority: '2' }, 'Set ticket priority'],
+  ] as const)('rejects %s without a ticket', (type, config, title) => {
+    const slack = block('chat', 'trigger.slack.mention', { connectionId: 'c', channel: 'any' })
+    expect(messages({ nodes: [slack, block('edit', type, config)], edges: [link('chat', 'edit')] })).toEqual([
+      `${title} works on a ticket, and App mentioned starts without one`,
+    ])
+  })
+
   it('can ask an agent, but not have the answer posted on a ticket', () => {
     const slack = block('chat', 'trigger.slack.mention', { connectionId: 'c', channel: 'any' })
     const ask = (post: string) => block('ask', 'agent.prompt', { prompt: '{{steps.chat.text}}', post })
