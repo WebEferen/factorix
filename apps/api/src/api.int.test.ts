@@ -1612,15 +1612,26 @@ describe('API', () => {
         phase: 'implement',
         state: 'succeeded',
         runtime: 'codex',
-        usage: json({ inputTokens: 100_000 }),
       }
       await db('runs').insert([
-        { ...run, costUsd: 0.25, costEstimated: true },
-        { ...run, costUsd: null },
+        { ...run, usage: json({ inputTokens: 100_000 }), costUsd: 0.25, costEstimated: true },
+        { ...run, agentId: agents[1].id, usage: json({ cacheReadTokens: 25 }) },
+        { ...run, agentId: agents[1].id, state: 'queued' },
+        {
+          ...run,
+          agentId: agents[1].id,
+          state: 'failed',
+          usage: json({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+        },
       ])
       const spend = await admin.ok('GET', '/api/spend')
       expect(spend.totalUsd).toBe(0.25)
-      expect(spend.byAgent[0]).toMatchObject({ estimatedCostUsd: 0.25, unpricedRuns: 1 })
+      expect(spend.byAgent[0]).toMatchObject({ key: agent.id, estimatedCostUsd: 0.25, pricedRuns: 1, unpricedRuns: 0 })
+      expect(spend.byAgent.find((row: { key: string }) => row.key === agents[1].id)).toMatchObject({
+        runs: 3,
+        pricedRuns: 0,
+        unpricedRuns: 1,
+      })
     })
   })
 

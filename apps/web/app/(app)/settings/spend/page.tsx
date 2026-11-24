@@ -12,7 +12,7 @@ function Rows({ rows, agent }: { rows: SpendRowDto[]; agent?: boolean }) {
   return (
     <div className="overflow-hidden rounded-lg border border-divider">
       {rows.map((row) => (
-        <div key={row.key} className="flex h-12 items-center gap-3 border-b border-divider px-3 last:border-b-0">
+        <div key={row.key} className="flex min-h-12 items-center gap-3 border-b border-divider px-3 last:border-b-0">
           {agent ? <Avatar name={row.label} agent size={20} /> : null}
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm">{row.label}</div>
@@ -24,8 +24,9 @@ function Rows({ rows, agent }: { rows: SpendRowDto[]; agent?: boolean }) {
           <span className="hidden w-28 text-right text-xs text-ink-2 md:block">
             {compactNumber(row.inputTokens)} in, {compactNumber(row.outputTokens)} out
           </span>
-          <span className="w-20 text-right text-sm">
-            {row.unpricedRuns === row.runs ? 'Unpriced' : money(row.costUsd + row.estimatedCostUsd)}
+          <span className="min-w-24 py-1 text-right text-sm">
+            {row.unpricedRuns > 0 && row.pricedRuns === 0 ? 'Unpriced' : money(row.costUsd + row.estimatedCostUsd)}
+            {row.unpricedRuns > 0 ? <span className="block text-xs text-ink-3">{row.unpricedRuns} unpriced</span> : null}
             {row.estimatedCostUsd > 0 ? <span className="block text-xs text-ink-3">{money(row.estimatedCostUsd)} est.</span> : null}
           </span>
         </div>
@@ -48,7 +49,9 @@ export default function SpendPage() {
       ) : (
         <div className="flex flex-col gap-6">
           <div>
-            <div className="text-2xl font-bold">{unpricedRuns > 0 && data.totalUsd === 0 ? 'Cost unavailable' : money(data.totalUsd)}</div>
+            <div className="text-2xl font-bold">
+              {unpricedRuns > 0 && !data.byAgent.some((row) => row.pricedRuns > 0) ? 'Cost unavailable' : money(data.totalUsd)}
+            </div>
             {unpricedRuns > 0 ? (
               <p className="text-xs text-ink-2">{unpricedRuns === 1 ? '1 run has' : `${unpricedRuns} runs have`} no cost available.</p>
             ) : null}

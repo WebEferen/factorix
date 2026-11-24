@@ -494,6 +494,7 @@ export interface SpendRowDto {
   key: string
   label: string
   runs: number
+  pricedRuns: number
   unpricedRuns: number
   costUsd: number
   estimatedCostUsd: number

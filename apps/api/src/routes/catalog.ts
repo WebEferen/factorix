@@ -251,7 +251,13 @@ export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
           db.raw(`COALESCE(${column}::text, 'none') AS key`),
           db.raw(`COALESCE(${label}, 'Ad-hoc') AS label`),
           db.raw('COUNT(*) AS runs'),
-          db.raw("COUNT(*) FILTER (WHERE runs.cost_usd IS NULL AND runs.usage <> '{}'::jsonb) AS unpriced_runs"),
+          db.raw('COUNT(runs.cost_usd) AS priced_runs'),
+          db.raw(`COUNT(*) FILTER (WHERE runs.cost_usd IS NULL AND GREATEST(
+            (runs.usage->>'inputTokens')::bigint,
+            (runs.usage->>'outputTokens')::bigint,
+            (runs.usage->>'cacheReadTokens')::bigint,
+            (runs.usage->>'cacheWriteTokens')::bigint
+          ) > 0) AS unpriced_runs`),
           db.raw('COALESCE(SUM(runs.cost_usd) FILTER (WHERE NOT runs.cost_estimated), 0) AS cost_usd'),
           db.raw('COALESCE(SUM(runs.cost_usd) FILTER (WHERE runs.cost_estimated), 0) AS estimated_cost_usd'),
           db.raw(`COALESCE(SUM((runs.usage->>'inputTokens')::bigint), 0) AS input_tokens`),
@@ -264,6 +270,7 @@ export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
         key: String(row.key),
         label: String(row.label),
         runs: Number(row.runs),
+        pricedRuns: Number(row.pricedRuns),
         unpricedRuns: Number(row.unpricedRuns),
         costUsd: Number(row.costUsd),
         estimatedCostUsd: Number(row.estimatedCostUsd),
