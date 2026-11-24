@@ -292,18 +292,8 @@ class RunExecution {
         this.log('info', 'Worker reattached to the running container.')
         return handle
       }
-      if (this.run.cancelRequestedAt) {
-        await this.finalize(null)
-        return null
-      }
-      if (this.run.state !== 'preparing') {
-        await this.finish({
-          state: 'failed',
-          outcome: 'failed',
-          result: 'failed',
-          error: { code: 'runtime_crash', message: 'The agent container disappeared while the worker was away.' },
-          retryable: true,
-        })
+      if (this.run.cancelRequestedAt || this.run.state !== 'preparing') {
+        await this.finalize(null, true)
         return null
       }
     }
@@ -777,9 +767,20 @@ class RunExecution {
     await this.deps.redis.publish(orgChannel(this.run.orgId), JSON.stringify({ kind: 'run', id: this.run.id, projectId: this.run.projectId }))
   }
 
-  private async finalize(handle: AgentHandle | null): Promise<void> {
+  private async finalize(handle: AgentHandle | null, missingContainer = false): Promise<void> {
+    // Enter finalizing before reading the request so a run cancellation accepted during reattach is visible here.
     await this.setState('finalizing', { sessionRef: this.run.sessionRef })
     const cancellation = await this.deps.db<RunRow>('runs').where({ id: this.run.id }).first('cancelRequestedAt', 'discardOnCancel')
+    if (missingContainer && !cancellation?.cancelRequestedAt) {
+      await this.finish({
+        state: 'failed',
+        outcome: 'failed',
+        result: 'failed',
+        error: { code: 'runtime_crash', message: 'The agent container disappeared while the worker was away.' },
+        retryable: true,
+      })
+      return
+    }
     this.run.discardOnCancel = cancellation?.discardOnCancel ?? this.run.discardOnCancel
     const done = this.doneEvent
     let outcome: RunOutcome = done?.outcome ?? 'failed'

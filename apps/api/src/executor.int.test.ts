@@ -99,28 +99,50 @@ it('rejects cancellation of finished runs and accepts repeated cancellation', as
   }
 })
 
-it.each([false, true])('recovers cancellation when the container is gone (requested during reattach: %s)', async (duringReattach) => {
+it.each([
+  { duringReattach: false, discard: false },
+  { duringReattach: true, discard: false },
+  { duringReattach: true, discard: true },
+])('recovers cancellation and respects partial work choices ($duringReattach, $discard)', async ({ duringReattach, discard }) => {
   const harness = await createHarness({ databaseUrl: inject('databaseUrl'), redisUrl: inject('redisUrl') })
   const { db, redis } = harness.deps
   const subscriber = redis.duplicate()
   try {
     const { admin, run } = await createRun(harness)
     const containerId = 'removed-container'
-    await db('runs').where({ id: run.id }).update({ state: 'running', containerId })
-    const cancel = () => admin.ok('POST', `/api/runs/${run.id}/cancel`, {})
-    if (!duringReattach) expect(await cancel()).toEqual({ ok: true })
+    await db('runs').where({ id: run.id }).update({ state: 'running', phase: 'implement', containerId })
+    const cancel = async () => {
+      const url = `/api/runs/${run.id}/cancel`
+      expect(await admin.ok('POST', url, { discard })).toEqual({ ok: true })
+      expect(await admin.ok('POST', url, {})).toEqual({ ok: true })
+    }
+    if (!duringReattach) await cancel()
+    const runStep = vi.fn(async (_workspace, { op }: StepRequest) => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      values: op === 'bundle' ? { CHANGED: '1' } : {},
+    }))
     const sandbox = {
       ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }),
       reattach: vi.fn(async () => {
-        if (duringReattach) expect(await cancel()).toEqual({ ok: true })
+        if (duringReattach) await cancel()
         return null
       }),
       remove: async () => undefined,
-      runStep: async () => ({ exitCode: 0, stdout: '', stderr: '', values: {} }),
+      runStep,
     }
     await executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'test-worker', subscriber }, run.id)
     expect(sandbox.reattach).toHaveBeenCalledWith(containerId)
-    expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
+    expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({
+      state: 'cancelled',
+      outcome: 'cancelled',
+      error: null,
+      discardOnCancel: discard,
+    })
+    expect(await db('run_commands').where({ runId: run.id })).toHaveLength(1)
+    if (discard) expect(runStep).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: 'push' }))
+    else expect(runStep).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: 'push' }))
   } finally {
     subscriber.disconnect()
     await harness.destroy()
