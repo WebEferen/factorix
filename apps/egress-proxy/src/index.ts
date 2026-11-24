@@ -53,8 +53,12 @@ const backing = storeUrl
 
 const server = createEgressProxy({
   store: backing.store,
-  anthropicUpstream: process.env.FACTORIX_ANTHROPIC_UPSTREAM,
-  openaiUpstream: process.env.FACTORIX_OPENAI_UPSTREAM,
+  upstreams: Object.fromEntries(
+    Object.entries(process.env).flatMap(([name, value]) => {
+      const provider = /^FACTORIX_([A-Z0-9_]+)_UPSTREAM$/.exec(name)?.[1]
+      return provider && value ? [[provider.toLowerCase(), value]] : []
+    }),
+  ),
   protectedHosts: (process.env.FACTORIX_PROXY_PROTECTED_HOSTS ?? 'postgres,redis,migrate,api,worker,web,preview-gateway')
     .split(',')
     .map((host) => host.trim())

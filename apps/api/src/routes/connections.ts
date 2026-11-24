@@ -1,4 +1,5 @@
 import { type ConnectionRow, json } from '@factorix/db'
+import { isModelProvider } from '@factorix/runtime'
 import { connectionInput, connectionUpdateInput, NOTIFICATION_KINDS, ticketBoardInput } from '@factorix/schemas'
 import type { FastifyInstance } from 'fastify'
 import type { AppDeps } from '../deps'
@@ -6,9 +7,19 @@ import { connectionDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth } from '../lib/auth'
 import { badRequest, conflict, isForeignKeyViolation, isUniqueViolation, parseBody } from '../lib/errors'
-import { connectionUses, encodeSecret, getConnection, notifierFor, scmFor, trackerFor, withWebhookSecret } from '../services/connections'
+import {
+  connectionUses,
+  decryptConnection,
+  encodeSecret,
+  getConnection,
+  notifierFor,
+  scmFor,
+  trackerFor,
+  withWebhookSecret,
+} from '../services/connections'
 import { secretSourceFor } from '../services/environments'
 import { pluginConnectionValues, secretsOf } from '../services/plugins'
+import { testModelKey } from '../services/provider-models'
 import { readSettings } from '../services/settings'
 import { FactorixTracker } from '../services/tickets'
 
@@ -140,6 +151,11 @@ export function connectionRoutes(app: FastifyInstance, deps: AppDeps): void {
       if (connection.kind === 'doppler') {
         const viewer = await (await secretSourceFor(deps, account.orgId, connection.id)).viewer()
         return { ok: true, message: `Connected to Doppler as ${viewer.name}` }
+      }
+      if (isModelProvider(connection.kind)) {
+        const key = decryptConnection(deps, connection)
+        if (!key) return { ok: false, message: 'This connection has no API key' }
+        return { ok: true, message: await testModelKey(deps, connection.kind, key) }
       }
       return { ok: true, message: 'Nothing to test for this kind of connection yet' }
     } catch (error) {

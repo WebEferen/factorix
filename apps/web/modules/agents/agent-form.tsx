@@ -1,5 +1,6 @@
 'use client'
 
+import { isModelProvider } from '@factorix/runtime'
 import { type AgentDto, MAX_AGENT_HELPERS, type RuntimeDto } from '@factorix/schemas'
 import { Plus, Trash2, TriangleAlert } from 'lucide-react'
 import Link from 'next/link'
@@ -105,7 +106,10 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
     { value: DEFAULT_CHOICE, label: "The agent's own model" },
     ...models.map((item) => ({ value: item.id, label: item.label, hint: item.description ?? undefined })),
   ]
-  const attachable = connections?.connections.filter((connection) => ['mcp_stdio', 'mcp_http', 'anthropic', 'openai'].includes(connection.kind)) ?? []
+  const attachable =
+    connections?.connections.filter(
+      (connection) => connection.kind === 'mcp_stdio' || connection.kind === 'mcp_http' || isModelProvider(connection.kind),
+    ) ?? []
 
   const accountsOf = (role: 'scm' | 'tracker') => connections?.connections.filter((connection) => connection.accountRole === role) ?? []
   const accountChoice = (role: 'scm' | 'tracker') =>

@@ -199,6 +199,40 @@ describe('API', () => {
       await refreshRuntimeModels({ db: harness.deps.db, sandbox: { listRuntimeModels: async () => ({}) } })
       expect((await claude())?.models.map((model) => model.id)).toEqual(['claude-next'])
     })
+
+    it('adds newer models the organization’s own key can run, and tests that key with a call to the newest', async () => {
+      await refreshRuntimeModels({
+        db: harness.deps.db,
+        sandbox: { listRuntimeModels: async () => ({ claude: { defaultModel: 'claude-opus-5-5', models: [opus] } }) },
+      })
+      harness.world.providerModels.anthropic = [
+        { id: 'claude-opus-5-6', label: 'Claude Opus 5.6' },
+        { id: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+        { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+      ]
+      expect((await claude())?.models.map((model) => model.id)).toEqual(['claude-opus-5-5'])
+      expect(harness.world.modelCalls).toEqual([])
+
+      const { connection } = await admin.ok('POST', '/api/connections', { kind: 'anthropic', name: 'Model key', secret: 'sk-ant-test' })
+      const models = (await claude())?.models
+      expect(models?.map((model) => [model.id, model.label])).toEqual([
+        ['claude-opus-5-6', 'Claude Opus 5.6'],
+        ['claude-opus-5-5', 'Opus 5.5'],
+      ])
+      expect(models?.[0]?.efforts).toEqual(['low', 'max'])
+      await claude()
+      expect(harness.world.modelCalls).toEqual(['anthropic'])
+
+      expect(await admin.ok('POST', `/api/connections/${connection.id}/test`)).toEqual({
+        ok: true,
+        message: 'Connected to Anthropic: claude-opus-5-6 answered, and 3 models are available',
+      })
+      expect(harness.world.pinged).toEqual(['claude-opus-5-6'])
+      harness.world.pingRefusal = 'Anthropic answered 400 when claude-opus-5-6 was asked to answer: Your credit balance is too low'
+      expect(await admin.ok('POST', `/api/connections/${connection.id}/test`)).toEqual({ ok: false, message: harness.world.pingRefusal })
+      harness.world.pingRefusal = null
+      await admin.ok('DELETE', `/api/connections/${connection.id}`)
+    })
   })
 
   describe('agents', () => {

@@ -1,5 +1,6 @@
 'use client'
 
+import { MODEL_PROVIDER_IDS, MODEL_PROVIDERS, type ModelProviderId } from '@factorix/runtime'
 import type { ConnectionDto } from '@factorix/schemas'
 import { Bot, CheckCircle2, CircleAlert, GitBranch, GitPullRequest, Hash, KeyRound, Plug, Plus, Puzzle, SquareKanban, Vault } from 'lucide-react'
 import { type FormEvent, Fragment, type ReactNode, useEffect, useState } from 'react'
@@ -10,7 +11,31 @@ import { timeAgo } from '@/modules/lib/format'
 import { PluginFields } from '@/modules/plugins/fields'
 import { Button, Card, Chip, CopyField, Dialog, DialogFooter, ErrorState, Field, Input, ListSkeleton, Select, Textarea } from '@/modules/ui'
 
-const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: React.ReactNode; secret: string; placeholder?: string }> = {
+interface KindInfo {
+  label: string
+  hint: string
+  icon: React.ReactNode
+  secret: string
+  placeholder?: string
+}
+
+const MODEL_KINDS = Object.fromEntries(
+  MODEL_PROVIDER_IDS.map((id) => {
+    const provider = MODEL_PROVIDERS[id]
+    return [
+      id,
+      {
+        label: provider.label,
+        hint: `API key for agents that run on ${provider.label}`,
+        icon: <Bot />,
+        secret: 'API key',
+        placeholder: provider.keyPlaceholder,
+      },
+    ]
+  }),
+) as Record<ModelProviderId, KindInfo>
+
+const KINDS: Record<ConnectionDto['kind'], KindInfo> = {
   linear: {
     label: 'Linear',
     hint: 'Tracker: projects, issues, comments, webhooks',
@@ -51,8 +76,7 @@ const KINDS: Record<ConnectionDto['kind'], { label: string; hint: string; icon: 
       'Personal access token: classic with repo, or fine-grained with write on contents, pull requests, and webhooks, and read on checks, statuses, and actions',
     placeholder: 'ghp_... or github_pat_...',
   },
-  anthropic: { label: 'Anthropic', hint: 'API key for Claude agents', icon: <Bot />, secret: 'API key', placeholder: 'sk-ant-...' },
-  openai: { label: 'OpenAI', hint: 'API key for Codex agents', icon: <Bot />, secret: 'API key', placeholder: 'sk-...' },
+  ...MODEL_KINDS,
   mcp_http: {
     label: 'MCP server (HTTP)',
     hint: 'A tool server agents reach over HTTP. The egress proxy adds its headers, so agents never see them',
@@ -420,7 +444,7 @@ const TABS: Record<'connections' | 'services', { title: string; description: str
         icon: <GitBranch />,
         kinds: ['gitlab', 'github'],
       },
-      { title: 'Models', description: 'API keys agents run on', icon: <Bot />, kinds: ['anthropic', 'openai'] },
+      { title: 'Models', description: 'API keys agents run on', icon: <Bot />, kinds: [...MODEL_PROVIDER_IDS] },
     ],
   },
   services: {

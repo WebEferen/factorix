@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
-import { resolveModelKey } from './services/connections'
+import { resolveModelProvider } from './services/connections'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
 
 const SETUP = { orgName: 'Acme', name: 'Ada', email: 'ada@example.com', password: 'correct horse battery' }
@@ -130,10 +130,10 @@ describe('organizations', () => {
   it('spend the keys in the environment only for the first organization', async () => {
     const deps = { ...harness.deps, env: { ...harness.deps.env, ANTHROPIC_API_KEY: 'sk-env', OPENAI_API_KEY: 'sk-env-openai' } }
     const agentIn = async (orgId: string) => (await deps.db('agents').where({ orgId }).first()).accountId as string
-    expect(await resolveModelKey(deps, acmeId, await agentIn(acmeId), 'anthropic')).toBe('sk-acme')
-    expect(await resolveModelKey(deps, acmeId, await agentIn(acmeId), 'openai')).toBe('sk-env-openai')
-    expect(await resolveModelKey(deps, betaId, await agentIn(betaId), 'anthropic')).toBeUndefined()
-    expect(await resolveModelKey(deps, betaId, await agentIn(betaId), 'openai')).toBeUndefined()
+    expect(await resolveModelProvider(deps, acmeId, await agentIn(acmeId), 'anthropic')).toEqual({ provider: 'anthropic', key: 'sk-acme' })
+    expect(await resolveModelProvider(deps, acmeId, await agentIn(acmeId), 'openai')).toEqual({ provider: 'openai', key: 'sk-env-openai' })
+    expect(await resolveModelProvider(deps, betaId, await agentIn(betaId), 'anthropic')).toBeUndefined()
+    expect(await resolveModelProvider(deps, betaId, await agentIn(betaId), 'openai')).toBeUndefined()
   })
 
   it('let an admin change what a member may do, and never their own role', async () => {

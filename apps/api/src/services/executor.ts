@@ -8,7 +8,13 @@ import {
   encodeLine,
   estimateCostUsd,
   estimateRunCostUsd,
+  MODEL_DIALECTS,
+  MODEL_PROVIDERS,
+  type ModelDialect,
+  type ModelDialectSpec,
+  type ModelProviderId,
   type Phase,
+  providersSpeaking,
   RUNTIME_CAPABILITIES,
   type RunCommand,
   type RunEvent,
@@ -24,7 +30,7 @@ import { writeAudit } from '../lib/audit'
 import { orgChannel, proxyTokenKey, runCommandChannel, runProxyChannel } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
 import { emit } from '../lib/outbox'
-import { resolveModelKey, scmConnectionFor, scmFor } from './connections'
+import { resolveModelProvider, scmConnectionFor, scmFor } from './connections'
 import { restrictedHosts } from './egress'
 import { PREVIEW_DOMAIN } from './environment-runtime'
 import { definitionOf, getEnvironmentRow } from './environments'
@@ -116,6 +122,8 @@ class RunExecution {
   private forceStop: NodeJS.Timeout | null = null
   private runTimeout: NodeJS.Timeout | null = null
   private proxyToken: string | null = null
+  /** The provider each dialect's SDK calls through the proxy in this run. */
+  private modelProviders: Partial<Record<ModelDialect, ModelProviderId>> = {}
   private mcp: AgentMcp | null = null
   private lostLease = false
   private suspended = false
@@ -342,12 +350,27 @@ class RunExecution {
     const proxy = new URL(env.FACTORIX_PROXY_URL)
     if (!this.proxyToken) {
       this.proxyToken = randomToken(24)
-      const anthropicKey = await resolveModelKey(this.deps, this.run.orgId, this.run.agentId, 'anthropic')
-      const openaiKey = await resolveModelKey(this.deps, this.run.orgId, this.run.agentId, 'openai')
+      const models: Record<string, { upstream: string; auth: string; key: string }> = {}
+      for (const dialect of Object.keys(MODEL_DIALECTS) as ModelDialect[]) {
+        const resolved = await resolveModelProvider(this.deps, this.run.orgId, this.run.agentId, dialect)
+        if (!resolved) continue
+        const { upstream, auth } = MODEL_PROVIDERS[resolved.provider]
+        models[resolved.provider] = { upstream, auth, key: resolved.key }
+        this.modelProviders[dialect] = resolved.provider
+      }
       this.mcp = await agentMcp(this.deps, { run: this.run, project: this.project, proxy: { origin: proxy.origin, token: this.proxyToken } })
       await this.deps.redis.set(
         proxyTokenKey(this.proxyToken),
-        JSON.stringify({ orgId: this.run.orgId, runId: this.run.id, allow: await this.allowlist(), anthropicKey, openaiKey, mcp: this.mcp.grant }),
+        JSON.stringify({
+          orgId: this.run.orgId,
+          runId: this.run.id,
+          allow: await this.allowlist(),
+          models,
+          // What a proxy on a runner not yet updated reads.
+          anthropicKey: models.anthropic?.key ?? null,
+          openaiKey: models.openai?.key ?? null,
+          mcp: this.mcp.grant,
+        }),
         'EX',
         (this.project?.runTimeoutMinutes ?? 90) * 60 + 3600,
       )
@@ -365,11 +388,14 @@ class RunExecution {
       no_proxy: noProxy,
       // Node's built-in fetch ignores the variables above without this, and Corepack downloads Yarn with it.
       NODE_USE_ENV_PROXY: '1',
-      ANTHROPIC_BASE_URL: `${proxy.origin}/anthropic`,
-      ANTHROPIC_API_KEY: this.proxyToken,
-      OPENAI_BASE_URL: `${proxy.origin}/openai/v1`,
-      CODEX_API_KEY: this.proxyToken,
     })
+    for (const [dialect, spec] of Object.entries(MODEL_DIALECTS) as [ModelDialect, ModelDialectSpec][]) {
+      // Without a key the SDK still gets a route, where the proxy says that no key is configured.
+      const provider = this.modelProviders[dialect] ?? providersSpeaking(dialect)[0]
+      if (!provider) continue
+      values[spec.env.baseUrl] = `${proxy.origin}/${provider}${spec.basePath}`
+      for (const name of spec.env.apiKeys) values[name] = this.proxyToken
+    }
     return values
   }
 

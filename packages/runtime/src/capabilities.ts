@@ -1,6 +1,9 @@
+import type { ModelDialect } from './providers/index'
 import type { RuntimeId } from './spec'
 
 export interface RuntimeCapabilities {
+  /** The API its SDK speaks, and so which providers' keys its runs can use. */
+  dialect: ModelDialect | null
   toolApproval: 'per_call' | 'none'
   /** `enforced` means deny rules are applied by the harness, `advisory` means they only steer the prompt. */
   toolPolicy: 'enforced' | 'advisory'
@@ -21,6 +24,7 @@ export interface RuntimeCapabilities {
 
 export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
   claude: {
+    dialect: 'anthropic',
     toolApproval: 'per_call',
     toolPolicy: 'enforced',
     planMode: 'emulated',
@@ -37,6 +41,7 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     mcp: { stdio: true, http: true },
   },
   codex: {
+    dialect: 'openai',
     toolApproval: 'none',
     toolPolicy: 'advisory',
     planMode: 'emulated',
@@ -53,6 +58,7 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     mcp: { stdio: true, http: true },
   },
   scripted: {
+    dialect: null,
     toolApproval: 'per_call',
     toolPolicy: 'advisory',
     planMode: 'emulated',

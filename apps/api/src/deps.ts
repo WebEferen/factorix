@@ -1,16 +1,18 @@
-import type { NotificationConnector, ScmConnector, SecretSourceConnector, TrackerConnector } from '@factorix/connectors'
+import type { NotificationConnector, ProviderModel, ScmConnector, SecretSourceConnector, TrackerConnector } from '@factorix/connectors'
 import {
   DopplerConnector,
   GithubConnector,
   GitlabConnector,
   JiraConnector,
   LinearConnector,
+  listProviderModels,
+  pingProviderModel,
   SlackConnector,
   StoredSecretSource,
   TrelloConnector,
 } from '@factorix/connectors'
 import type { ConnectionRow, Db } from '@factorix/db'
-import type { ScriptedPlan } from '@factorix/runtime'
+import { MODEL_DIALECTS, MODEL_PROVIDERS, type ModelProviderId, type ScriptedPlan } from '@factorix/runtime'
 import type { SandboxProvider } from '@factorix/sandbox'
 import type { Redis } from 'ioredis'
 import type { Env } from './env'
@@ -22,6 +24,10 @@ export interface ConnectorFactory {
   scm(connection: ConnectionRow, secret: string): ScmConnector
   notifier(connection: ConnectionRow, secret: string): NotificationConnector
   secrets(connection: ConnectionRow, secret: string): SecretSourceConnector
+  /** The models a model key can use, as its provider lists them. */
+  models(provider: ModelProviderId, key: string): Promise<ProviderModel[]>
+  /** Fails unless the key can run the model. */
+  pingModel(provider: ModelProviderId, key: string, model: string): Promise<void>
 }
 
 /** Environment-secret connections hold their values as a JSON map, so they are a secret source with nothing to call. */
@@ -59,6 +65,9 @@ export const realConnectors: ConnectorFactory = {
     if (connection.kind !== 'doppler') throw new Error(`${connection.name} is not a secret source`)
     return new DopplerConnector({ token: secret, apiUrl: connection.config.apiUrl as string | undefined })
   },
+  models: (provider, key) => listProviderModels(MODEL_PROVIDERS[provider], key),
+  pingModel: (provider, key, model) =>
+    pingProviderModel(MODEL_PROVIDERS[provider], key, MODEL_DIALECTS[MODEL_PROVIDERS[provider].dialect].ping(model)),
 }
 
 export interface AppDeps {

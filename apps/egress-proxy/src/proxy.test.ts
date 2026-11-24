@@ -82,8 +82,7 @@ describe('egress proxy', () => {
         grant: async (token) => grants.get(token) ?? null,
         denied: (grant, denial) => denials.push({ runId: grant.runId ?? '', ...denial }),
       },
-      anthropicUpstream: `http://127.0.0.1:${upstreamPort}`,
-      openaiUpstream: `http://127.0.0.1:${upstreamPort}/`,
+      upstreams: { anthropic: `http://127.0.0.1:${upstreamPort}`, openai: `http://127.0.0.1:${upstreamPort}/` },
       resolve: async (host) => (host.endsWith('.internal') ? ['10.0.0.5'] : host.endsWith('.public') ? ['8.8.8.8'] : ['127.0.0.1']),
     })
     proxyPort = await listen(proxy)
@@ -96,7 +95,15 @@ describe('egress proxy', () => {
     grants.clear()
     denials.length = 0
     seen.length = 0
-    grants.set('tok', { runId: 'run-1', allow: ['allowed.test'], anthropicKey: 'real-anthropic', openaiKey: 'real-openai' })
+    grants.set('tok', {
+      runId: 'run-1',
+      allow: ['allowed.test'],
+      models: {
+        anthropic: { upstream: 'https://api.anthropic.com', auth: 'x-api-key', key: 'real-anthropic' },
+        openai: { upstream: 'https://api.openai.com', auth: 'bearer', key: 'real-openai' },
+        acme: { upstream: `http://127.0.0.1:${upstreamPort}/api`, auth: 'bearer', key: 'real-acme' },
+      },
+    })
     grants.set('open', { runId: 'run-2', allow: ['*'] })
   })
 
@@ -157,6 +164,21 @@ describe('egress proxy', () => {
       expect(response.status).toBe(200)
       expect(seen[0]?.url).toBe('/v1/responses')
       expect(seen[0]?.headers.authorization).toBe('Bearer real-openai')
+    })
+
+    it('routes a provider only the grant knows, to the upstream the grant names', async () => {
+      const response = await raw('/acme/v1/chat/completions', { authorization: 'Bearer tok' }, '{}')
+      expect(response.status).toBe(200)
+      expect(seen[0]?.url).toBe('/api/v1/chat/completions')
+      expect(seen[0]?.headers.authorization).toBe('Bearer real-acme')
+      expect((await raw('/other/v1/chat/completions', { authorization: 'Bearer tok' }, '{}')).status).toBe(401)
+    })
+
+    it('still serves a grant written before grants named their providers', async () => {
+      grants.set('old', { runId: 'run-0', allow: [], anthropicKey: 'old-anthropic' })
+      expect((await raw('/anthropic/v1/messages', { 'x-api-key': 'old' }, '{}')).status).toBe(200)
+      expect(seen[0]?.headers['x-api-key']).toBe('old-anthropic')
+      expect((await raw('/openai/v1/responses', { authorization: 'Bearer old' }, '{}')).status).toBe(401)
     })
 
     it('does not relay a token the proxy does not know', async () => {

@@ -1,5 +1,6 @@
 import { hasWebhookOf, type NotificationConnector, type ScmConnector, scmServerOf, type TrackerConnector } from '@factorix/connectors'
 import { type ConnectionRow, type Db, json } from '@factorix/db'
+import { MODEL_PROVIDERS, type ModelDialect, type ModelProviderId, providersSpeaking } from '@factorix/runtime'
 import type { ConnectionInput } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { randomToken } from '../lib/crypto'
@@ -137,33 +138,39 @@ export function serializeConfig(config: Record<string, unknown>): string {
   return json(config)
 }
 
-export interface ModelCredential {
-  provider: 'anthropic' | 'openai'
-  apiKey: string
-}
-
 /**
- * Agent-linked connection first, then any org connection of that kind. The keys in the environment belong to whoever
- * runs the installation, so only its first organization falls back to them and no other organization spends them.
+ * The provider a run in this dialect calls, and its key: the agent's own model connection first, then the organization's
+ * oldest connection to a provider that speaks it. The keys in the environment belong to whoever runs the installation, so
+ * only its first organization falls back to them and no other organization spends them.
  */
-export async function resolveModelKey(
+export async function resolveModelProvider(
   deps: Pick<AppDeps, 'db' | 'env' | 'secrets'>,
   orgId: string,
-  agentId: string,
-  provider: 'anthropic' | 'openai',
-): Promise<string | undefined> {
-  const linked = await deps
-    .db<ConnectionRow>('connections')
-    .join('agent_connections', 'connections.id', 'agent_connections.connection_id')
-    .where({ 'connections.org_id': orgId, 'connections.kind': provider, 'agent_connections.agent_id': agentId, 'agent_connections.role': 'model' })
-    .select('connections.*')
-    .first()
-  const row = linked ?? (await deps.db<ConnectionRow>('connections').where({ orgId, kind: provider }).orderBy('created_at').first())
+  agentId: string | null,
+  dialect: ModelDialect,
+): Promise<{ provider: ModelProviderId; key: string } | undefined> {
+  const kinds = providersSpeaking(dialect)
+  const linked = agentId
+    ? await deps
+        .db<ConnectionRow>('connections')
+        .join('agent_connections', 'connections.id', 'agent_connections.connection_id')
+        .where({ 'connections.org_id': orgId, 'agent_connections.agent_id': agentId, 'agent_connections.role': 'model' })
+        .whereIn('connections.kind', kinds)
+        .orderBy('connections.created_at')
+        .select('connections.*')
+        .first()
+    : undefined
+  const row = linked ?? (await deps.db<ConnectionRow>('connections').where({ orgId }).whereIn('kind', kinds).orderBy('created_at').first())
   if (row) {
     const secret = decryptConnection(deps, row)
-    if (secret) return secret
+    if (secret) return { provider: row.kind as ModelProviderId, key: secret }
   }
   const first = await deps.db('organizations').orderBy('created_at').orderBy('id').first('id')
   if (first?.id !== orgId) return undefined
-  return provider === 'anthropic' ? deps.env.ANTHROPIC_API_KEY : deps.env.OPENAI_API_KEY
+  for (const provider of kinds) {
+    const name = MODEL_PROVIDERS[provider].installationKey
+    const key = name ? (deps.env as Record<string, unknown>)[name] : undefined
+    if (typeof key === 'string' && key) return { provider, key }
+  }
+  return undefined
 }

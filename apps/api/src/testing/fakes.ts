@@ -9,6 +9,7 @@ import type {
   NotificationPerson,
   OpenMergeRequestInput,
   Page,
+  ProviderModel,
   ScmConnector,
   ScmDiscussion,
   ScmRepo,
@@ -22,6 +23,7 @@ import type {
   TrackerState,
   TrackerTeam,
 } from '@factorix/connectors'
+import type { ModelProviderId } from '@factorix/runtime'
 import { type ConnectorFactory, storedSecrets } from '../deps'
 
 export const TEAM_ID = 'team-1'
@@ -360,6 +362,12 @@ export class FakeWorld {
 
   /** Doppler configs by `project/config`, the tokens it saw, and a switch to make it fail. */
   dopplerConfigs = new Map<string, Record<string, string>>()
+  /** What each provider lists for a model key. A provider left out answers 401. */
+  providerModels: Partial<Record<ModelProviderId, ProviderModel[]>> = {}
+  modelCalls: ModelProviderId[] = []
+  /** Models pinged, and the refusal a ping meets when set. */
+  pinged: string[] = []
+  pingRefusal: string | null = null
   dopplerTokens: string[] = []
   dopplerError: Error | null = null
 
@@ -400,6 +408,16 @@ export class FakeWorld {
       scm: (_connection, secret) => this.scm(secret),
       notifier: () => this.notifier(),
       secrets: (connection, secret) => (connection.kind === 'generic' ? storedSecrets(secret) : this.doppler(secret)),
+      models: async (provider, key) => {
+        this.modelCalls.push(provider)
+        const listed = this.providerModels[provider]
+        if (!listed || key === 'sk-broken') throw new Error(`${provider} answered 401 when asked for its models`)
+        return listed
+      },
+      pingModel: async (_provider, _key, model) => {
+        this.pinged.push(model)
+        if (this.pingRefusal) throw new Error(this.pingRefusal)
+      },
     }
   }
 }

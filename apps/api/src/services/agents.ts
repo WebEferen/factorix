@@ -1,7 +1,7 @@
 import { accountRoleOf } from '@factorix/connectors'
 import { policyErrorsForRuntime } from '@factorix/core'
 import { type AccountRow, type AgentRow, type Db, json, type SkillRow } from '@factorix/db'
-import { RUNTIME_CAPABILITIES, type RuntimeId } from '@factorix/runtime'
+import { isModelProvider, RUNTIME_CAPABILITIES, type RuntimeId } from '@factorix/runtime'
 import type { AgentDto, AgentInput } from '@factorix/schemas'
 import type { Knex } from 'knex'
 import type { AppDeps } from '../deps'
@@ -106,8 +106,7 @@ async function linkRelations(trx: Knex.Transaction, orgId: string, agentId: stri
   if (input.connectionIds.length > 0) {
     const connections = await trx('connections').where({ orgId }).whereIn('id', input.connectionIds).select('id', 'kind')
     if (connections.length !== new Set(input.connectionIds).size) throw badRequest('One of the connections does not exist')
-    const roleFor = (kind: string) =>
-      accountRoleOf(kind) ?? (kind === 'anthropic' || kind === 'openai' ? 'model' : kind.startsWith('mcp') ? 'mcp' : 'tool')
+    const roleFor = (kind: string) => accountRoleOf(kind) ?? (isModelProvider(kind) ? 'model' : kind.startsWith('mcp') ? 'mcp' : 'tool')
     for (const role of ['scm', 'tracker'] as const) {
       if (connections.filter((connection: { kind: string }) => accountRoleOf(connection.kind) === role).length > 1) {
         throw badRequest(role === 'scm' ? 'An agent can have one git account.' : 'An agent can have one tracker account.')

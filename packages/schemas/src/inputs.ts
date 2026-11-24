@@ -1,3 +1,4 @@
+import { MODEL_PROVIDER_IDS } from '@factorix/runtime'
 import { z } from 'zod'
 import { egressHost } from './egress'
 
@@ -158,8 +159,7 @@ export const CONNECTION_KINDS = [
   'trello',
   'gitlab',
   'github',
-  'anthropic',
-  'openai',
+  ...MODEL_PROVIDER_IDS,
   'mcp_stdio',
   'mcp_http',
   'generic',

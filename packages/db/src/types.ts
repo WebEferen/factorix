@@ -1,5 +1,5 @@
 import type { Autonomy, FactoryState, PipelineCursor, PipelineDefinition, RunState, TrackerStateKey } from '@factorix/core'
-import type { AgentHelper, PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
+import type { AgentHelper, ModelProviderId, PermissionPolicy, RunOutcome, RuntimeCapabilities, RuntimeId, UsageSnapshot } from '@factorix/runtime'
 
 export type ConnectionKind =
   | 'linear'
@@ -7,8 +7,7 @@ export type ConnectionKind =
   | 'trello'
   | 'gitlab'
   | 'github'
-  | 'anthropic'
-  | 'openai'
+  | ModelProviderId
   | 'mcp_stdio'
   | 'mcp_http'
   | 'generic'

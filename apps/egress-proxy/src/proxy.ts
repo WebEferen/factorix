@@ -11,6 +11,13 @@ export interface McpGrant {
   headers: Record<string, string>
 }
 
+/** Where a run's calls to one model provider go, and the key that replaces the run's token there. */
+export interface ModelGrant {
+  upstream: string
+  auth: 'x-api-key' | 'bearer'
+  key: string
+}
+
 export interface ProxyGrant {
   /** The organization the grant was made for. A runner is only told about grants of its own. */
   orgId?: string
@@ -19,6 +26,9 @@ export interface ProxyGrant {
   channel?: string
   /** Exact hostnames, `*.suffix` wildcards, or `*` for any public host. */
   allow: string[]
+  /** The run's model providers by id, reached at /<id>/. */
+  models?: Record<string, ModelGrant>
+  /** All a grant from an older worker holds about models, and what an older proxy reads. */
   anthropicKey?: string | null
   openaiKey?: string | null
   /** The run's MCP servers by name, reached at /mcp/<name>. */
@@ -32,8 +42,8 @@ export interface ProxyStore {
 
 export interface ProxyOptions {
   store: ProxyStore
-  anthropicUpstream?: string
-  openaiUpstream?: string
+  /** Replaces a model provider's upstream, by its id. For tests. */
+  upstreams?: Record<string, string>
   resolve?: (host: string) => Promise<string[]>
   log?: (message: string) => void
   /** Factorix's own services. No grant reaches them, or anything on the networks they share with the proxy. */
@@ -44,6 +54,8 @@ export interface ProxyOptions {
 
 const FENCE_TTL_MS = 30_000
 const MCP_ROUTE = /^\/mcp\/([A-Za-z0-9_-]+)(\/[^?]*)?(\?.*)?$/
+/** A model provider's route, `/<provider id>/<path at its upstream>`. */
+const MODEL_ROUTE = /^\/([a-z][a-z0-9_]{0,39})\/(.*)$/s
 
 function interfaceNetworks(): string[] {
   return Object.values(networkInterfaces()).flatMap((entries) => (entries ?? []).map((entry) => entry.cidr ?? '').filter(Boolean))
@@ -125,9 +137,19 @@ function forwardHeaders(headers: IncomingMessage['headers']): Record<string, str
   return result
 }
 
+const LEGACY_MODELS: Record<string, { field: 'anthropicKey' | 'openaiKey'; upstream: string; auth: ModelGrant['auth'] }> = {
+  anthropic: { field: 'anthropicKey', upstream: 'https://api.anthropic.com', auth: 'x-api-key' },
+  openai: { field: 'openaiKey', upstream: 'https://api.openai.com', auth: 'bearer' },
+}
+
+function modelGrant(grant: ProxyGrant, id: string): ModelGrant | null {
+  if (grant.models && Object.hasOwn(grant.models, id)) return grant.models[id] ?? null
+  const legacy = Object.hasOwn(LEGACY_MODELS, id) ? LEGACY_MODELS[id] : undefined
+  const key = legacy ? grant[legacy.field] : null
+  return legacy && key ? { upstream: legacy.upstream, auth: legacy.auth, key } : null
+}
+
 export function createEgressProxy(options: ProxyOptions): Server {
-  const anthropicUpstream = options.anthropicUpstream ?? 'https://api.anthropic.com'
-  const openaiUpstream = options.openaiUpstream ?? 'https://api.openai.com'
   const log = options.log ?? (() => undefined)
   const resolve = options.resolve ?? (async (host: string) => (await lookup(host, { all: true })).map((entry) => entry.address))
   const protectedHosts = new Set((options.protectedHosts ?? []).map((host) => host.toLowerCase()))
@@ -182,26 +204,20 @@ export function createEgressProxy(options: ProxyOptions): Server {
     options.store.denied(grant, { host, reason })
   }
 
-  const reverse = async (
-    request: IncomingMessage,
-    response: ServerResponse,
-    upstream: string,
-    path: string,
-    keyOf: (grant: ProxyGrant) => string | null | undefined,
-    apply: (headers: Record<string, string | string[]>, key: string) => void,
-    tokenHeader: string | undefined,
-  ) => {
-    const token = tokenHeader?.replace(/^Bearer\s+/i, '')
+  const reverse = async (request: IncomingMessage, response: ServerResponse, provider: string, path: string) => {
+    const token = ((request.headers['x-api-key'] as string | undefined) ?? request.headers.authorization)?.replace(/^Bearer\s+/i, '')
     const grant = token ? await options.store.grant(token) : null
     if (!grant) return send(response, 401, 'Unknown run token')
-    const key = keyOf(grant)
-    if (!key) return send(response, 401, 'No API key is configured for this provider')
+    const model = modelGrant(grant, provider)
+    if (!model) return send(response, 401, 'No API key is configured for this provider')
+    const upstream = options.upstreams?.[provider] ?? model.upstream
     const target = new URL(path, upstream.endsWith('/') ? upstream : `${upstream}/`)
     const headers = forwardHeaders(request.headers)
     delete headers.authorization
     delete headers['x-api-key']
     headers.host = target.host
-    apply(headers, key)
+    if (model.auth === 'x-api-key') headers['x-api-key'] = model.key
+    else headers.authorization = `Bearer ${model.key}`
     const transport = target.protocol === 'https:' ? httpsRequest : httpRequest
     const outbound = transport(target, { method: request.method, headers }, (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode ?? 502, forwardHeaders(upstreamResponse.headers))
@@ -307,33 +323,8 @@ export function createEgressProxy(options: ProxyOptions): Server {
       }
       const route = MCP_ROUTE.exec(url)
       if (route) return mcp(request, response, route[1] ?? '', route[2] ?? '', route[3] ?? '')
-      if (url.startsWith('/anthropic/')) {
-        const header = (request.headers['x-api-key'] as string | undefined) ?? request.headers.authorization
-        return reverse(
-          request,
-          response,
-          anthropicUpstream,
-          url.slice('/anthropic/'.length),
-          (grant) => grant.anthropicKey,
-          (headers, key) => {
-            headers['x-api-key'] = key
-          },
-          header,
-        )
-      }
-      if (url.startsWith('/openai/')) {
-        return reverse(
-          request,
-          response,
-          openaiUpstream,
-          url.slice('/openai/'.length),
-          (grant) => grant.openaiKey,
-          (headers, key) => {
-            headers.authorization = `Bearer ${key}`
-          },
-          request.headers.authorization,
-        )
-      }
+      const model = MODEL_ROUTE.exec(url)
+      if (model) return reverse(request, response, model[1] ?? '', model[2] ?? '')
       if (/^https?:\/\//i.test(url)) return forward(request, response)
       send(response, 404, 'Not a proxy route')
     }

@@ -229,6 +229,7 @@ describe('previews', () => {
     const token = (await redis.get(previewKeys.grant(ready.slug))) as string
     expect(JSON.parse((await redis.get(proxyTokenKey(token))) as string)).toMatchObject({
       channel: `preview:${ready.slug}:proxy`,
+      models: {},
       anthropicKey: null,
       openaiKey: null,
       allow: expect.arrayContaining(['api.stripe.com', 'registry.npmjs.org']),

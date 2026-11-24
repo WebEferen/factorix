@@ -42,7 +42,12 @@ export async function environmentProxyEnv(
   const token = (await redis.get(previewKeys.grant(input.environment.key))) ?? randomToken(24)
   await redis
     .multi()
-    .set(proxyTokenKey(token), JSON.stringify({ ...input.grant, allow: input.allow, anthropicKey: null, openaiKey: null }), 'EX', input.ttlSeconds)
+    .set(
+      proxyTokenKey(token),
+      JSON.stringify({ ...input.grant, allow: input.allow, models: {}, anthropicKey: null, openaiKey: null }),
+      'EX',
+      input.ttlSeconds,
+    )
     .set(previewKeys.grant(input.environment.key), token, 'EX', input.ttlSeconds)
     .exec()
   if (!(await sandbox.joinEnvironment(input.environment, 'egress', EGRESS_ALIAS))) {

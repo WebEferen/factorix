@@ -1,5 +1,6 @@
 'use client'
 
+import { MODEL_PROVIDER_IDS } from '@factorix/runtime'
 import { CheckCircle2, Circle, FolderKanban, Plus } from 'lucide-react'
 import Link from 'next/link'
 import { useConnections, useProjects } from '@/modules/lib/data'
@@ -60,7 +61,7 @@ export default function ProjectsPage() {
                 <Step done={has('gitlab', 'github')} href="/integrations/connections" action="Connect">
                   Connect GitLab or GitHub
                 </Step>
-                <Step done={has('anthropic', 'openai')} href="/integrations/connections" action="Add key">
+                <Step done={has(...MODEL_PROVIDER_IDS)} href="/integrations/connections" action="Add key">
                   Add an Anthropic or OpenAI key
                 </Step>
                 <Step done={false} href="/projects/new" action="Create">

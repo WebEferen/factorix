@@ -9,6 +9,7 @@ import { requireAdmin, requireAuth } from '../lib/auth'
 import { conflict, isForeignKeyViolation, isUniqueViolation, notFound, parseBody } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { createAgent, getAgent, listAgents, updateAgent } from '../services/agents'
+import { providerModelsFor, withNewerModels } from '../services/provider-models'
 import { readSettings } from '../services/settings'
 
 const RUNTIME_LABELS: Record<RuntimeId, { label: string; defaultModel: string | null }> = {
@@ -21,20 +22,23 @@ export function catalogRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { db } = deps
 
   app.get('/api/runtimes', async (request) => {
-    requireAuth(request)
+    const { account } = requireAuth(request)
     const ids: RuntimeId[] = (await readSettings(deps)).allowScriptedRuntime ? ['claude', 'codex', 'scripted'] : ['claude', 'codex']
     const catalogs = await db<RuntimeModelRow>('runtime_models').whereIn('runtime', ids)
     return {
-      runtimes: ids.map((id) => {
-        const catalog = catalogs.find((row) => row.runtime === id)
-        return {
-          id,
-          capabilities: RUNTIME_CAPABILITIES[id],
-          ...RUNTIME_LABELS[id],
-          defaultModel: catalog?.defaultModel ?? RUNTIME_LABELS[id].defaultModel,
-          models: catalog?.models ?? [],
-        }
-      }),
+      // The SDKs in the sandbox image lag behind the providers, so newer models the organization's key can use are added.
+      runtimes: await Promise.all(
+        ids.map(async (id) => {
+          const catalog = catalogs.find((row) => row.runtime === id)
+          return {
+            id,
+            capabilities: RUNTIME_CAPABILITIES[id],
+            ...RUNTIME_LABELS[id],
+            defaultModel: catalog?.defaultModel ?? RUNTIME_LABELS[id].defaultModel,
+            models: withNewerModels(catalog?.models ?? [], await providerModelsFor(deps, account.orgId, id)),
+          }
+        }),
+      ),
     }
   })
 
