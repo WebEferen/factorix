@@ -157,6 +157,7 @@ class RunExecution {
     try {
       await this.loadContext()
       if (this.run.state === 'finalizing') {
+        await this.restoreOutcome()
         await this.finalize(null)
         return
       }
@@ -746,6 +747,16 @@ class RunExecution {
     if (containerId) await this.deps.sandbox.stop(containerId, 5).catch(() => undefined)
     await stopRunServices(this.deps, this.run.id).catch(() => undefined)
     this.handle?.detach()
+  }
+
+  /** A run found in finalizing lost its worker after the agent finished. What it ended with is in its events, stored before finalizing. */
+  private async restoreOutcome(): Promise<void> {
+    const last = (type: 'done' | 'error') => this.deps.db('run_events').where({ runId: this.run.id, type }).orderBy('seq', 'desc').first()
+    const [done, error] = await Promise.all([last('done'), last('error')])
+    if (error) this.lastError = { code: error.payload.code, message: error.payload.message }
+    if (!done) return
+    this.doneEvent = { ...done.payload, seq: done.seq, ts: new Date(done.ts).toISOString(), runId: this.run.id }
+    this.usage = done.payload.usage
   }
 
   private async finalize(handle: AgentHandle | null): Promise<void> {
