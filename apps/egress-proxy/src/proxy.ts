@@ -1,5 +1,5 @@
 import { lookup } from 'node:dns/promises'
-import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
+import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse, STATUS_CODES } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { BlockList, connect, isIP, type Socket } from 'node:net'
 import { networkInterfaces } from 'node:os'
@@ -204,20 +204,33 @@ export function createEgressProxy(options: ProxyOptions): Server {
     options.store.denied(grant, { host, reason })
   }
 
-  const reverse = async (request: IncomingMessage, response: ServerResponse, provider: string, path: string) => {
+  /** Where a call on a model route goes, or why it is refused. The key replaces the run's token in `headers`. */
+  const modelTarget = async (
+    request: IncomingMessage,
+    provider: string,
+    path: string,
+    headers: Record<string, string | string[]>,
+  ): Promise<{ target: URL } | { status: number; message: string }> => {
     const token = ((request.headers['x-api-key'] as string | undefined) ?? request.headers.authorization)?.replace(/^Bearer\s+/i, '')
     const grant = token ? await options.store.grant(token) : null
-    if (!grant) return send(response, 401, 'Unknown run token')
+    if (!grant) return { status: 401, message: 'Unknown run token' }
     const model = modelGrant(grant, provider)
-    if (!model) return send(response, 401, 'No API key is configured for this provider')
+    if (!model) return { status: 401, message: 'No API key is configured for this provider' }
     const upstream = options.upstreams?.[provider] ?? model.upstream
     const target = new URL(path, upstream.endsWith('/') ? upstream : `${upstream}/`)
-    const headers = forwardHeaders(request.headers)
     delete headers.authorization
     delete headers['x-api-key']
     headers.host = target.host
     if (model.auth === 'x-api-key') headers['x-api-key'] = model.key
     else headers.authorization = `Bearer ${model.key}`
+    return { target }
+  }
+
+  const reverse = async (request: IncomingMessage, response: ServerResponse, provider: string, path: string) => {
+    const headers = forwardHeaders(request.headers)
+    const resolved = await modelTarget(request, provider, path, headers)
+    if ('status' in resolved) return send(response, resolved.status, resolved.message)
+    const { target } = resolved
     const transport = target.protocol === 'https:' ? httpsRequest : httpRequest
     const outbound = transport(target, { method: request.method, headers }, (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode ?? 502, forwardHeaders(upstreamResponse.headers))
@@ -332,6 +345,74 @@ export function createEgressProxy(options: ProxyOptions): Server {
       log(`request failed: ${error.message}`)
       if (!response.headersSent) send(response, 500, 'The proxy failed')
       else response.destroy()
+    })
+  })
+
+  // The Codex CLI streams its model calls over a WebSocket on the model route, so the upgrade goes through with the key swapped.
+  server.on('upgrade', (request: IncomingMessage, client: Duplex, head: Buffer) => {
+    client.on('error', () => undefined)
+    let upgraded = false
+    const answer = (status: number, headers: string[], body = '') =>
+      client.end(`HTTP/1.1 ${status} ${STATUS_CODES[status] ?? ''}\r\n${[...headers, 'Connection: close'].join('\r\n')}\r\n\r\n${body}`)
+    const refuse = (status: number, message: string) => {
+      const body = JSON.stringify({ error: { type: 'factorix_egress', message } })
+      answer(status, ['Content-Type: application/json', `Content-Length: ${Buffer.byteLength(body)}`], body)
+    }
+    const url = request.url ?? ''
+    const route = MCP_ROUTE.test(url) ? null : MODEL_ROUTE.exec(url)
+    if (!route) return refuse(404, 'Only model routes take a WebSocket')
+    const run = async () => {
+      const headers: Record<string, string | string[]> = {}
+      for (const [name, value] of Object.entries(request.headers)) {
+        if (value !== undefined && !['keep-alive', 'proxy-authorization', 'proxy-connection'].includes(name)) headers[name] = value
+      }
+      const resolved = await modelTarget(request, route[1] ?? '', route[2] ?? '', headers)
+      if ('status' in resolved) return refuse(resolved.status, resolved.message)
+      const { target } = resolved
+      const outbound = (target.protocol === 'https:' ? httpsRequest : httpRequest)(target, { method: request.method, headers })
+      outbound.on('upgrade', (upstreamResponse: IncomingMessage, upstream: Socket, upstreamHead: Buffer) => {
+        upgraded = true
+        const lines = [`HTTP/1.1 101 ${upstreamResponse.statusMessage || 'Switching Protocols'}`]
+        for (let index = 0; index < upstreamResponse.rawHeaders.length; index += 2) {
+          lines.push(`${upstreamResponse.rawHeaders[index]}: ${upstreamResponse.rawHeaders[index + 1]}`)
+        }
+        client.write(`${lines.join('\r\n')}\r\n\r\n`)
+        if (upstreamHead.length > 0) client.write(upstreamHead)
+        if (head.length > 0) upstream.write(head)
+        upstream.on('error', () => client.destroy())
+        upstream.pipe(client)
+        client.pipe(upstream)
+        client.on('close', () => upstream.destroy())
+        upstream.on('close', () => client.destroy())
+      })
+      // The upstream turned the upgrade down, so the agent sees its answer, such as a refused key.
+      outbound.on('response', (upstreamResponse: IncomingMessage) => {
+        const chunks: Buffer[] = []
+        upstreamResponse.on('data', (chunk: Buffer) => chunks.push(chunk))
+        upstreamResponse.on('end', () => {
+          const body = Buffer.concat(chunks)
+          const type = upstreamResponse.headers['content-type']
+          answer(
+            upstreamResponse.statusCode ?? 502,
+            [...(type ? [`Content-Type: ${type}`] : []), `Content-Length: ${body.length}`],
+            body.toString('utf8'),
+          )
+        })
+      })
+      outbound.on('error', (error) => {
+        log(`upstream ${target.host} failed: ${error.message}`)
+        if (upgraded) client.destroy()
+        else refuse(502, 'The upstream API could not be reached')
+      })
+      client.on('close', () => {
+        if (!upgraded) outbound.destroy()
+      })
+      outbound.end()
+    }
+    run().catch((error: Error) => {
+      log(`upgrade failed: ${error.message}`)
+      if (upgraded) client.destroy()
+      else refuse(500, 'The proxy failed')
     })
   })
 

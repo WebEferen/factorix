@@ -76,6 +76,16 @@ describe('egress proxy', () => {
         setTimeout(() => response.end('data: two\n\n'), 20)
       })
     })
+    upstream.on('upgrade', (request, socket) => {
+      seen.push({ url: request.url ?? '', headers: request.headers, body: '' })
+      if (request.url?.endsWith('/refuse')) {
+        const body = '{"error":{"message":"Incorrect API key"}}'
+        socket.end(`HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n${body}`)
+        return
+      }
+      socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n')
+      socket.on('data', (data) => socket.write(data))
+    })
     upstreamPort = await listen(upstream)
     proxy = createEgressProxy({
       store: {
@@ -125,6 +135,37 @@ describe('egress proxy', () => {
     })
   }
 
+  function websocket(path: string, headers: Record<string, string>): Promise<{ status: number; echo?: string; body?: string }> {
+    return new Promise((resolve, reject) => {
+      const request = httpRequest({
+        host: '127.0.0.1',
+        port: proxyPort,
+        path,
+        headers: {
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+          'sec-websocket-version': '13',
+          'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+          ...headers,
+        },
+      })
+      request.on('upgrade', (response, socket) => {
+        socket.once('data', (data) => {
+          resolve({ status: response.statusCode ?? 0, echo: data.toString('utf8') })
+          socket.destroy()
+        })
+        socket.write('ping')
+      })
+      request.on('response', (response) => {
+        const chunks: Buffer[] = []
+        response.on('data', (chunk) => chunks.push(chunk))
+        response.on('end', () => resolve({ status: response.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+      })
+      request.on('error', reject)
+      request.end()
+    })
+  }
+
   const basic = (token: string) => `Basic ${Buffer.from(`${token}:x`).toString('base64')}`
 
   function tunnel(target: string, token: string | null): Promise<string> {
@@ -164,6 +205,23 @@ describe('egress proxy', () => {
       expect(response.status).toBe(200)
       expect(seen[0]?.url).toBe('/v1/responses')
       expect(seen[0]?.headers.authorization).toBe('Bearer real-openai')
+    })
+
+    it('relays a WebSocket on a model route with the real key, as the Codex CLI streams over one', async () => {
+      expect(await websocket('/openai/v1/responses', { authorization: 'Bearer tok' })).toEqual({ status: 101, echo: 'ping' })
+      expect(seen[0]?.url).toBe('/v1/responses')
+      expect(seen[0]?.headers.authorization).toBe('Bearer real-openai')
+      expect(seen[0]?.headers.upgrade).toBe('websocket')
+    })
+
+    it('passes on an upstream’s refusal of the upgrade, and refuses an unknown token or a route that is not a model’s', async () => {
+      const refused = await websocket('/openai/v1/refuse', { authorization: 'Bearer tok' })
+      expect(refused.status).toBe(401)
+      expect(refused.body).toContain('Incorrect API key')
+      seen.length = 0
+      expect((await websocket('/openai/v1/responses', { authorization: 'Bearer nope' })).status).toBe(401)
+      expect((await websocket('/mcp/docs/rpc', { authorization: 'Bearer tok' })).status).toBe(404)
+      expect(seen).toHaveLength(0)
     })
 
     it('routes a provider only the grant knows, to the upstream the grant names', async () => {
