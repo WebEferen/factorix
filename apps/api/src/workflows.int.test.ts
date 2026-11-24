@@ -303,6 +303,26 @@ describe('workflows', () => {
       expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ ...expected, description: null })
     })
 
+    it('preserves description markup when appending and keeps the edit when a later block gets malformed config', async () => {
+      const description = '[spec](https://example.com/spec)'
+      const { issue } = await admin.ok('POST', `/api/projects/${projectId}/issues`, { title: '*Review*', description })
+      await drain()
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('append', 'tracker.set_description', { description: '{{issue.description}}\n\nReviewed: {{issue.title}}' }),
+          block('invalid', 'tracker.set_description', { description: false }),
+          block('recover', 'tracker.comment', { body: 'Invalid description' }),
+        ],
+        edges: [link('t', 'append'), link('append', 'invalid'), link('invalid', 'recover', 'failed')],
+      })
+      const run = await runOn(id, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', append: 'succeeded', invalid: 'failed', recover: 'succeeded' })
+      const expected = { description: `${description}\n\nReviewed: \\*Review\\*` }
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
+    })
+
     it('writes a long built-in ticket title in full and rejects one above the limit', async () => {
       const { connection } = await admin.ok('POST', '/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
       const { team } = await admin.ok('POST', '/api/tracker/teams', { connectionId: connection.id, key: 'WF', name: 'Workflows' })

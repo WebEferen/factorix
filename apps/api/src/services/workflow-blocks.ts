@@ -229,8 +229,10 @@ export const BLOCK_HANDLERS: Record<ActionBlock, Handler> = {
   }),
 
   'tracker.set_description': onTicket(async (context) => {
-    if (!optional(context.config.description)) return updateTicket(context, { description: null })
-    const description = markdown(context, 'description')
+    const template = context.config.description
+    if (template !== undefined && typeof template !== 'string') throw new Error('The ticket description must be text.')
+    if (!template?.trim()) return updateTicket(context, { description: null })
+    const description = renderTemplate(template, context.values, (value, path) => (path === 'issue.description' ? value : escapeMarkdown(value)))
     if (!description.trim()) throw new Error('The ticket description came out empty. Leave the field blank to clear it.')
     return updateTicket(context, { description })
   }),
