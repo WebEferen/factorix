@@ -581,9 +581,15 @@ class RunExecution {
   }
 
   private armForceStop(): void {
-    if (this.forceStop || !this.run.containerId) return
+    if (this.lostLease || this.forceStop || !this.run.containerId) return
     const containerId = this.run.containerId
-    this.forceStop = setTimeout(() => void this.deps.sandbox.stop(containerId, 5).catch(() => undefined), FORCE_STOP_AFTER_CANCEL_MS)
+    this.forceStop = setTimeout(() => {
+      if (this.lostLease) return
+      void this.deps.sandbox.stop(containerId, 5).catch(() => {
+        // Let the next heartbeat retry if the runner was temporarily unreachable.
+        this.forceStop = null
+      })
+    }, this.deps.timings?.forceStopAfterCancelMs ?? FORCE_STOP_AFTER_CANCEL_MS)
     this.forceStop.unref?.()
   }
 
@@ -839,8 +845,8 @@ class RunExecution {
       error: state === 'failed' ? (this.lastError ?? { code: 'unknown', message: done?.finalText || 'The run failed.' }) : null,
       retryable: code ? RETRYABLE.includes(code) : false,
     })
-    if (state === 'succeeded' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
-    else if (state === 'cancelled' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
+    if ((this.run.state === 'succeeded' || this.run.state === 'cancelled') && this.run.containerId)
+      await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
   }
 
   /** Runs before the issue's lock is released, so it cannot pull a cache out from under the next run's install. */
@@ -872,7 +878,7 @@ class RunExecution {
     if (this.run.containerId) await this.deps.sandbox.stop(this.run.containerId, 5).catch(() => undefined)
   }
 
-  private async finish(input: {
+  private async finish(proposed: {
     state: TerminalState
     outcome: RunOutcome
     result: string
@@ -893,8 +899,14 @@ class RunExecution {
         cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
         turns: this.usage.turns ?? 0,
       })
-    await db.transaction(async (trx) => {
+    this.run.state = await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
+      // Use the same lock order as cancellation so an accepted request wins over a pending terminal update.
+      const run = await trx<RunRow>('runs').where({ id: this.run.id }).forUpdate().first('cancelRequestedAt')
+      const input: typeof proposed =
+        run?.cancelRequestedAt && proposed.state !== 'cancelled'
+          ? { ...proposed, state: 'cancelled', outcome: 'cancelled', result: 'failed', error: null, retryable: false }
+          : proposed
       await trx('runs')
         .where({ id: this.run.id })
         .update({
@@ -939,8 +951,8 @@ class RunExecution {
           })
         }
       }
+      return input.state
     })
-    this.run.state = input.state
     const asked = this.run.trigger as { workflowRunId?: string; nodeId?: string }
     // The workflow sweep settles the step if this is lost.
     if (asked.workflowRunId && asked.nodeId)

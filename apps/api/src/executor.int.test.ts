@@ -1,6 +1,6 @@
 import type { RunRow } from '@factorix/db'
 import { AsyncQueue, EMPTY_USAGE, encodeLine, type RunEventBody } from '@factorix/runtime'
-import type { AgentHandle, SandboxProvider } from '@factorix/sandbox'
+import type { AgentHandle, SandboxProvider, StepRequest } from '@factorix/sandbox'
 import { expect, inject, it, vi } from 'vitest'
 import { executeRun, LEASE_SECONDS } from './services/executor'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
@@ -99,7 +99,7 @@ it('rejects cancellation of finished runs and accepts repeated cancellation', as
   }
 })
 
-it('recovers a pending cancellation when the runner container is gone', async () => {
+it.each([false, true])('recovers cancellation when the container is gone (requested during reattach: %s)', async (duringReattach) => {
   const harness = await createHarness({ databaseUrl: inject('databaseUrl'), redisUrl: inject('redisUrl') })
   const { db, redis } = harness.deps
   const subscriber = redis.duplicate()
@@ -107,10 +107,14 @@ it('recovers a pending cancellation when the runner container is gone', async ()
     const { admin, run } = await createRun(harness)
     const containerId = 'removed-container'
     await db('runs').where({ id: run.id }).update({ state: 'running', containerId })
-    await admin.ok('POST', `/api/runs/${run.id}/cancel`, {})
+    const cancel = () => admin.ok('POST', `/api/runs/${run.id}/cancel`, {})
+    if (!duringReattach) expect(await cancel()).toEqual({ ok: true })
     const sandbox = {
       ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }),
-      reattach: vi.fn(async () => null),
+      reattach: vi.fn(async () => {
+        if (duringReattach) expect(await cancel()).toEqual({ ok: true })
+        return null
+      }),
       remove: async () => undefined,
       runStep: async () => ({ exitCode: 0, stdout: '', stderr: '', values: {} }),
     }
@@ -118,6 +122,69 @@ it('recovers a pending cancellation when the runner container is gone', async ()
     expect(sandbox.reattach).toHaveBeenCalledWith(containerId)
     expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
   } finally {
+    subscriber.disconnect()
+    await harness.destroy()
+  }
+})
+
+it('honors an accepted cancellation when checkout subsequently fails', async () => {
+  const harness = await createHarness({ databaseUrl: inject('databaseUrl'), redisUrl: inject('redisUrl') })
+  const { db, redis } = harness.deps
+  const subscriber = redis.duplicate()
+  try {
+    const { admin, run } = await createRun(harness)
+    await db('runs').where({ id: run.id }).update({ runtime: 'scripted' })
+    const runStep = vi.fn(async (_workspace, { op }: StepRequest) => {
+      if (op === 'checkout') {
+        expect(await admin.ok('POST', `/api/runs/${run.id}/cancel`, {})).toEqual({ ok: true })
+        return { exitCode: 1, stdout: '', stderr: 'Checkout failed', values: {} }
+      }
+      return { exitCode: 0, stdout: '', stderr: '', values: {} }
+    })
+    const sandbox = { ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }), runStep }
+    await executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'test-worker', subscriber }, run.id)
+    expect(runStep).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ op: 'checkout' }))
+    expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
+  } finally {
+    subscriber.disconnect()
+    await harness.destroy()
+  }
+})
+
+it('retries force-stop after a temporary sandbox error', async () => {
+  const harness = await createHarness({ databaseUrl: inject('databaseUrl'), redisUrl: inject('redisUrl') })
+  const { db, redis } = harness.deps
+  const subscriber = redis.duplicate()
+  const lines = new AsyncQueue<string>()
+  let execution: Promise<void> | undefined
+  try {
+    const { admin, run } = await createRun(harness)
+    const containerId = 'unresponsive-container'
+    await db('runs').where({ id: run.id }).update({ state: 'running', containerId })
+    await admin.ok('POST', `/api/runs/${run.id}/cancel`, {})
+    const handle: AgentHandle = {
+      containerId,
+      lines,
+      send: vi.fn(),
+      onStderr: () => undefined,
+      wait: async () => ({ exitCode: 137 }),
+      detach: () => lines.close(),
+    }
+    const sandbox = {
+      ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }),
+      reattach: async () => handle,
+      stop: vi.fn(async () => lines.close()).mockRejectedValueOnce(new Error('Runner temporarily unreachable')),
+      remove: async () => undefined,
+      runStep: async () => ({ exitCode: 0, stdout: '', stderr: '', values: {} }),
+    }
+    const timings = { heartbeatMs: 50, forceStopAfterCancelMs: 25 }
+    execution = executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'test-worker', subscriber, timings }, run.id)
+    await vi.waitFor(() => expect(sandbox.stop).toHaveBeenNthCalledWith(2, containerId, 5), { timeout: 5000 })
+    await execution
+    expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
+  } finally {
+    lines.close()
+    await execution?.catch(() => undefined)
     subscriber.disconnect()
     await harness.destroy()
   }
