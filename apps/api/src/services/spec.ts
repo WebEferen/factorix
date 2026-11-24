@@ -290,6 +290,8 @@ export async function sessionToResume(deps: Pick<AppDeps, 'db'>, run: RunRow): P
   const previous = await deps
     .db<RunRow>('runs')
     .where({ issueId: run.issueId, agentId: run.agentId, runtime: run.runtime })
+    // A session continues only on the plan or key it began on: Codex refuses another provider, and a plan's reasoning belongs to its account.
+    .where({ modelPlan: run.modelPlan ?? null, modelLoginId: run.modelLoginId ?? null })
     .whereIn('phase', ['plan', 'implement', 'address_review'])
     .whereNotNull('sessionRef')
     .whereNot({ id: run.id })

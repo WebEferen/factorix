@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign } from 'node:crypto'
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto'
 import type { ModelLoginRow, RunRow } from '@factorix/db'
 import { AsyncQueue } from '@factorix/runtime'
 import type { AgentHandle, SandboxProvider } from '@factorix/sandbox'
@@ -14,6 +14,7 @@ import {
 } from './services/model-logins'
 import { advanceIssue } from './services/pipeline'
 import { relayDomainEvents } from './services/relay'
+import { sessionToResume } from './services/spec'
 import { TEAM_ID } from './testing/fakes'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
 
@@ -219,6 +220,21 @@ describe('model plans', () => {
     const second = await db()<RunRow>('runs').where({ issueId: issue.id }).orderBy('created_at', 'desc').first()
     expect(second?.id).not.toBe(first?.id)
     expect(second?.createdBy).toBeNull()
+  })
+
+  it('resumes a session only on the plan or key it began on', async () => {
+    const row = (await login()) as ModelLoginRow
+    const { issue } = await admin.ok('POST', `/api/projects/${projectId}/issues`, { title: 'Resume it', assignAgentId: agentId })
+    await relayDomainEvents(harness.deps)
+    const began = (await db()<RunRow>('runs').where({ issueId: issue.id }).first()) as RunRow
+    await db()('runs').where({ id: began.id }).update({ phase: 'implement', state: 'succeeded', sessionRef: 'thread-on-key' })
+    const next: RunRow = { ...began, id: randomUUID(), phase: 'address_review', sessionRef: null, attempt: 1 }
+
+    expect(await sessionToResume(harness.deps, next)).toBe('thread-on-key')
+    expect(await sessionToResume(harness.deps, { ...next, modelPlan: 'chatgpt', modelLoginId: row.id })).toBeUndefined()
+    await db()('runs').where({ id: began.id }).update({ modelPlan: 'chatgpt', modelLoginId: row.id })
+    expect(await sessionToResume(harness.deps, { ...next, modelPlan: 'chatgpt', modelLoginId: row.id })).toBe('thread-on-key')
+    expect(await sessionToResume(harness.deps, next)).toBeUndefined()
   })
 
   it('lets a person disconnect only their own plan, and revokes it', async () => {
