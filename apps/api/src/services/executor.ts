@@ -164,6 +164,7 @@ class RunExecution {
       if (!handle) return
       this.handle = handle
       await this.flushCommands()
+      if (this.run.cancelRequestedAt) this.armForceStop()
       await this.ingest(handle)
       if (this.lostLease) return
       if (this.suspended) return
@@ -729,8 +730,8 @@ class RunExecution {
     const commands = await db('run_commands').where({ runId: this.run.id }).whereNull('deliveredAt').orderBy('id')
     for (const command of commands) {
       handle.send(encodeLine(command.payload))
-      await db('run_commands').where({ id: command.id }).update({ deliveredAt: db.fn.now() })
       if (command.payload.type === 'cancel') this.armForceStop()
+      await db('run_commands').where({ id: command.id }).update({ deliveredAt: db.fn.now() })
     }
   }
 
@@ -749,13 +750,18 @@ class RunExecution {
   }
 
   private async finalize(handle: AgentHandle | null): Promise<void> {
+    await this.setState('finalizing', { sessionRef: this.run.sessionRef })
+    const cancellation = await this.deps.db<RunRow>('runs').where({ id: this.run.id }).first('cancelRequestedAt', 'discardOnCancel')
+    this.run.discardOnCancel = cancellation?.discardOnCancel ?? this.run.discardOnCancel
     const done = this.doneEvent
     let outcome: RunOutcome = done?.outcome ?? 'failed'
     if (!done && handle) {
       const { exitCode } = await handle.wait().catch(() => ({ exitCode: -1 }))
       this.lastError ??= { code: 'runtime_crash', message: `The agent container exited with code ${exitCode} before finishing.` }
     }
-    if (this.timedOut) {
+    if (cancellation?.cancelRequestedAt) {
+      outcome = 'cancelled'
+    } else if (this.timedOut) {
       outcome = 'failed'
       this.lastError = { code: 'timeout', message: 'The run hit its time limit.' }
     } else if (this.budgetExceeded) {
@@ -765,7 +771,6 @@ class RunExecution {
     if (outcome === 'budget_exceeded') this.lastError ??= { code: 'policy', message: 'The agent reached its budget.' }
     if (outcome === 'max_turns') this.lastError ??= { code: 'policy', message: 'The agent reached its turn limit.' }
 
-    await this.setState('finalizing', { sessionRef: this.run.sessionRef })
     const structuredOutput = done?.structuredOutput ?? this.run.structuredOutput
     let result = 'failed'
     let diff: string | undefined

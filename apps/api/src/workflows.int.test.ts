@@ -745,6 +745,16 @@ describe('workflows', () => {
       expect((await refresh(run.id)).status).toBe('cancelled')
     })
 
+    it('cancels a ticket workflow agent run from its run page even without a pipeline cursor', async () => {
+      const issue = await ticket()
+      const run = await runOn(await publish(askFlow({ prompt: 'Wait for cancellation.' })), issue.id)
+      const runId = run.steps.find((item: { nodeId: string }) => item.nodeId === 'p').output.runId
+
+      await admin.ok('POST', `/api/runs/${runId}/cancel`, {})
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled' })
+      expect((await db()('issues').where({ id: issue.id }).first()).lockedByRunId).toBeNull()
+    })
+
     it('fails with a clear reason when a skill is gone or no agent can be found', async () => {
       const issue = await ticket()
       const gone = await runOn(await publish(askFlow({ prompt: 'Hi', skillIds: ['00000000-0000-4000-8000-000000000000'] })), issue.id)
