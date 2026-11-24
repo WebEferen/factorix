@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { EventBuffer } from './services/event-buffer'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
 
@@ -67,14 +67,20 @@ describe('EventBuffer', () => {
     const buffer = new EventBuffer(harness.deps.db, harness.deps.redis, runId, 20, 0)
     const unhandled: unknown[] = []
     const onUnhandled = (reason: unknown) => unhandled.push(reason)
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     process.on('unhandledRejection', onUnhandled)
     try {
       await harness.deps.db.raw('ALTER TABLE run_events ADD CONSTRAINT fail_bg CHECK (seq <> 21)')
       buffer.append({ type: 'log', level: 'info', source: 'worker', message: 'background' })
-      await new Promise((resolve) => setTimeout(resolve, 600))
+      await vi.waitFor(() => expect(logged).toHaveBeenCalledWith(expect.stringContaining(`writing events of run ${runId} failed`)), {
+        timeout: 10_000,
+      })
+      // An unhandled rejection is reported once the microtasks after it have run.
+      await new Promise((resolve) => setImmediate(resolve))
       expect(unhandled).toEqual([])
     } finally {
       process.off('unhandledRejection', onUnhandled)
+      logged.mockRestore()
       await harness.deps.db.raw('ALTER TABLE run_events DROP CONSTRAINT IF EXISTS fail_bg')
     }
     await buffer.flush()
