@@ -95,15 +95,31 @@ for (const item of plan) console.log(`release ${item.name} ${item.version}${item
 if (plan.length === 0 || dryRun) process.exit(0)
 
 const bumped = plan.filter((item) => item.bump)
+const changed = new Set()
 for (const item of bumped) {
   const file = join(item.dir, 'package.json')
   const text = readFileSync(file, 'utf8')
   const next = text.replace(/"version": "[^"]+"/, `"version": "${item.version}"`)
   if (next === text) throw new Error(`No version field in ${file}`)
   writeFileSync(file, next)
+  changed.add(file)
+}
+// Yarn links a workspace only while a dependent's pin matches its version, and otherwise installs the older one from npm.
+for (const dir of workspaces.values()) {
+  const file = join(dir, 'package.json')
+  const text = readFileSync(file, 'utf8')
+  let next = text
+  for (const item of bumped) {
+    const key = item.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    next = next.replace(new RegExp(`("${key}": ")[^"]+"`, 'g'), `$1${item.version}"`)
+  }
+  if (next !== text) {
+    writeFileSync(file, next)
+    changed.add(file)
+  }
 }
 if (bumped.length > 0) {
-  run('git', ['add', ...bumped.map((item) => join(item.dir, 'package.json'))])
+  run('git', ['add', ...changed])
   run('git', ['commit', '--quiet', '-m', `chore: release ${bumped.map((item) => `${item.name} ${item.version}`).join(', ')}`])
 }
 const tags = plan.map((item) => tagOf(item.name, item.version)).filter((tag) => !isCommit(`refs/tags/${tag}`))

@@ -38,11 +38,11 @@ The folder name is the plugin's name: lower case letters, digits, and dashes. `p
   "type": "module",
   "factorix": { "main": "src/main.ts", "database": false },
   "scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" },
-  "dependencies": { "@moxxy/factorix-plugin-sdk": "0.2.0", "tsx": "4.23.15" }
+  "dependencies": { "@moxxy/factorix-plugin-sdk": "0.2.1", "tsx": "4.23.15" }
 }
 ```
 
-A bundled plugin imports only the SDK, never `@factorix/*`. That keeps it a plugin like any other, one that could move to its own server tomorrow. Run `yarn install` once so the workspace links it.
+A bundled plugin imports only the SDK, never `@factorix/*`. That keeps it a plugin like any other, one that could move to its own server tomorrow. Run `yarn install` once so the workspace links it. Yarn links it only while the pin matches the version in `packages/plugin-sdk/package.json`, and otherwise installs an older SDK from npm, so pin that version. The release moves every pin in the repository with it.
 
 ### 2. The plugin
 
