@@ -1,7 +1,23 @@
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { RunSpec } from '@factorix/runtime'
 import { describe, expect, it } from 'vitest'
-import { buildFirstTurn, buildHelperTurn, buildThreadOptions, codexCatalog, mcpServersToConfig } from './codex'
+import { buildFirstTurn, buildHelperTurn, buildThreadOptions, codexCatalog, codexHome, mcpServersToConfig } from './codex'
 import { CodexNormalizer, parseStructuredOutput } from './codex-normalize'
+
+describe('codexHome', () => {
+  it('makes the folder in a home that starts empty, as a run’s does', () => {
+    const homeDir = mkdtempSync(join(tmpdir(), 'fx-codex-home-'))
+    try {
+      expect(codexHome({ homeDir })).toBe(join(homeDir, '.codex'))
+      expect(existsSync(join(homeDir, '.codex'))).toBe(true)
+      expect(codexHome({ homeDir })).toBe(join(homeDir, '.codex'))
+    } finally {
+      rmSync(homeDir, { recursive: true, force: true })
+    }
+  })
+})
 
 describe('codexCatalog', () => {
   const row = (slug: string, priority: number, extra = {}) => ({

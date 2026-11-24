@@ -92,13 +92,19 @@ export function codexCatalog(rows: CodexCatalogRow[]): RuntimeModelCatalog {
   return { defaultModel: null, models }
 }
 
+/** The Codex CLI refuses to start while CODEX_HOME does not exist, and a run's home starts empty. */
+export function codexHome(io: Pick<RunnerIO, 'homeDir'>): string {
+  const home = `${io.homeDir}/.codex`
+  mkdirSync(home, { recursive: true })
+  return home
+}
+
 export class CodexRuntime implements AgentRuntime {
   readonly id = 'codex' as const
 
   /** The Codex SDK has no model list, so this asks the CLI it wraps, which is pinned with it. */
   async listModels(io: RunnerIO): Promise<RuntimeModelCatalog> {
-    const home = `${io.homeDir}/.codex`
-    mkdirSync(home, { recursive: true })
+    const home = codexHome(io)
     const { stdout } = await promisify(execFile)('codex', ['debug', 'models', '--bundled'], {
       env: { ...process.env, CODEX_HOME: home, HOME: io.homeDir },
       maxBuffer: 256 * 1024 * 1024,
@@ -117,7 +123,7 @@ export class CodexRuntime implements AgentRuntime {
   private client(io: RunnerIO, mcpServers: RunSpec['mcpServers'] = {}): Codex {
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value
-    env.CODEX_HOME = `${io.homeDir}/.codex`
+    env.CODEX_HOME = codexHome(io)
     env.HOME = io.homeDir
     return new Codex({
       env,
