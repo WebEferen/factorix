@@ -354,6 +354,17 @@ export class GithubConnector implements ScmConnector {
     }
   }
 
+  /** A later approval from the same account replaces this review, so nothing has to be taken back first. */
+  async requestChanges(repoId: string, iid: number, body: string): Promise<boolean> {
+    try {
+      await this.request('POST', `${this.repo(repoId)}/pulls/${iid}/reviews`, { body: { event: 'REQUEST_CHANGES', body } })
+      return true
+    } catch (error) {
+      if (error instanceof GithubError && [401, 403, 404, 422].includes(error.status)) return false
+      throw error
+    }
+  }
+
   private async logTail(repoId: string, run: Loose): Promise<string | undefined> {
     const output = [run.output?.summary, run.output?.text].filter(Boolean).join('\n')
     if (run.app?.slug !== 'github-actions') return output ? output.slice(-LOG_TAIL_CHARS) : undefined

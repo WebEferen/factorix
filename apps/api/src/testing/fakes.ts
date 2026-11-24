@@ -66,6 +66,7 @@ export class FakeWorld {
   discussions = new Map<number, ScmDiscussion[]>()
   notes: { iid: number; body: string }[] = []
   approvals: number[] = []
+  changeRequests: { iid: number; body: string }[] = []
   merges: number[] = []
   webhooksRegistered: string[] = []
   refuseClose = new Set<number>()
@@ -307,6 +308,10 @@ export class FakeWorld {
       },
       approve: async (_repoId, iid) => {
         this.approvals.push(iid)
+        return false
+      },
+      requestChanges: async (_repoId, iid, body) => {
+        this.changeRequests.push({ iid, body })
         return false
       },
       getCiStatus: async (_repoId, iid) => this.ciByIid.get(iid) ?? this.ci,

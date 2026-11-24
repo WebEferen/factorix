@@ -265,6 +265,7 @@ describe('factory end to end', () => {
     const threads = harness.world.discussions.get(iid) ?? []
     expect(threads[0]?.notes[0]?.body).toContain('Add a heading.')
     expect(threads[0]?.notes[0]?.path).toBe('FACTORIX_DEMO.md')
+    expect(harness.world.changeRequests.map((request) => request.iid)).toEqual([iid])
     expect(harness.world.approvals).toContain(iid)
 
     const runs = await runsOf(issueId)

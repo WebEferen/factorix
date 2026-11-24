@@ -85,7 +85,7 @@ By default every agent shares the project's Linear and GitLab accounts, told apa
 
 To give an agent its own, add another connection under Integrations, Connections, then pick it under Accounts on the agent. Its commits, merge requests, reviews, and comments then use that account. It needs access to the project's repositories, and a GitLab account on another server is ignored with a warning in the run log. Merges, webhooks, polling, and status changes stay on the project's account.
 
-GitLab may refuse a bot's approval of a merge request the same account opened, and the verdict still counts. A separate account for the reviewer avoids that.
+GitHub and GitLab refuse an approval or a change request from the account that opened the merge request, and the verdict still counts. A separate account for the reviewer shows its verdict as a review state.
 
 ### Give an agent work
 

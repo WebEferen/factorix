@@ -438,7 +438,14 @@ export function AgentForm({ agent }: { agent?: AgentDto }) {
           </div>
           <Field
             label="Git account"
-            hint="Its commits, merge requests, and reviews. Merges still use the project’s account. The token never enters the agent’s container."
+            hint={
+              <>
+                Its commits, merge requests, and reviews. Merges still use the project’s account. The token never enters the agent’s container.
+                {archetype?.role === 'reviewer'
+                  ? ' GitHub and GitLab refuse an approval or a change request from the account that opened the merge request, so give a reviewer its own account to see its verdict as a review state.'
+                  : null}
+              </>
+            }
           >
             <Select value={accountChoice('scm')} onChange={(id) => chooseAccount('scm', id)} options={accountOptions('scm')} />
           </Field>

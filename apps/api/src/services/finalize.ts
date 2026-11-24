@@ -4,6 +4,7 @@ import type { Db, IssueRow, ProjectRow, RunRow } from '@factorix/db'
 import type { RunEventBody, RunOutcome } from '@factorix/runtime'
 import type { SandboxProvider, StepResult, Workspace } from '@factorix/sandbox'
 import { emit } from '../lib/outbox'
+import { scmConnectionFor } from './connections'
 import { refreshAfterPush } from './previews'
 import { type LinkedMergeRequest, mergeRequestsOf } from './repos'
 import { syncDiscussions } from './scm-sync'
@@ -344,6 +345,7 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
           message: 'The server refused the approval, which is expected when the same bot authored the merge request. The verdict still counts.',
         })
     }
+    if (output.verdict === 'request_changes') await requestChanges(context, scm, mr)
     await syncDiscussions(db, scm, issue, mr).catch((error: Error) =>
       context.log({ type: 'log', level: 'warn', source: 'finalize', message: `Could not mirror discussions: ${error.message}` }),
     )
@@ -357,6 +359,27 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
     body: `${output.verdict === 'approve' ? 'Approved' : 'Changes requested'}: ${output.summary}`,
   })
   return { result: `verdict:${output.verdict}` }
+}
+
+async function requestChanges(context: FinalizeContext, scm: ScmConnector, mr: LinkedMergeRequest): Promise<void> {
+  const { run, project, agentHandle, db } = context
+  const body = formatScmBody('Changes requested, see the review summary above.', run.id, agentHandle)
+  const requested = await scm.requestChanges(mr.repo.scmRepoId, mr.mrIid, body).catch((error: Error) => {
+    context.log({ type: 'log', level: 'warn', source: 'finalize', message: `Could not request changes: ${error.message}` })
+    return null
+  })
+  if (requested !== false) return
+  const shared = project?.scmConnectionId
+  const account = shared && run.agentId ? await scmConnectionFor(db, shared, run.agentId) : undefined
+  context.log({
+    type: 'log',
+    level: 'info',
+    source: 'finalize',
+    message:
+      account && account.id !== shared
+        ? 'The server refused the change request, so the merge request does not show it as a review state. The verdict still counts.'
+        : 'The server refused the change request, which is expected when the same account opened the merge request. Give the reviewer agent its own git account on its agent page to show its verdict as a review state. The verdict still counts.',
+  })
 }
 
 async function finalizeTask({ db, run, issue, agentHandle, structuredOutput }: FinalizeContext): Promise<FinalizeResult> {

@@ -115,14 +115,20 @@ export function mapCiStatus(status: string | undefined | null): CiStatus {
   }
 }
 
+const REQUEST_CHANGES_MUTATION = `mutation($projectPath: ID!, $iid: String!) {
+  mergeRequestRequestChanges(input: { projectPath: $projectPath, iid: $iid }) { errors }
+}`
+
 export class GitlabConnector implements ScmConnector {
   readonly kind = 'gitlab' as const
   private readonly api: InstanceType<typeof Gitlab<false>>
   private readonly token: string
+  private readonly host: string
 
   constructor(options: { token: string; host?: string }) {
     this.token = options.token
-    this.api = new Gitlab({ token: options.token, host: options.host ?? 'https://gitlab.com' })
+    this.host = options.host ?? 'https://gitlab.com'
+    this.api = new Gitlab({ token: options.token, host: this.host })
   }
 
   gitAuth(): { token: string; username: string } {
@@ -223,6 +229,25 @@ export class GitlabConnector implements ScmConnector {
       if (status === 401 || status === 403 || status === 404 || status === 405) return false
       throw error
     }
+  }
+
+  /** A change request on GitLab carries no text, so the body is left to the note that comes with it. */
+  async requestChanges(repoId: string, iid: number, _body: string): Promise<boolean> {
+    // 404 is GitLab saying this account had no approval to take back.
+    await this.api.MergeRequestApprovals.unapprove(repoId, iid).catch((error: { cause?: { response?: { status?: number } } }) => {
+      if (![401, 403, 404, 405].includes(error.cause?.response?.status ?? 0)) throw error
+    })
+    const project = (await this.api.Projects.show(repoId)) as Loose
+    const response = await fetch(`${this.host}/api/graphql`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${this.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ query: REQUEST_CHANGES_MUTATION, variables: { projectPath: project.path_with_namespace, iid: String(iid) } }),
+    })
+    if (response.status === 401 || response.status === 403) return false
+    if (!response.ok) throw new Error(`GitLab answered ${response.status}`)
+    const result = (await response.json()) as Loose
+    // A server older than the mutation answers with a top-level error, and one that refuses this account lists why.
+    return !result.errors?.length && result.data?.mergeRequestRequestChanges?.errors?.length === 0
   }
 
   async getCiStatus(repoId: string, iid: number): Promise<CiResult> {

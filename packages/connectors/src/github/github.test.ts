@@ -196,6 +196,22 @@ describe('GithubConnector against a stub server', () => {
     expect(last()?.body).toEqual({ event: 'APPROVE' })
   })
 
+  it('requests changes in a review with a body, and still approves after it', async () => {
+    route({ [`POST ${REPO}/pulls/7/reviews`]: { id: 2 } })
+    expect(await github.requestChanges('42', 7, 'See the summary above.')).toBe(true)
+    expect(last()?.body).toEqual({ event: 'REQUEST_CHANGES', body: 'See the summary above.' })
+    expect(await github.approve('42', 7)).toBe(true)
+    expect(last()?.body).toEqual({ event: 'APPROVE' })
+  })
+
+  it('treats a refused change request as a soft failure, and anything else as an error', async () => {
+    const answer = (status: number, body: unknown) => stub.handle((request) => (request.path.endsWith('/reviews') ? { status, body } : undefined))
+    answer(422, { message: 'Unprocessable Entity', errors: ['Can not request changes on your own pull request'] })
+    expect(await github.requestChanges('42', 7, 'x')).toBe(false)
+    answer(502, { message: 'Bad Gateway' })
+    await expect(github.requestChanges('42', 7, 'x')).rejects.toThrow('Bad Gateway')
+  })
+
   it('reads CI from every check and status on the head commit', async () => {
     const ci = async (runs: unknown[], statuses: unknown[]) => {
       route({

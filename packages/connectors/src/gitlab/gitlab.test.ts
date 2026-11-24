@@ -155,6 +155,51 @@ describe('GitlabConnector against a stub REST server', () => {
     expect(await gitlab.approve('42', 7)).toBe(true)
   })
 
+  describe('requesting changes', () => {
+    const UNAPPROVE = '/api/v4/projects/42/merge_requests/7/unapprove'
+    /** Serves the project, the mutation's answer, and the unapprove answer, which is a 404 unless given. */
+    const serve = (graphql: { status?: number; body: unknown }, unapprove?: { status?: number; body: unknown }) =>
+      stub.handle((request) => {
+        if (request.path === '/api/v4/projects/42') return { body: { id: 42, path_with_namespace: 'g/r' } }
+        if (request.path === '/api/graphql') return graphql
+        return request.path === UNAPPROVE ? unapprove : undefined
+      })
+    const answered = (errors: string[]) => ({ body: { data: { mergeRequestRequestChanges: { errors } } } })
+
+    it('takes back this account’s approval and requests changes by project path', async () => {
+      const before = stub.requests.length
+      serve(answered([]), { body: { id: 1 } })
+      expect(await gitlab.requestChanges('42', 7, 'See the summary above.')).toBe(true)
+      const sent = stub.requests.slice(before)
+      expect(sent.some((request) => request.method === 'POST' && request.path === UNAPPROVE)).toBe(true)
+      const mutation = sent.find((request) => request.path === '/api/graphql')
+      expect(mutation?.headers.authorization).toBe('Bearer glpat-test')
+      expect(mutation?.body.query).toContain('mergeRequestRequestChanges')
+      expect(mutation?.body.variables).toEqual({ projectPath: 'g/r', iid: '7' })
+    })
+
+    it('goes on when there was no approval to take back', async () => {
+      serve(answered([]))
+      expect(await gitlab.requestChanges('42', 7, 'x')).toBe(true)
+    })
+
+    it('is a soft failure when GitLab refuses the account or does not know the mutation', async () => {
+      serve(answered(['You must be able to approve this merge request to request changes.']))
+      expect(await gitlab.requestChanges('42', 7, 'x')).toBe(false)
+      serve({ body: { errors: [{ message: "Field 'mergeRequestRequestChanges' doesn't exist on type 'Mutation'" }] } })
+      expect(await gitlab.requestChanges('42', 7, 'x')).toBe(false)
+      serve({ status: 403, body: {} })
+      expect(await gitlab.requestChanges('42', 7, 'x')).toBe(false)
+    })
+
+    it('fails when GitLab breaks', async () => {
+      serve({ status: 500, body: {} })
+      await expect(gitlab.requestChanges('42', 7, 'x')).rejects.toThrow('500')
+      serve(answered([]), { status: 500, body: { message: 'boom' } })
+      await expect(gitlab.requestChanges('42', 7, 'x')).rejects.toThrow()
+    })
+  })
+
   it('reports CI as none, then pending, then failed with job log tails', async () => {
     route({ 'GET /api/v4/projects/42/merge_requests/7/pipelines': [] })
     expect(await gitlab.getCiStatus('42', 7)).toEqual({ status: 'none', failedJobs: [] })

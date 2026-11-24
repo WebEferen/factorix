@@ -85,6 +85,8 @@ Notifications go through `NotificationConnector`, with Slack as the first implem
 
 Agents use the project's connections unless they have their own, linked in `agent_connections` under the roles `scm` and `tracker`. Commits, pushes, merge requests, reviews, and comments follow the agent's account, resolved per run. Merges, webhooks, polling, and status changes stay on the project's account, so a project keeps working if an agent is removed. A repository id only means something on one server, so a git account on another server is ignored with a warning. Tokens stay in step containers either way.
 
+A reviewer's verdict shows on the merge request as a review state, an approval or a change request, and GitHub and GitLab refuse both from the account that opened it. A reviewer needs its own git account for the state to show. Without one, the verdict still counts and its note is still posted.
+
 ## Settings
 
 The environment sets the defaults and `platform_settings` overrides them, one row per setting, read through `readSettings`. Nothing is cached, so a change reaches the API on the next request, and the worker checks every 15 seconds. A stored value that no longer validates falls back to the environment.

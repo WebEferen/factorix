@@ -104,6 +104,11 @@ export interface ScmConnector {
   postNote(repoId: string, iid: number, body: string): Promise<{ noteId: string }>
   /** Resolves to false when the server refuses, which happens when the bot authored the MR. */
   approve(repoId: string, iid: number): Promise<boolean>
+  /**
+   * Marks the merge request as needing changes from this account, so an approval it gave earlier no longer stands. The body goes with it
+   * where the server keeps text. Resolves to false when the server refuses, as it does when the bot authored the MR.
+   */
+  requestChanges(repoId: string, iid: number, body: string): Promise<boolean>
   getCiStatus(repoId: string, iid: number): Promise<CiResult>
   merge(
     repoId: string,
