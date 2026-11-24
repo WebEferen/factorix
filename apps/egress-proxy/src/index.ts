@@ -9,7 +9,13 @@ function redisStore(url: string): { store: ProxyStore; close(): void } {
     store: {
       async grant(token) {
         const raw = await redis.get(`proxy:token:${token}`)
-        return raw ? (JSON.parse(raw) as ProxyGrant) : null
+        if (!raw) return null
+        const grant = JSON.parse(raw) as ProxyGrant
+        // A plan's token lives an hour, so the worker keeps it fresh in its own key and the grant only names the login.
+        for (const model of Object.values(grant.models ?? {})) {
+          if (model.login) model.key = (await redis.get(`model-login:access:${model.login}`)) ?? ''
+        }
+        return grant
       },
       denied(grant, denial) {
         void redis.publish(grant.channel ?? `run:${grant.runId}:proxy`, JSON.stringify(denial)).catch(() => undefined)

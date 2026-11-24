@@ -10,6 +10,8 @@ import {
   agentContainerConfig,
   type ContainerDefaults,
   catalogContainerConfig,
+  claudeConfigDirConfig,
+  claudeLoginContainerConfig,
   environmentNetwork,
   environmentSourceVolume,
   managedLabels,
@@ -306,6 +308,10 @@ export class DockerSandboxProvider implements SandboxProvider {
   }
 
   async startAgent(workspace: Workspace, options: StartAgentOptions): Promise<AgentHandle> {
+    if (options.claudeLogin) {
+      const made = await this.runToExit(claudeConfigDirConfig(workspace, this.defaults), 60)
+      if (made.exitCode !== 0) throw new Error(`Making the Claude config folder exited with ${made.exitCode}: ${made.stderr.slice(-500)}`)
+    }
     const container = await this.docker.createContainer(agentContainerConfig(workspace, options, await this.tenantDefaults(options.isolation)))
     for (const network of options.networks ?? []) await this.docker.getNetwork(network).connect({ Container: container.id })
     const stream = await attachWithStdin(this.docker, container.id, {})
@@ -540,6 +546,36 @@ export class DockerSandboxProvider implements SandboxProvider {
     } finally {
       await container.remove({ force: true }).catch(() => undefined)
     }
+  }
+
+  async startClaudeLogin(volume: string): Promise<AgentHandle> {
+    await this.docker.createVolume({ Name: volume, Labels: { ...managedLabels(this.defaults), 'factorix.login': 'claude' } })
+    const container = await this.docker.createContainer(claudeLoginContainerConfig(volume, ['login', '--claudeai'], this.defaults))
+    const stream = await attachWithStdin(this.docker, container.id, {})
+    const handle = new DockerAgentHandle(container, stream, this.docker.modem)
+    await container.start()
+    return handle
+  }
+
+  async claudeLoginStatus(volume: string): Promise<{ exitCode: number; output: string }> {
+    const result = await this.runToExit(claudeLoginContainerConfig(volume, ['status', '--json'], this.defaults), 60)
+    return { exitCode: result.exitCode, output: result.stdout }
+  }
+
+  async forgetClaudeLogin(volume: string): Promise<void> {
+    try {
+      await this.docker.getVolume(volume).inspect()
+    } catch (error) {
+      if (isNotFound(error)) return
+      throw error
+    }
+    await this.runToExit(claudeLoginContainerConfig(volume, ['logout'], this.defaults), 60)
+    await this.docker
+      .getVolume(volume)
+      .remove()
+      .catch((error) => {
+        if (!isNotFound(error)) throw error
+      })
   }
 
   async removeEnvironmentVolumes(key: string, options: { source: boolean }): Promise<void> {

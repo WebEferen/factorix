@@ -3,7 +3,7 @@ import { type Db, json } from '@factorix/db'
 import type { Knex } from 'knex'
 
 export type DomainEvent =
-  | { type: 'run.enqueue'; runId: string }
+  | { type: 'run.enqueue'; runId: string; delayMs?: number }
   | { type: 'pipeline.advance'; issueId: string; event: PipelineEvent }
   | { type: 'tracker.setState'; issueId: string; key: TrackerStateKey }
   | { type: 'tracker.comment'; issueId: string; template: string; agentHandle?: string; runId?: string; body?: string; step?: string }
@@ -12,7 +12,8 @@ export type DomainEvent =
   | { type: 'scm.revert'; issueId: string }
   | { type: 'run.ping'; runId: string }
   | { type: 'project.sync'; projectId: string }
-  | { type: 'workflow.event'; issueId: string; event: WorkflowEvent }
+  /** `by` is the person whose action in Factorix caused the event. */
+  | { type: 'workflow.event'; issueId: string; event: WorkflowEvent; by?: string | null }
   | { type: 'workflow.advance'; runId: string }
   | { type: 'workflow.step'; runId: string; nodeId: string }
   | { type: 'environment.action'; instanceId: string; action: EnvironmentAction }

@@ -5,9 +5,10 @@ import { BUILTIN_PIPELINE, type PipelineDefinition } from '@factorix/core'
 import { json } from '@factorix/db'
 import { EMPTY_USAGE, type RunEventBody } from '@factorix/runtime'
 import type { SandboxProvider } from '@factorix/sandbox'
-import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { abandonActiveRuns, type ExecutorDeps, executeRun } from './services/executor'
 import { projectRepos } from './services/repos'
+import { MAX_LOST_WORKERS } from './services/retries'
 import { handleScmEvent, mergeIssue, pollOpenMergeRequests, revertIssue } from './services/scm-inbound'
 import { postTrackerComment } from './services/tracker-sync'
 import { TEAM_ID } from './testing/fakes'
@@ -247,6 +248,73 @@ describe('projects with several repositories', () => {
     } finally {
       first.subscriber.disconnect()
       second.subscriber.disconnect()
+    }
+  })
+
+  it('does not reenter finalizing or call the SCM after another worker finishes the run', async () => {
+    const { issueId, runId } = await interruptedRun('Review lease handoff', {
+      type: 'done',
+      outcome: 'completed',
+      finalText: '',
+      sessionRef: 'review',
+      usage: EMPTY_USAGE,
+      structuredOutput: { verdict: 'request_changes', summary: 'Fix the bug.', comments: [] },
+    })
+    const iid = await openMr(issueId, '42')
+    const first = recoveryWorker('paused-worker')
+    const second = recoveryWorker('replacement-worker')
+    const paused = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const ensureWorkspace = first.sandbox.ensureWorkspace
+    first.sandbox.ensureWorkspace = async (key) => {
+      paused.resolve()
+      await resume.promise
+      return ensureWorkspace(key)
+    }
+    const scm = harness.world.scm('y')
+    const listDiscussions = vi.fn(scm.listDiscussions)
+    first.connectors = { ...first.connectors, scm: () => ({ ...scm, listDiscussions }) }
+    // A worker in a different process has its own map of active executions.
+    vi.resetModules()
+    const { executeRun: executeReplacement } = await import('./services/executor')
+    const pending = executeRun(first, runId)
+    try {
+      await paused.promise
+      await db()('runs')
+        .where({ id: runId })
+        .update({ leaseExpiresAt: new Date(0) })
+      await executeReplacement(second, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded', leaseOwner: null })
+
+      resume.resolve()
+      await pending
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded', leaseOwner: null })
+      expect(listDiscussions).not.toHaveBeenCalled()
+      expect(harness.world.notes.filter((note) => note.iid === iid)).toHaveLength(1)
+    } finally {
+      resume.resolve()
+      await pending
+      first.subscriber.disconnect()
+      second.subscriber.disconnect()
+    }
+  })
+
+  it('preserves the lost-worker retry limit even when the runner response was saved', async () => {
+    const { runId } = await interruptedRun(
+      'Review retry limit',
+      { type: 'done', outcome: 'completed', finalText: 'Answered.', sessionRef: 'saved', usage: EMPTY_USAGE },
+      { phase: 'prompt', lostCount: MAX_LOST_WORKERS, leaseOwner: 'lost-worker', leaseExpiresAt: new Date(0) },
+    )
+    const worker = recoveryWorker('last-worker')
+    try {
+      await executeRun(worker, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({
+        state: 'failed',
+        lostCount: MAX_LOST_WORKERS + 1,
+        error: { code: 'runtime_crash' },
+      })
+    } finally {
+      worker.subscriber.disconnect()
     }
   })
 

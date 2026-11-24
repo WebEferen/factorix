@@ -326,7 +326,21 @@ export class RemoteSandboxProvider implements SandboxProvider {
   writeEnvironmentSource(key: string, archive: Buffer): Promise<void> {
     return this.call('writeEnvironmentSource', { key, archive: archive.toString('base64') }, START_TIMEOUT_MS)
   }
+
+  startClaudeLogin(): Promise<AgentHandle> {
+    return Promise.reject(new Error(CLAUDE_LOGIN_LOCAL))
+  }
+
+  claudeLoginStatus(): Promise<{ exitCode: number; output: string }> {
+    return Promise.reject(new Error(CLAUDE_LOGIN_LOCAL))
+  }
+
+  forgetClaudeLogin(): Promise<void> {
+    return Promise.reject(new Error(CLAUDE_LOGIN_LOCAL))
+  }
 }
+
+const CLAUDE_LOGIN_LOCAL = 'A Claude plan sign-in lives on the main machine, never on a runner'
 
 export interface ServeSandboxOptions {
   /** The runner's own stack. Only what carries it is listed, so a worker never cleans up another install on the same Docker host. */

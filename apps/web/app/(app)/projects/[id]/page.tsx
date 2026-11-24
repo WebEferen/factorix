@@ -63,6 +63,8 @@ function ProjectSettings({
     networkAllowlist: project.networkAllowlist.join('\n'),
     networkBypass: project.networkBypass.join('\n'),
     runTimeoutMinutes: String(project.runTimeoutMinutes),
+    retryAttempts: String(project.retryAttempts),
+    retryDelaySeconds: String(project.retryDelaySeconds),
     monthlyBudgetUsd: project.monthlyBudgetUsd?.toString() ?? '',
   })
   const [loading, setLoading] = useState(false)
@@ -110,6 +112,8 @@ function ProjectSettings({
           .map((line) => line.trim())
           .filter(Boolean),
         runTimeoutMinutes: Number(sandbox.runTimeoutMinutes),
+        retryAttempts: Number(sandbox.retryAttempts),
+        retryDelaySeconds: Number(sandbox.retryDelaySeconds),
         monthlyBudgetUsd: sandbox.monthlyBudgetUsd ? Number(sandbox.monthlyBudgetUsd) : null,
       })
       onSaved()

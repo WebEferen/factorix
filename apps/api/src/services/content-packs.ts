@@ -153,11 +153,10 @@ interface Target {
 /** The rows a pack's items point at, as they are now. A deleted one is missing, and so is an archived workflow. */
 async function targetsOf(db: Trx, orgId: string, items: Pick<ContentPackItemRow, 'kind' | 'targetId'>[]): Promise<Map<string, Target>> {
   const ids = (kind: ContentPackItemKind) => items.filter((item) => item.kind === kind).map((item) => item.targetId)
-  const [skills, archetypes, workflows] = await Promise.all([
-    db<SkillRow>('skills').where({ orgId }).whereIn('id', ids('skill')),
-    db<ArchetypeRow>('archetypes').where({ orgId }).whereIn('id', ids('archetype')),
-    db<WorkflowRow>('workflows').where({ orgId }).whereNull('archivedAt').whereIn('id', ids('workflow')),
-  ])
+  // One after another: a transaction is one connection, and pg refuses overlapping queries on it from version 9.
+  const skills = await db<SkillRow>('skills').where({ orgId }).whereIn('id', ids('skill'))
+  const archetypes = await db<ArchetypeRow>('archetypes').where({ orgId }).whereIn('id', ids('archetype'))
+  const workflows = await db<WorkflowRow>('workflows').where({ orgId }).whereNull('archivedAt').whereIn('id', ids('workflow'))
   return new Map([
     ...skills.map((row) => [`skill:${row.id}`, { id: row.id, name: row.name, digest: skillDigest(row) }] as const),
     ...archetypes.map((row) => [`archetype:${row.id}`, { id: row.id, name: row.name, digest: archetypeDigest(row) }] as const),

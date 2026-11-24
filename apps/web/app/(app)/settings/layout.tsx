@@ -11,6 +11,7 @@ const SECTIONS = [
   { href: '/settings/network', label: 'Network' },
   { href: '/settings/runners', label: 'Runners' },
   { href: '/settings/tokens', label: 'API tokens' },
+  { href: '/settings/plans', label: 'Model plans' },
   { href: '/settings/audit', label: 'Audit log' },
   { href: '/settings/spend', label: 'Spend' },
 ]

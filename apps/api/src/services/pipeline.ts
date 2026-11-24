@@ -14,11 +14,20 @@ import { writeAudit } from '../lib/audit'
 import { emit } from '../lib/outbox'
 import { agentRole, buildAgentSnapshot } from './agents'
 import { mergeRequestSnapshot, mergeRequestsOf } from './repos'
+import { retryDelayMs } from './retries'
 
 type Trx = Knex.Transaction
 
-/** Serialized per issue by the row lock, so concurrent webhooks and run completions apply in some order, never interleaved. */
-export async function advanceIssue(db: Db, issueId: string, event: PipelineEvent): Promise<AdvanceResult | null> {
+/**
+ * Serialized per issue by the row lock, so concurrent webhooks and run completions apply in some order, never interleaved.
+ * `by` is the person who started the pass from inside Factorix. Its runs are theirs, so they may run on their own plan.
+ */
+export async function advanceIssue(
+  db: Db,
+  issueId: string,
+  event: PipelineEvent,
+  options: { by?: string | null } = {},
+): Promise<AdvanceResult | null> {
   return db.transaction(async (trx) => {
     const issue = await trx<IssueRow>('issues').where({ id: issueId }).forUpdate().first()
     if (!issue) return null
@@ -31,17 +40,26 @@ export async function advanceIssue(db: Db, issueId: string, event: PipelineEvent
     const result = advance(
       pipeline.definition as PipelineDefinition,
       issue.cursor,
-      { autonomy: project.autonomy, now: new Date().toISOString(), assignedRole },
+      { autonomy: project.autonomy, now: new Date().toISOString(), assignedRole, maxAttempts: project.retryAttempts },
       event,
     )
     if (!result.handled) return result
 
     const patch: Record<string, unknown> = { cursor: json(result.cursor), updatedAt: trx.fn.now() }
+    if (event.type === 'start') {
+      issue.startedBy = options.by ?? null
+      patch.startedBy = issue.startedBy
+    }
     if (result.factoryState && canTransitionIssue(issue.factoryState, result.factoryState)) {
       patch.factoryState = result.factoryState
       const agentResult = agentResultOf(issue.factoryState, result.factoryState)
       if (agentResult)
-        await emit(trx, issue.orgId, { type: 'workflow.event', issueId: issue.id, event: { kind: 'agent.finished', result: agentResult } })
+        await emit(trx, issue.orgId, {
+          type: 'workflow.event',
+          issueId: issue.id,
+          event: { kind: 'agent.finished', result: agentResult },
+          by: issue.startedBy,
+        })
     }
     await trx('issues').where({ id: issue.id }).update(patch)
 
@@ -135,6 +153,7 @@ async function enqueueRun(trx: Trx, issue: IssueRow, project: ProjectRow, action
     return
   }
   const snapshot = await buildAgentSnapshot(trx, agent)
+  const delayMs = action.attempt > 1 ? retryDelayMs(project, action.attempt) : undefined
   const parent =
     action.attempt > 1
       ? await trx<RunRow>('runs').where({ issueId: issue.id, pipelineStep: action.step }).orderBy('created_at', 'desc').first('id')
@@ -150,15 +169,17 @@ async function enqueueRun(trx: Trx, issue: IssueRow, project: ProjectRow, action
       phase: action.phase,
       pipelineStep: action.step,
       attempt: action.attempt,
+      createdBy: issue.startedBy,
       runtime: agent.runtime,
       model: agent.model,
+      notBefore: delayMs === undefined ? null : new Date(Date.now() + delayMs),
     })
     .returning('*')
   if (!run) throw new Error('Run insert returned nothing')
 
   const locked = await trx('issues').where({ id: issue.id }).whereNull('lockedByRunId').update({ lockedByRunId: run.id })
   // A cancelled predecessor is still wrapping up. releaseIssueLock starts this run when it finishes.
-  if (locked > 0) await emit(trx, issue.orgId, { type: 'run.enqueue', runId: run.id })
+  if (locked > 0) await emit(trx, issue.orgId, { type: 'run.enqueue', runId: run.id, delayMs })
   await writeAudit(trx, {
     orgId: issue.orgId,
     actorAccountId: agent.accountId,
@@ -177,7 +198,8 @@ export async function releaseIssueLock(trx: Trx, issueId: string, runId: string)
   const next = await trx<RunRow>('runs').where({ issueId, state: 'queued' }).orderBy('created_at').first()
   if (!next) return
   await trx('issues').where({ id: issueId }).update({ lockedByRunId: next.id })
-  await emit(trx, next.orgId, { type: 'run.enqueue', runId: next.id })
+  const delayMs = next.notBefore ? Math.max(0, new Date(next.notBefore).getTime() - Date.now()) : undefined
+  await emit(trx, next.orgId, { type: 'run.enqueue', runId: next.id, delayMs })
 }
 
 async function createGateApproval(trx: Trx, issue: IssueRow, kind: GateKind, timeoutMinutes: number | undefined): Promise<void> {

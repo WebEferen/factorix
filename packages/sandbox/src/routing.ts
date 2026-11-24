@@ -60,6 +60,19 @@ export class RoutingSandboxProvider implements SandboxProvider {
     return this.local.listRuntimeModels()
   }
 
+  // A Claude sign-in lives on this machine only, so runs on a runner use the organization's key.
+  startClaudeLogin(volume: string): Promise<AgentHandle> {
+    return this.local.startClaudeLogin(volume)
+  }
+
+  claudeLoginStatus(volume: string): Promise<{ exitCode: number; output: string }> {
+    return this.local.claudeLoginStatus(volume)
+  }
+
+  forgetClaudeLogin(volume: string): Promise<void> {
+    return this.local.forgetClaudeLogin(volume)
+  }
+
   async ensureWorkspace(key: string): Promise<Workspace> {
     return (await this.byWorkspace(key)).ensureWorkspace(key)
   }

@@ -10,6 +10,7 @@ import { connectionRoutes } from './routes/connections'
 import { environmentRoutes } from './routes/environments'
 import { issueRoutes } from './routes/issues'
 import { marketRoutes } from './routes/market'
+import { modelLoginRoutes } from './routes/model-logins'
 import { pluginRoutes } from './routes/plugins'
 import { previewRoutes } from './routes/previews'
 import { projectRoutes } from './routes/projects'
@@ -89,6 +90,7 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
   runRoutes(app, deps, fanout)
   runnerRoutes(app, deps)
   settingsRoutes(app, deps)
+  modelLoginRoutes(app, deps)
   webhookRoutes(app, deps)
   workflowRoutes(app, deps)
   return app

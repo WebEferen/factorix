@@ -41,6 +41,7 @@ export const API_TOKEN_SCOPES = [
     label: 'Previews',
     description: 'Start, stop, and open previews. An open preview is the running app, with the secrets its project gives it.',
   },
+  { id: 'plans', label: 'Model plans', description: 'Connect and disconnect your own ChatGPT plan, as fx plan login does.' },
 ] as const
 export type ApiTokenScope = (typeof API_TOKEN_SCOPES)[number]['id']
 const SCOPE_IDS = API_TOKEN_SCOPES.map((scope) => scope.id) as [ApiTokenScope, ...ApiTokenScope[]]
@@ -57,6 +58,21 @@ export const createApiTokenInput = z.object({
   expiresInDays: z.number().int().min(1).max(365).optional(),
 })
 export type CreateApiTokenInput = z.infer<typeof createApiTokenInput>
+
+export const modelPlanStartInput = z.object({
+  /** Where `fx` listens for the browser coming back. Left out, the browser lands on a page the person copies from. */
+  redirectPort: z.number().int().min(1024).max(65535).optional(),
+})
+export type ModelPlanStartInput = z.infer<typeof modelPlanStartInput>
+
+export const modelPlanCompleteInput = z.object({ callbackUrl: z.string().trim().min(1).max(8000) })
+export type ModelPlanCompleteInput = z.infer<typeof modelPlanCompleteInput>
+
+export const modelPlanCodeInput = z.object({ code: z.string().trim().min(1).max(2000) })
+export type ModelPlanCodeInput = z.infer<typeof modelPlanCodeInput>
+
+export const modelPlanSettingsInput = z.object({ enabled: z.boolean() })
+export type ModelPlanSettingsInput = z.infer<typeof modelPlanSettingsInput>
 
 export const createRunnerInput = z.object({ name: z.string().trim().min(1).max(80) })
 export type CreateRunnerInput = z.infer<typeof createRunnerInput>
@@ -301,6 +317,8 @@ export const projectInput = z.object({
   reviewComments: z.enum(['inline', 'summary']).default('inline'),
   runnerId: z.uuid().nullable().default(null),
   runTimeoutMinutes: z.number().int().min(1).max(1440).default(90),
+  retryAttempts: z.number().int().min(1).max(5).default(2),
+  retryDelaySeconds: z.number().int().min(0).max(3600).default(30),
   monthlyBudgetUsd: z.number().positive().nullable().default(null),
   defaultEngineerAgentId: z.uuid().nullable().default(null),
   defaultReviewerAgentId: z.uuid().nullable().default(null),

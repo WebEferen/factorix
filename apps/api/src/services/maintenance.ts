@@ -21,7 +21,7 @@ export async function recoverRuns(deps: Pick<AppDeps, 'db' | 'queues'>): Promise
     .select('id')
   const queuedTooLong = await db<RunRow>('runs')
     .where({ state: 'queued' })
-    .andWhere('created_at', '<', db.raw(`now() - interval '2 minutes'`))
+    .andWhere(db.raw('COALESCE(not_before, created_at)'), '<', db.raw(`now() - interval '2 minutes'`))
     .whereExists(db('issues').whereRaw('issues.id = runs.issue_id AND issues.locked_by_run_id = runs.id'))
     .select('id')
   const bucket = Math.floor(Date.now() / 30_000)

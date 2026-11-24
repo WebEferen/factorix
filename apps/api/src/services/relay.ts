@@ -15,7 +15,7 @@ export async function relayDomainEvents(deps: Pick<AppDeps, 'db' | 'queues' | 'r
       const jobId = `de-${row.id}`
       switch (row.type) {
         case 'run.enqueue':
-          await queues.runsExecute.add('execute', { runId: payload.runId }, { jobId })
+          await queues.runsExecute.add('execute', { runId: payload.runId }, { jobId, delay: payload.delayMs })
           break
         case 'pipeline.advance':
           await queues.pipelineAdvance.add('advance', { issueId: payload.issueId, event: payload.event }, { jobId })
@@ -39,7 +39,7 @@ export async function relayDomainEvents(deps: Pick<AppDeps, 'db' | 'queues' | 'r
           await queues.projectSync.add('import', { projectId: payload.projectId }, { jobId })
           break
         case 'workflow.event':
-          await queues.workflows.add('event', { issueId: payload.issueId, event: payload.event, eventId: jobId }, { jobId })
+          await queues.workflows.add('event', { issueId: payload.issueId, event: payload.event, eventId: jobId, by: payload.by }, { jobId })
           break
         case 'workflow.advance':
           await queues.workflows.add('advance', { runId: payload.runId }, { jobId })

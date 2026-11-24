@@ -13,6 +13,8 @@ import type {
   IssueListDto,
   IssueSortDto,
   MeDto,
+  ModelPlanAttemptDto,
+  ModelPlansDto,
   NetworkSettings,
   NotificationChannelDto,
   NotificationPersonDto,
@@ -108,6 +110,17 @@ export function useGeneralSettings() {
 
 export function useNetworkSettings() {
   return useApi<{ network: NetworkSettings }>('/api/settings/network')
+}
+
+export function useModelPlans() {
+  return useApi<ModelPlansDto>('/api/model-plans')
+}
+
+export function useClaudeLoginAttempt(id: string | null) {
+  return useApi<{ attempt: ModelPlanAttemptDto }>(id ? `/api/model-plans/claude/attempts/${id}` : null, {
+    refreshInterval: (data) => (data?.attempt.status === 'starting' || data?.attempt.status === 'checking' ? 1500 : 0),
+    revalidateOnFocus: false,
+  })
 }
 
 export function useConnections() {

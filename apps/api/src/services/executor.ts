@@ -9,9 +9,11 @@ import {
   estimateCostUsd,
   estimateRunCostUsd,
   MODEL_DIALECTS,
+  MODEL_PLANS,
   MODEL_PROVIDERS,
   type ModelDialect,
   type ModelDialectSpec,
+  type ModelPlanId,
   type ModelProviderId,
   type Phase,
   providersSpeaking,
@@ -36,11 +38,13 @@ import { PREVIEW_DOMAIN } from './environment-runtime'
 import { definitionOf, getEnvironmentRow } from './environments'
 import { EventBuffer } from './event-buffer'
 import { finalizePhase, StepFailed, type WorkRepo } from './finalize'
+import { claudeLoginVolume, noteClaudePlanFailure, planForRun } from './model-logins'
 import { releaseIssueLock } from './pipeline'
 import { answerPluginTool, pluginToolsFor } from './plugin-tools'
 import { answerPreviewTool } from './preview-tool'
 import { agentRedactor } from './redact'
 import { mergeRequestsOf, projectRepos } from './repos'
+import { BREAKDOWNS, MAX_LOST_WORKERS, retryAskedRun } from './retries'
 import { type RunServices, startRunServices, stopRunServices } from './run-services'
 import { readSettings } from './settings'
 import { type AgentMcp, agentMcp, buildRunSpec, readIssueResources, sessionToResume } from './spec'
@@ -52,7 +56,6 @@ const HEARTBEAT_MS = 20_000
 const SUSPEND_AFTER_MS = 20 * 60_000
 const FORCE_STOP_AFTER_CANCEL_MS = 60_000
 const MAX_STDERR_LOG_LINES = 200
-const RETRYABLE: readonly ErrorCode[] = ['rate_limit', 'runtime_crash', 'timeout']
 
 export interface ExecutorDeps extends AppDeps {
   sandbox: SandboxProvider
@@ -69,7 +72,13 @@ async function claimRun(deps: ExecutorDeps, runId: string): Promise<RunRow | nul
     .where({ id: runId })
     .whereNotIn('state', ['succeeded', 'failed', 'cancelled'])
     .where((builder) => builder.whereNull('lease_owner').orWhere('lease_expires_at', '<', deps.db.fn.now()).orWhere('lease_owner', deps.owner))
+    .where((builder) => builder.whereNull('not_before').orWhere('not_before', '<=', deps.db.fn.now()))
     .update({
+      // A lease another worker still held when its time ran out means that worker died with the run. A shutdown hands it over unowned.
+      lostCount: deps.db.raw(
+        `lost_count + CASE WHEN state IN ('preparing', 'running', 'waiting_approval', 'finalizing') AND lease_owner IS NOT NULL AND lease_owner <> ? THEN 1 ELSE 0 END`,
+        [deps.owner],
+      ),
       leaseOwner: deps.owner,
       leaseExpiresAt: deps.db.raw(`now() + interval '${leaseSeconds} seconds'`),
       state: deps.db.raw(`CASE WHEN state IN ('queued', 'suspended') THEN 'preparing' ELSE state END`),
@@ -122,8 +131,8 @@ class RunExecution {
   private forceStop: NodeJS.Timeout | null = null
   private runTimeout: NodeJS.Timeout | null = null
   private proxyToken: string | null = null
-  /** The provider each dialect's SDK calls through the proxy in this run. */
-  private modelProviders: Partial<Record<ModelDialect, ModelProviderId>> = {}
+  /** The provider or plan each dialect's SDK calls through the proxy in this run. */
+  private modelProviders: Partial<Record<ModelDialect, ModelProviderId | ModelPlanId>> = {}
   private mcp: AgentMcp | null = null
   private lostLease = false
   private suspended = false
@@ -156,6 +165,10 @@ class RunExecution {
     await this.deps.subscriber.subscribe(runCommandChannel(this.run.id), runProxyChannel(this.run.id))
     try {
       await this.loadContext()
+      if (this.run.lostCount > MAX_LOST_WORKERS) {
+        await this.giveUp()
+        return
+      }
       const finalizing = this.run.state === 'finalizing'
       if (finalizing || this.run.state === 'running' || this.run.state === 'waiting_approval') {
         await this.restoreOutcome()
@@ -196,7 +209,10 @@ class RunExecution {
     this.lostLease = true
     this.handle?.detach()
     await this.events.flush().catch(() => undefined)
-    await this.deps.db('runs').where({ id: this.run.id, leaseOwner: this.deps.owner }).update({ leaseExpiresAt: this.deps.db.fn.now() })
+    await this.deps
+      .db('runs')
+      .where({ id: this.run.id, leaseOwner: this.deps.owner })
+      .update({ leaseOwner: null, leaseExpiresAt: this.deps.db.fn.now() })
   }
 
   private async loadContext(): Promise<void> {
@@ -354,8 +370,16 @@ class RunExecution {
     const proxy = new URL(env.FACTORIX_PROXY_URL)
     if (!this.proxyToken) {
       this.proxyToken = randomToken(24)
-      const models: Record<string, { upstream: string; auth: string; key: string }> = {}
+      const models: Record<string, { upstream: string; auth: string; key: string; login?: string }> = {}
+      const runDialect = RUNTIME_CAPABILITIES[this.run.runtime].dialect
       for (const dialect of Object.keys(MODEL_DIALECTS) as ModelDialect[]) {
+        const plan = dialect === runDialect ? await this.usePlan(dialect) : null
+        if (plan) {
+          const spec = MODEL_PLANS[plan.plan]
+          if (spec.via === 'proxy') models[plan.plan] = { upstream: spec.upstream as string, auth: 'bearer', key: '', login: plan.loginId }
+          this.modelProviders[dialect] = plan.plan
+          continue
+        }
         const resolved = await resolveModelProvider(this.deps, this.run.orgId, this.run.agentId, dialect)
         if (!resolved) continue
         const { upstream, auth } = MODEL_PROVIDERS[resolved.provider]
@@ -368,7 +392,7 @@ class RunExecution {
         JSON.stringify({
           orgId: this.run.orgId,
           runId: this.run.id,
-          allow: await this.allowlist(),
+          allow: [...(await this.allowlist()), ...(this.cliPlan()?.hosts ?? [])],
           models,
           // What a proxy on a runner not yet updated reads.
           anthropicKey: models.anthropic?.key ?? null,
@@ -396,11 +420,37 @@ class RunExecution {
     for (const [dialect, spec] of Object.entries(MODEL_DIALECTS) as [ModelDialect, ModelDialectSpec][]) {
       // Without a key the SDK still gets a route, where the proxy says that no key is configured.
       const provider = this.modelProviders[dialect] ?? providersSpeaking(dialect)[0]
-      if (!provider) continue
+      // The CLI then signs in from its own store. A key or a base URL here would win over it.
+      if (!provider || (provider === this.run.modelPlan && this.cliPlan())) continue
       values[spec.env.baseUrl] = `${proxy.origin}/${provider}${spec.basePath}`
       for (const name of spec.env.apiKeys) values[name] = this.proxyToken
     }
     return values
+  }
+
+  private cliPlan() {
+    const plan = this.run.modelPlan ? MODEL_PLANS[this.run.modelPlan] : undefined
+    return plan?.via === 'cli' ? plan : undefined
+  }
+
+  /** The author's own plan when the run has one, recorded on the run so its cost is not the organization's. */
+  private async usePlan(dialect: ModelDialect): Promise<{ plan: ModelPlanId; loginId: string } | null> {
+    const pinned = this.workspace ? await this.deps.db('workspace_runners').where({ workspaceKey: this.workspace.key }).first() : undefined
+    const decided = await planForRun(this.deps, this.run, dialect, {
+      networkPolicy: this.project?.networkPolicy ?? null,
+      onRunner: Boolean(pinned?.runnerId),
+    })
+    if (decided && 'skip' in decided) this.log('warn', decided.skip)
+    const use = decided && 'use' in decided ? decided.use : null
+    const next = { modelPlan: use?.plan ?? null, modelLoginId: use?.login.id ?? null }
+    if (next.modelPlan !== (this.run.modelPlan ?? null) || next.modelLoginId !== (this.run.modelLoginId ?? null)) {
+      await this.deps.db('runs').where({ id: this.run.id }).update(next)
+      Object.assign(this.run, next)
+    }
+    if (!use) return null
+    const who = use.login.email ? ` (${use.login.email})` : ''
+    this.log('info', `This run uses its author's own ${MODEL_PLANS[use.plan].label} plan${who}, so the organization pays nothing for it.`)
+    return { plan: use.plan, loginId: use.login.id }
   }
 
   private async allowlist(): Promise<string[]> {
@@ -468,6 +518,10 @@ class RunExecution {
       )
     if (checkout.setupFailures.length > 0)
       notes.push(`The setup command failed in ${checkout.setupFailures.join(', ')}. Some dependencies may be missing.`)
+    const previous =
+      this.run.attempt > 1 && this.run.parentRunId ? await this.deps.db<RunRow>('runs').where({ id: this.run.parentRunId }).first('error') : undefined
+    if (previous?.error)
+      notes.push(`This is attempt ${this.run.attempt}. The previous attempt broke down with this error:\n${previous.error.message.trim()}`)
 
     const warn = (message: string) => this.log('warn', message)
     const redact = await agentRedactor(this.deps, { orgId: this.run.orgId, projectId: this.project?.id ?? null }, warn)
@@ -514,6 +568,11 @@ class RunExecution {
       scripted: this.deps.scriptFor?.(this.run.phase, this.run.attempt),
     })
     resumeSessionRef = undefined
+    if (this.run.modelPlan) {
+      spec.model.plan = this.run.modelPlan
+      // The plan is the author's, with its own limits, so no dollar budget of the organization's applies.
+      spec.model.maxBudgetUsd = undefined
+    }
 
     const options: StartAgentOptions = {
       runId: this.run.id,
@@ -523,6 +582,7 @@ class RunExecution {
       env: withServices(await this.containerEnv(), services.started),
       networks: services.started?.network ? [services.started.network] : undefined,
       isolation: this.isolation(),
+      claudeLogin: this.run.modelPlan === 'claude' && this.run.createdBy ? claudeLoginVolume(this.run.createdBy) : undefined,
       image: this.project?.sandboxImage ?? undefined,
       limits:
         this.project?.limits.memoryMb || this.project?.limits.cpus
@@ -585,13 +645,18 @@ class RunExecution {
     this.forceStop.unref?.()
   }
 
-  private async setState(state: RunRow['state'], extra: Record<string, unknown> = {}): Promise<void> {
-    this.run.state = state
-    await this.deps
+  private async setState(state: RunRow['state'], extra: Record<string, unknown> = {}): Promise<boolean> {
+    const updated = await this.deps
       .db('runs')
-      .where({ id: this.run.id })
+      .where({ id: this.run.id, leaseOwner: this.deps.owner })
       .update({ state, updatedAt: this.deps.db.fn.now(), ...extra })
+    if (!updated) {
+      this.lostLease = true
+      return false
+    }
+    this.run.state = state
     await this.deps.redis.publish(orgChannel(this.run.orgId), JSON.stringify({ kind: 'run', id: this.run.id, projectId: this.run.projectId }))
+    return true
   }
 
   private async ingest(handle: AgentHandle): Promise<void> {
@@ -609,7 +674,7 @@ class RunExecution {
       const { seq: _seq, ts: _ts, runId: _runId, ...body } = event
       this.events.append(body as never)
       await this.onEvent(event)
-      if (event.type === 'done') break
+      if (event.type === 'done' || this.lostLease) break
     }
     await this.events.flush()
   }
@@ -647,7 +712,9 @@ class RunExecution {
         await this.onUsage(event)
         break
       case 'error':
-        this.lastError = { code: event.code, message: event.message }
+        this.lastError = { code: event.code, message: planErrorMessage(this.run.modelPlan, event.message) }
+        if (event.code === 'auth' && this.run.modelPlan === 'claude' && this.run.modelLoginId)
+          await noteClaudePlanFailure(this.deps.db, this.run.modelLoginId, event.message)
         break
       case 'done':
         this.doneEvent = event
@@ -679,8 +746,8 @@ class RunExecution {
   private async onUsage(event: Extract<RunEvent, { type: 'usage' }>): Promise<void> {
     const { db } = this.deps
     this.usage = event
-    const estimated = event.costUsd === undefined
-    const cost = event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event)
+    const estimated = !this.run.modelPlan && event.costUsd === undefined
+    const cost = this.run.modelPlan ? null : (event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event))
     await db('runs')
       .where({ id: this.run.id })
       .update({
@@ -745,11 +812,24 @@ class RunExecution {
     this.waitingSince = null
     this.log('info', 'No decision yet, so the container is stopping. The run resumes when someone decides.')
     await this.events.flush()
-    await this.setState('suspended', { leaseOwner: null, leaseExpiresAt: null, containerId: null, lastRunnerSeq: this.events.lastRunnerSeq })
+    if (!(await this.setState('suspended', { leaseOwner: null, leaseExpiresAt: null, containerId: null, lastRunnerSeq: this.events.lastRunnerSeq })))
+      return
     this.run.containerId = null
     if (containerId) await this.deps.sandbox.stop(containerId, 5).catch(() => undefined)
     await stopRunServices(this.deps, this.run.id).catch(() => undefined)
     this.handle?.detach()
+  }
+
+  /** It ends as a crash, which the project's retry loop starts afresh in a new container, rather than taking down its next worker too. */
+  private async giveUp(): Promise<void> {
+    if (this.run.containerId) await this.deps.sandbox.stop(this.run.containerId, 5).catch(() => undefined)
+    if (this.run.cancelRequestedAt) {
+      await this.finish({ state: 'cancelled', outcome: 'cancelled', result: 'cancelled', error: null, retryable: false })
+      return
+    }
+    const message = `${this.run.lostCount} workers stopped while running this, so Factorix stopped resuming it.`
+    this.log('error', message)
+    await this.finish({ state: 'failed', outcome: 'failed', result: 'failed', error: { code: 'runtime_crash', message }, retryable: true })
   }
 
   /** The runner response and replay cursor can be durable before the worker enters finalizing. */
@@ -762,7 +842,7 @@ class RunExecution {
       this.lastError = stored ? { code: (stored.code as ErrorCode | undefined) ?? 'unknown', message: stored.message } : null
     } else {
       const error = await last('error')
-      if (error) this.lastError = { code: error.payload.code, message: error.payload.message }
+      if (error) this.lastError = { code: error.payload.code, message: planErrorMessage(this.run.modelPlan, error.payload.message) }
     }
     if (!done) return
     this.doneEvent = { ...done.payload, seq: done.seq, ts: new Date(done.ts).toISOString(), runId: this.run.id }
@@ -787,11 +867,12 @@ class RunExecution {
     if (outcome === 'budget_exceeded') this.lastError ??= { code: 'policy', message: 'The agent reached its budget.' }
     if (outcome === 'max_turns') this.lastError ??= { code: 'policy', message: 'The agent reached its turn limit.' }
 
-    await this.setState('finalizing', {
+    const entered = await this.setState('finalizing', {
       sessionRef: this.run.sessionRef,
       outcome,
       error: this.lastError ? json(this.lastError) : null,
     })
+    if (!entered) return
     const structuredOutput = done?.structuredOutput ?? this.run.structuredOutput
     let result = 'failed'
     let diff: string | undefined
@@ -841,7 +922,7 @@ class RunExecution {
       diff,
       trackerComment,
       error: state === 'failed' ? (this.lastError ?? { code: 'unknown', message: done?.finalText || 'The run failed.' }) : null,
-      retryable: code ? RETRYABLE.includes(code) : false,
+      retryable: code ? BREAKDOWNS.includes(code) : false,
     })
     if (this.lostLease) return
     if (state === 'succeeded' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
@@ -890,15 +971,16 @@ class RunExecution {
   }): Promise<void> {
     await this.events.flush()
     const { db } = this.deps
-    const cost =
-      this.usage.costUsd ??
-      estimateCostUsd(this.run.model ?? undefined, {
-        inputTokens: this.usage.inputTokens ?? 0,
-        outputTokens: this.usage.outputTokens ?? 0,
-        cacheReadTokens: this.usage.cacheReadTokens ?? 0,
-        cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
-        turns: this.usage.turns ?? 0,
-      })
+    const cost = this.run.modelPlan
+      ? null
+      : (this.usage.costUsd ??
+        estimateCostUsd(this.run.model ?? undefined, {
+          inputTokens: this.usage.inputTokens ?? 0,
+          outputTokens: this.usage.outputTokens ?? 0,
+          cacheReadTokens: this.usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
+          turns: this.usage.turns ?? 0,
+        }))
     const finished = await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
       const updated = await trx('runs')
@@ -911,7 +993,7 @@ class RunExecution {
           structuredOutput: input.structuredOutput === undefined ? null : json(input.structuredOutput),
           usage: json(this.usage),
           costUsd: cost ?? null,
-          costEstimated: this.usage.costUsd === undefined,
+          costEstimated: !this.run.modelPlan && this.usage.costUsd === undefined,
           diff: plainText(input.diff) ?? null,
           error: input.error ? json(input.error) : null,
           sessionRef: this.run.sessionRef,
@@ -947,6 +1029,7 @@ class RunExecution {
           })
         }
       }
+      if (input.state === 'failed' && input.retryable) await retryAskedRun(trx, this.run, this.project)
       return true
     })
     if (!finished) {
@@ -972,6 +1055,21 @@ function withServices(env: Record<string, string>, services: RunServices | null)
     merged.no_proxy = merged.NO_PROXY
   }
   return merged
+}
+
+/** A plan's failures in words a person can act on. OpenAI reports a spent plan with codes nobody reading the run would know. */
+export function planErrorMessage(plan: ModelPlanId | null | undefined, message: string): string {
+  if (plan === 'claude') {
+    if (/\b(401|403|unauthorized|authentication|not logged in|run \/login)\b/i.test(message))
+      return `The author's Claude plan needs signing in again under Settings, Model plans. (${message})`
+    if (/usage limit|rate.?limit|\b429\b/i.test(message)) return `The author's Claude plan reached its usage limit for now. (${message})`
+    return message
+  }
+  if (plan !== 'chatgpt') return message
+  if (message.includes('subscription_sharing_usage_limit_exceeded'))
+    return `The author's ChatGPT plan reached the share of its usage it allows Factorix. Raise the limit for Factorix in ChatGPT's settings or wait for it to reset. (${message})`
+  if (message.includes('subscription_sharing_usage_unavailable')) return `The author's ChatGPT plan cannot be used for this right now. (${message})`
+  return message
 }
 
 function summaryOf(output: unknown, finalText: string | undefined): string | undefined {

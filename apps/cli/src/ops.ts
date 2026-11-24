@@ -1,6 +1,18 @@
 import { execFileSync, spawn } from 'node:child_process'
+import { createServer, type Server, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import type { RunEvent } from '@factorix/runtime'
-import type { AgentDto, ApprovalDto, ConnectionDto, IssueDetailDto, IssueDto, PreviewDto, RunDto } from '@factorix/schemas'
+import type {
+  AgentDto,
+  ApprovalDto,
+  ConnectionDto,
+  IssueDetailDto,
+  IssueDto,
+  ModelLoginDto,
+  ModelPlanAttemptDto,
+  PreviewDto,
+  RunDto,
+} from '@factorix/schemas'
 import type { Client } from './client'
 import { renderEvent } from './render'
 
@@ -314,4 +326,82 @@ export async function startIssueHandoff(
     await new Promise((resolve) => setTimeout(resolve, options.pollMs ?? 1000))
   }
   return null
+}
+
+const PLAN_PORT = 1455
+const PLAN_WAIT_MS = 10 * 60_000
+
+async function listenOnLoopback(server: Server, port: number): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject)
+      resolve()
+    })
+  })
+  return (server.address() as AddressInfo).port
+}
+
+/**
+ * Connects the person's ChatGPT plan. OpenAI sends the browser back only to 127.0.0.1, so fx listens there and hands the
+ * address it lands on to Factorix, which exchanges it. Only the port may differ from the usual one.
+ */
+export async function connectChatgptPlan(client: Client, options: { open: boolean; onLine: (line: string) => void }): Promise<ModelLoginDto> {
+  const server = createServer()
+  const port = await listenOnLoopback(server, PLAN_PORT).catch(() => listenOnLoopback(server, 0))
+  try {
+    const arrived = new Promise<{ address: string; response: ServerResponse }>((resolve) => {
+      server.on('request', (request, response) => {
+        const address = new URL(request.url ?? '/', `http://127.0.0.1:${port}`)
+        if (address.pathname !== '/auth/callback') return void response.writeHead(404).end()
+        resolve({ address: address.toString(), response })
+      })
+    })
+    const { url } = await client.post<{ url: string }>('/api/model-plans/chatgpt/start', { redirectPort: port })
+    options.onLine(`Sign in to ChatGPT and approve Factorix using your plan. If no browser opens, visit:\n${url}`)
+    if (options.open) openInBrowser(url)
+    let timer: NodeJS.Timeout | undefined
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new UsageError('Nobody finished the sign-in in 10 minutes. Run fx plan login chatgpt again.')), PLAN_WAIT_MS)
+    })
+    const { address, response } = await Promise.race([arrived, expired]).finally(() => clearTimeout(timer))
+    const page = (text: string) => response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' }).end(`${text}\n`)
+    try {
+      const { login } = await client.post<{ login: ModelLoginDto }>('/api/model-plans/chatgpt/complete', { callbackUrl: address })
+      page('Your ChatGPT plan is connected to Factorix. You can close this tab.')
+      return login
+    } catch (error) {
+      page(`Factorix could not connect your plan: ${(error as Error).message}`)
+      throw error
+    }
+  } finally {
+    server.close()
+  }
+}
+
+async function claudeAttempt(client: Client, id: string, until: ModelPlanAttemptDto['status'][]): Promise<ModelPlanAttemptDto> {
+  const deadline = Date.now() + 3 * 60_000
+  for (;;) {
+    const { attempt } = await client.get<{ attempt: ModelPlanAttemptDto }>(`/api/model-plans/claude/attempts/${id}`)
+    if (until.includes(attempt.status)) return attempt
+    if (Date.now() > deadline) throw new UsageError('Factorix did not answer in time. Run fx plan login claude again.')
+    await new Promise((resolve) => setTimeout(resolve, 1500))
+  }
+}
+
+/** Connects the person's Claude plan. Claude Code signs in on Factorix's machine, and the person hands it the code Claude's page shows. */
+export async function connectClaudePlan(
+  client: Client,
+  options: { open: boolean; onLine: (line: string) => void; ask: (question: string) => Promise<string> },
+): Promise<void> {
+  const { attemptId } = await client.post<{ attemptId: string }>('/api/model-plans/claude/start', {})
+  const started = await claudeAttempt(client, attemptId, ['waiting', 'failed'])
+  if (started.status === 'failed' || !started.url) throw new UsageError(started.error ?? 'Claude Code could not start signing in.')
+  options.onLine(`Sign in to Claude and approve Claude Code. If no browser opens, visit:\n${started.url}`)
+  if (options.open) openInBrowser(started.url)
+  const code = (await options.ask('Paste the code Claude shows: ')).trim()
+  if (!code) throw new UsageError('No code given. Run fx plan login claude again.')
+  await client.post(`/api/model-plans/claude/attempts/${attemptId}/code`, { code })
+  const finished = await claudeAttempt(client, attemptId, ['done', 'failed'])
+  if (finished.status === 'failed') throw new UsageError(finished.error ?? 'Claude did not accept that code.')
 }

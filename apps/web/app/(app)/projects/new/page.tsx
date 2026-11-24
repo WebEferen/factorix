@@ -62,6 +62,8 @@ export default function NewProjectPage() {
     networkAllowlist: '',
     networkBypass: '',
     runTimeoutMinutes: '90',
+    retryAttempts: '2',
+    retryDelaySeconds: '30',
     monthlyBudgetUsd: '',
   })
   const [loading, setLoading] = useState(false)
@@ -165,6 +167,8 @@ export default function NewProjectPage() {
           .map((line) => line.trim())
           .filter(Boolean),
         runTimeoutMinutes: Number(sandbox.runTimeoutMinutes),
+        retryAttempts: Number(sandbox.retryAttempts),
+        retryDelaySeconds: Number(sandbox.retryDelaySeconds),
         monthlyBudgetUsd: sandbox.monthlyBudgetUsd ? Number(sandbox.monthlyBudgetUsd) : null,
       })
       void mutate('/api/projects')

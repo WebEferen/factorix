@@ -86,6 +86,7 @@ async function emitWorkflowEvents(
   issue: TrackerIssue,
   row: IssueRow,
   previous: IssueRow | null,
+  by: string | null,
 ): Promise<void> {
   const { db } = deps
   const events: WorkflowEvent[] = []
@@ -103,7 +104,7 @@ async function emitWorkflowEvents(
       if (!(await isEcho(db, 'linear', 'issue', issue.id, 'label', label.name))) events.push({ kind: 'label.added', label: label.name })
     }
   }
-  for (const event of events) await emit(db, project.orgId, { type: 'workflow.event', issueId: row.id, event })
+  for (const event of events) await emit(db, project.orgId, { type: 'workflow.event', issueId: row.id, event, by })
 }
 
 /** The webhook path and the polling sweep both end here, comparing against the mirror instead of trusting event metadata. */
@@ -111,14 +112,14 @@ export async function applyTrackerIssue(
   deps: Deps,
   project: ProjectRow,
   issue: TrackerIssue,
-  options: { announce?: boolean } = { announce: true },
+  options: { announce?: boolean; by?: string | null } = { announce: true },
 ): Promise<void> {
   const existing = await deps.db<IssueRow>('issues').where({ projectId: project.id, trackerIssueId: issue.id }).first()
   if (existing?.trackerUpdatedAt && new Date(issue.updatedAt) < existing.trackerUpdatedAt) return
 
   const { row, previous } = await upsertIssueMirror(deps, project, issue, options)
   await emit(deps.db, project.orgId, { type: 'notify', kind: 'issue', id: row.id, projectId: project.id })
-  if (options.announce) await emitWorkflowEvents(deps, project, issue, row, previous)
+  if (options.announce) await emitWorkflowEvents(deps, project, issue, row, previous, options.by ?? null)
 
   const handle = agentHandleFromLabels(project, issue.labels)
   const previousHandle = previous ? agentHandleFromLabels(project, previous.labels) : null
@@ -141,7 +142,7 @@ export async function applyTrackerIssue(
     // A failed or cancelled issue restarts only on a deliberate move, not because someone edited its title.
     const fresh = row.factoryState === 'untracked' || labelJustAdded || stateChanged
     if (startable && eligible && fresh) {
-      await advanceIssue(deps.db, row.id, { type: 'start' })
+      await advanceIssue(deps.db, row.id, { type: 'start' }, { by: options.by })
       await writeAudit(deps.db, {
         orgId: project.orgId,
         actorKind: 'system',

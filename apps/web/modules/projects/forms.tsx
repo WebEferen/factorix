@@ -335,6 +335,8 @@ export function SandboxFields({
     networkAllowlist: string
     networkBypass: string
     runTimeoutMinutes: string
+    retryAttempts: string
+    retryDelaySeconds: string
     monthlyBudgetUsd: string
   }
   onChange: (
@@ -343,6 +345,8 @@ export function SandboxFields({
       networkAllowlist: string
       networkBypass: string
       runTimeoutMinutes: string
+      retryAttempts: string
+      retryDelaySeconds: string
       monthlyBudgetUsd: string
     }>,
   ) => void
@@ -410,6 +414,21 @@ export function SandboxFields({
             placeholder="No limit"
             value={value.monthlyBudgetUsd}
             onChange={(event) => onChange({ monthlyBudgetUsd: event.target.value })}
+          />
+        </Field>
+        <Field
+          label="Attempts per run"
+          hint="A run that crashes, loses its worker, hits a model limit, or runs out of time starts again, up to this many attempts in all."
+        >
+          <Input type="number" min="1" max="5" value={value.retryAttempts} onChange={(event) => onChange({ retryAttempts: event.target.value })} />
+        </Field>
+        <Field label="Wait before a retry (seconds)" hint="Doubles with each attempt after the second.">
+          <Input
+            type="number"
+            min="0"
+            max="3600"
+            value={value.retryDelaySeconds}
+            onChange={(event) => onChange({ retryDelaySeconds: event.target.value })}
           />
         </Field>
       </div>

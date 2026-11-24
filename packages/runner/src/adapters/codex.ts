@@ -5,6 +5,7 @@ import {
   type AgentHelper,
   type AgentRuntime,
   type McpServerSpec,
+  type ModelPlanId,
   type ModelUsage,
   type ReasoningEffort,
   RUNTIME_CAPABILITIES,
@@ -35,6 +36,29 @@ export function mcpServersToConfig(servers: Record<string, McpServerSpec>): Reco
     }
   }
   return config
+}
+
+const PLAN_PROVIDER = 'factorix_plan'
+
+/**
+ * A ChatGPT plan is a bearer token for the Responses API, as OpenAI documents it for Codex. The run's token goes in its
+ * place and the proxy swaps it, so the CLI never signs in to ChatGPT itself. The plan does not take WebSockets.
+ */
+export function planProviderConfig(plan: ModelPlanId | undefined, baseUrl: string | undefined): Record<string, ConfigValue> {
+  if (plan !== 'chatgpt' || !baseUrl) return {}
+  return {
+    model_provider: PLAN_PROVIDER,
+    model_providers: {
+      [PLAN_PROVIDER]: {
+        name: 'ChatGPT plan',
+        base_url: baseUrl,
+        env_key: 'CODEX_API_KEY',
+        wire_api: 'responses',
+        requires_openai_auth: false,
+        supports_websockets: false,
+      },
+    },
+  }
 }
 
 export function buildThreadOptions(spec: RunSpec): ThreadOptions {
@@ -163,7 +187,7 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
-  private async client(io: RunnerIO, model: string | undefined, mcpServers: RunSpec['mcpServers'] = {}): Promise<Codex> {
+  private async client(io: RunnerIO, model: string | undefined, mcpServers: RunSpec['mcpServers'] = {}, plan?: ModelPlanId): Promise<Codex> {
     const env: Record<string, string> = {}
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value
     env.CODEX_HOME = codexHome(io)
@@ -172,6 +196,7 @@ export class CodexRuntime implements AgentRuntime {
     const config: Record<string, ConfigValue> = {
       ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServersToConfig(mcpServers) } : {}),
       ...(catalog ? { model_catalog_json: catalog } : {}),
+      ...planProviderConfig(plan, process.env.OPENAI_BASE_URL),
     }
     return new Codex({
       env,
@@ -184,7 +209,11 @@ export class CodexRuntime implements AgentRuntime {
   /** The SDK has no helpers, so one is a second thread on its own model. It gets no MCP servers, and so cannot delegate further. */
   async runHelper(spec: RunSpec, helper: AgentHelper, task: string, signal: AbortSignal, io: RunnerIO): Promise<string> {
     const model = helper.model ?? spec.model.name
-    const thread = (await this.client(io, model)).startThread({ ...buildThreadOptions(spec), model, modelReasoningEffort: undefined })
+    const thread = (await this.client(io, model, {}, spec.model.plan)).startThread({
+      ...buildThreadOptions(spec),
+      model,
+      modelReasoningEffort: undefined,
+    })
     const turn = await thread.run(buildHelperTurn(helper, task), { signal })
     const key = model ?? 'default'
     const spent = this.helperUsage[key] ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
@@ -198,7 +227,7 @@ export class CodexRuntime implements AgentRuntime {
   }
 
   async *run(spec: RunSpec, control: RunControl, io: RunnerIO): AsyncIterable<RunEventBody> {
-    const codex = await this.client(io, spec.model.name, spec.mcpServers)
+    const codex = await this.client(io, spec.model.name, spec.mcpServers, spec.model.plan)
     const options = buildThreadOptions(spec)
     const thread = spec.resume ? codex.resumeThread(spec.resume.sessionRef, options) : codex.startThread(options)
     const normalizer = new CodexNormalizer(spec.model.name, spec.resume?.sessionRef, this.helperUsage)

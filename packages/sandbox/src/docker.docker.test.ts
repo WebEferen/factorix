@@ -332,6 +332,64 @@ git config url."file:///nowhere".insteadOf /remote/repo.git`,
     expect(outputs[2]).toContain('hello from the agent')
   })
 
+  it('gives a Claude plan run its sign-in file alone, which the CLI renews in place, and signs the CLI out', { timeout: 120_000 }, async () => {
+    const login = `fx-test-login-${suffix}`
+    try {
+      const signedOut = await provider.claudeLoginStatus(login)
+      expect(signedOut.exitCode).toBe(1)
+      expect(JSON.parse(signedOut.output.slice(signedOut.output.indexOf('{')))).toMatchObject({ loggedIn: false })
+
+      const started = await provider.startClaudeLogin(login)
+      containers.push(started.containerId)
+      let address = ''
+      for await (const line of started.lines) {
+        if (line.includes('oauth/authorize')) {
+          address = line
+          break
+        }
+      }
+      started.detach()
+      await provider.remove(started.containerId)
+      expect(address).toContain('https://claude.com/')
+
+      await inVolume(login, `printf old > /v/.credentials.json && chmod 600 /v/.credentials.json && echo other > /v/.claude.json`, false)
+      const file = '/workspace/.home/.claude/.credentials.json'
+      const run = spec({
+        scripted: {
+          steps: [
+            { exec: `stat -c %U /workspace/.home/.claude && cat ${file} && ls -A /workspace/.home/.claude` },
+            {
+              // What the CLI does: rename a new file over the old one, and on EBUSY write the old one in place.
+              exec: `node -e "const fs=require('fs');fs.writeFileSync('${file}.tmp','new');try{fs.renameSync('${file}.tmp','${file}')}catch(e){console.log(e.code);fs.writeFileSync('${file}','new');fs.rmSync('${file}.tmp')}"`,
+            },
+            { exec: 'mkdir -p /workspace/.home/.claude/projects && echo sessions-writable' },
+          ],
+        },
+      })
+      const handle = await provider.startAgent(workspace, { runId: run.runId, issueKey: key, readOnlyRepo: false, claudeLogin: login })
+      containers.push(handle.containerId)
+      handle.send(encodeLine(run))
+      const outputs = (await collect(handle))
+        .filter((event) => event.type === 'tool.result')
+        .map((event) => (event as unknown as { output: string }).output)
+      expect(outputs[0]).toMatch(/^agent\nold\.credentials\.json\n?$/)
+      expect(outputs[1]).toContain('EBUSY')
+      expect(outputs[2]).toContain('sessions-writable')
+      expect(await inVolume(login, 'cat /v/.credentials.json')).toBe('new')
+
+      await provider.remove(handle.containerId)
+      await provider.forgetClaudeLogin(login)
+      await expect(docker.getVolume(login).inspect()).rejects.toThrow()
+    } finally {
+      for (const container of await docker.listContainers({ all: true, filters: JSON.stringify({ volume: [login] }) }))
+        await provider.remove(container.Id)
+      await docker
+        .getVolume(login)
+        .remove({ force: true })
+        .catch(() => undefined)
+    }
+  })
+
   it('lists the models of the real SDKs with no network and no credentials', async () => {
     const catalogs = await provider.listRuntimeModels()
     expect(catalogs.claude?.defaultModel).toMatch(/^claude-/)

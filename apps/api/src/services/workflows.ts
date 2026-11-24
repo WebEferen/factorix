@@ -41,7 +41,15 @@ function initialStep(node: { id: string; type: string }, firedNodeId: string, ev
 
 export async function startWorkflowRun(
   db: Db,
-  input: { workflow: WorkflowRow; issue: IssueRow | null; nodeId: string; event: WorkflowEvent; startedBy: string | null; eventId?: string },
+  input: {
+    workflow: WorkflowRow
+    issue: IssueRow | null
+    nodeId: string
+    event: WorkflowEvent
+    startedBy: string | null
+    causedBy?: string | null
+    eventId?: string
+  },
 ): Promise<WorkflowRunRow | null> {
   const { workflow, issue, nodeId, event, startedBy, eventId } = input
   const definition = workflow.publishedDefinition
@@ -57,6 +65,7 @@ export async function startWorkflowRun(
         trigger: json({ nodeId, event }),
         triggerEventId: eventId ?? null,
         startedBy,
+        causedBy: input.causedBy ?? startedBy,
       })
       .onConflict()
       .ignore()
@@ -257,7 +266,7 @@ export async function settlePromptStep(db: Db, run: Pick<WorkflowRunRow, 'id' | 
 
 export async function handleWorkflowEvent(
   deps: Pick<AppDeps, 'db'>,
-  input: { issueId: string; event: WorkflowEvent; eventId?: string },
+  input: { issueId: string; event: WorkflowEvent; eventId?: string; by?: string | null },
 ): Promise<void> {
   const { db } = deps
   const { event, eventId } = input
@@ -272,7 +281,7 @@ export async function handleWorkflowEvent(
   for (const workflow of workflows) {
     const fired = workflow.publishedDefinition?.nodes.find((node) => isTriggerBlock(node.type) && triggerMatches(node, event))
     if (!fired || !(await withinRunLimits(db, workflow, issue))) continue
-    await startWorkflowRun(db, { workflow, issue, nodeId: fired.id, event, startedBy: null, eventId })
+    await startWorkflowRun(db, { workflow, issue, nodeId: fired.id, event, startedBy: null, causedBy: input.by, eventId })
   }
 
   const waiting = (await db('workflow_steps')

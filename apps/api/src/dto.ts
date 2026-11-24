@@ -9,6 +9,7 @@ import type {
   ConnectionRow,
   Db,
   IssueRow,
+  ModelLoginRow,
   OrganizationRow,
   PackageSource,
   ProjectRepoRow,
@@ -27,6 +28,7 @@ import type {
   ConnectionDto,
   IssueDto,
   MergeRequestDto,
+  ModelLoginDto,
   NetworkSettings,
   PackageSourceDto,
   ProjectDto,
@@ -89,6 +91,20 @@ export function skillDto(row: SkillRow): SkillDto {
   return { id: row.id, slug: row.slug, name: row.name, markdown: row.markdown, updatedAt: new Date(row.updatedAt).toISOString() }
 }
 
+export function modelLoginDto(row: ModelLoginRow): ModelLoginDto {
+  return {
+    id: row.id,
+    provider: row.provider,
+    status: row.status,
+    email: row.email,
+    plan: row.plan,
+    expiresAt: iso(row.expiresAt),
+    lastUsedAt: iso(row.lastUsedAt),
+    lastError: row.lastError,
+    createdAt: new Date(row.createdAt).toISOString(),
+  }
+}
+
 export function networkSettingsDto(row: OrganizationRow): NetworkSettings {
   return { mode: row.networkMode, hosts: row.networkAllowlist }
 }
@@ -147,6 +163,8 @@ export function projectDto(row: ProjectRow, repos: ProjectRepoRow[], extra: Part
     reviewComments: row.reviewComments,
     runnerId: row.runnerId,
     runTimeoutMinutes: row.runTimeoutMinutes,
+    retryAttempts: row.retryAttempts,
+    retryDelaySeconds: row.retryDelaySeconds,
     monthlyBudgetUsd: row.monthlyBudgetUsd,
     defaultEngineerAgentId: row.defaultEngineerAgentId,
     defaultReviewerAgentId: row.defaultReviewerAgentId,
@@ -222,6 +240,7 @@ export function runDto(row: RunRow & { issueIdentifier?: string | null; issueTit
     attempt: row.attempt,
     runtime: row.runtime,
     model: row.model,
+    modelPlan: row.modelPlan ?? null,
     outcome: row.outcome,
     result: row.result,
     summary: row.summary,

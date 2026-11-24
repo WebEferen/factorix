@@ -313,10 +313,10 @@ export function projectRoutes(app: FastifyInstance, deps: AppDeps): void {
       targetId: row.id,
       metadata: { identifier: created.identifier, assignedTo: handle },
     })
-    await emit(db, account.orgId, { type: 'workflow.event', issueId: row.id, event: { kind: 'issue.created' } })
+    await emit(db, account.orgId, { type: 'workflow.event', issueId: row.id, event: { kind: 'issue.created' }, by: account.id })
     if (input.assignAgentId) {
       await db('issues').where({ id: row.id }).update({ assignedAgentId: input.assignAgentId })
-      await advanceIssue(db, row.id, { type: 'start' })
+      await advanceIssue(db, row.id, { type: 'start' }, { by: account.id })
     }
     const issue = await db<IssueRow>('issues').where({ id: row.id }).first()
     return { issue: issueDto(issue as IssueRow) }

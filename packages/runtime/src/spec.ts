@@ -1,3 +1,5 @@
+import type { ModelPlanId } from './providers/plans'
+
 export type RuntimeId = 'claude' | 'codex' | 'scripted'
 export type Phase = 'plan' | 'implement' | 'review' | 'address_review' | 'ad_hoc' | 'task' | 'prompt' | 'plugin'
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -22,6 +24,8 @@ export interface ModelSpec {
   reasoningEffort?: ReasoningEffort
   maxTurns?: number
   maxBudgetUsd?: number
+  /** The run's author's own plan, which its calls go to in place of the organization's key. */
+  plan?: ModelPlanId
 }
 
 /** A helper as an agent's settings keep it. `read` lets it look at files only, and `all` gives it what its agent may use. */

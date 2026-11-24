@@ -244,6 +244,25 @@ describe('egress proxy', () => {
       expect(seen).toHaveLength(0)
     })
 
+    it('sends a plan run to its upstream with the token the store filled in, and explains a plan whose sign-in lapsed', async () => {
+      grants.set('plan', {
+        runId: 'run-4',
+        allow: [],
+        models: { chatgpt: { upstream: `http://127.0.0.1:${upstreamPort}/api`, auth: 'bearer', key: 'plan-token', login: 'l1' } },
+      })
+      expect((await raw('/chatgpt/v1/responses', { authorization: 'Bearer plan' }, '{}')).status).toBe(200)
+      expect(seen[0]?.headers.authorization).toBe('Bearer plan-token')
+      grants.set('lapsed', {
+        runId: 'run-5',
+        allow: [],
+        models: { chatgpt: { upstream: `http://127.0.0.1:${upstreamPort}/api`, auth: 'bearer', key: '', login: 'l1' } },
+      })
+      const lapsed = await raw('/chatgpt/v1/responses', { authorization: 'Bearer lapsed' }, '{}')
+      expect(lapsed.status).toBe(401)
+      expect(lapsed.body).toContain('signing in again')
+      expect(seen).toHaveLength(1)
+    })
+
     it('explains when the provider has no key', async () => {
       const response = await raw('/anthropic/v1/messages', { 'x-api-key': 'open' }, '{}')
       expect(response.status).toBe(401)

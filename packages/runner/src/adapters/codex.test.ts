@@ -3,8 +3,39 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RunSpec } from '@factorix/runtime'
 import { describe, expect, it } from 'vitest'
-import { buildFirstTurn, buildHelperTurn, buildThreadOptions, catalogWith, codexCatalog, codexHome, mcpServersToConfig } from './codex'
+import {
+  buildFirstTurn,
+  buildHelperTurn,
+  buildThreadOptions,
+  catalogWith,
+  codexCatalog,
+  codexHome,
+  mcpServersToConfig,
+  planProviderConfig,
+} from './codex'
 import { CodexNormalizer, parseStructuredOutput } from './codex-normalize'
+
+describe('planProviderConfig', () => {
+  it('sends a ChatGPT plan run to the proxy as a Responses provider keyed by the run token, without WebSockets', () => {
+    expect(planProviderConfig('chatgpt', 'http://egress:8080/chatgpt/v1')).toEqual({
+      model_provider: 'factorix_plan',
+      model_providers: {
+        factorix_plan: {
+          name: 'ChatGPT plan',
+          base_url: 'http://egress:8080/chatgpt/v1',
+          env_key: 'CODEX_API_KEY',
+          wire_api: 'responses',
+          requires_openai_auth: false,
+          supports_websockets: false,
+        },
+      },
+    })
+  })
+
+  it('leaves a run on an API key as it is', () => {
+    expect(planProviderConfig(undefined, 'http://egress:8080/openai/v1')).toEqual({})
+  })
+})
 
 describe('catalogWith', () => {
   const rows = [
