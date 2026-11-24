@@ -11,6 +11,7 @@ import {
   GitPullRequestClosed,
   MessageSquare,
   Pencil,
+  Play,
   RotateCcw,
   Send,
 } from 'lucide-react'
@@ -347,6 +348,7 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
     issue.discussions.filter((note) => note.discussionId === discussionId),
   )
   const inFlight = ['queued', 'active', 'waiting_human', 'awaiting_merge'].includes(issue.factoryState)
+  const canRunAgent = !issue.closed && !inFlight
   const canRetry = !issue.closed && (issue.factoryState === 'failed' || issue.factoryState === 'cancelled')
   const failure = issue.factoryState === 'failed' ? issue.runs.find((run) => run.state === 'failed') : undefined
   const assigned = issue.assignedAgentHandle
@@ -355,6 +357,18 @@ export default function IssuePage({ params }: { params: Promise<{ id: string }> 
     <>
       <PageHeader crumbs={[{ label: issue.project.name, href: `/projects/${issue.projectId}` }, { label: issue.identifier }]}>
         <PreviewHeaderButton issueId={issue.id} />
+        {canRunAgent ? (
+          <AgentPicker
+            issue={issue}
+            mode="run"
+            trigger={
+              <Button size="sm">
+                <Play />
+                Run agent
+              </Button>
+            }
+          />
+        ) : null}
         <RunWorkflowButton issueId={issue.id} projectId={issue.projectId} />
         {issue.editable ? (
           <Button size="sm" onClick={() => setEditing(true)}>

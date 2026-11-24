@@ -21,11 +21,13 @@ export function AgentPicker({
   issue,
   trigger,
   label,
+  mode = 'assign',
 }: {
   issue: Pick<IssueDto, 'id' | 'identifier' | 'assignedAgentId' | 'group'>
   trigger: ReactNode
   /** For a trigger that is only an icon. */
   label?: string
+  mode?: 'assign' | 'run'
 }) {
   const { data } = useAgents()
   const assign = async (agent: AgentDto | null) => {
@@ -55,7 +57,7 @@ export function AgentPicker({
         menuTrigger
       )}
       <MenuContent className="w-60" onClick={(event) => event.stopPropagation()}>
-        <MenuLabel>Assign to an agent</MenuLabel>
+        <MenuLabel>{mode === 'run' ? 'Run an agent' : 'Assign to an agent'}</MenuLabel>
         {agents.map((agent) => (
           <MenuItem key={agent.id} onSelect={() => void assign(agent)}>
             <Avatar name={agent.displayName} agent size={18} />
@@ -70,7 +72,7 @@ export function AgentPicker({
             No active agents
           </MenuItem>
         ) : null}
-        {issue.assignedAgentId ? (
+        {mode === 'assign' && issue.assignedAgentId ? (
           <>
             <MenuSeparator />
             <MenuItem onSelect={() => void assign(null)}>
