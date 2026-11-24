@@ -18,6 +18,7 @@ import { PageHeader } from '@/modules/shell/page-header'
 import { Avatar, Button, buttonStyles, Chip, EmptyState, ErrorState, Input, ListSkeleton, Tabs, Toggle, Tooltip } from '@/modules/ui'
 import { Boundary } from '@/modules/ui/boundary'
 import { NoResultArt } from '@/modules/ui/empty-art'
+import { Markdown } from '@/modules/ui/markdown'
 
 type View = 'activity' | 'diff' | 'output'
 
@@ -238,7 +239,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
             {run.summary ? (
               <div>
                 <div className="mb-1 text-xs text-ink-2">Summary</div>
-                <p className="text-sm whitespace-pre-wrap">{run.summary}</p>
+                <Markdown text={run.summary} />
               </div>
             ) : null}
             {run.structuredOutput ? (

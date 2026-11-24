@@ -101,7 +101,11 @@ function Item({ item, showLogs }: { item: StreamItem; showLogs: boolean }) {
         </div>
       )
     case 'thinking':
-      return <p className="px-2 py-1 text-sm whitespace-pre-wrap text-ink-3 italic">{item.text}</p>
+      return (
+        <div className="px-2 py-1">
+          <Markdown text={item.text} className="text-ink-3" />
+        </div>
+      )
     case 'tool':
       return <ToolRow item={item} />
     case 'file': {
