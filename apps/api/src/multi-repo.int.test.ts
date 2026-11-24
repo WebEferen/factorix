@@ -3,7 +3,9 @@ import { fileURLToPath } from 'node:url'
 import type { MergeRequest } from '@factorix/connectors'
 import { BUILTIN_PIPELINE, type PipelineDefinition } from '@factorix/core'
 import { json } from '@factorix/db'
+import type { SandboxProvider, StepRequest } from '@factorix/sandbox'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
+import { executeRun } from './services/executor'
 import { projectRepos } from './services/repos'
 import { CONFLICT_LOOKS, checkConflicts, handleScmEvent, mergeIssue, pollOpenMergeRequests, revertIssue } from './services/scm-inbound'
 import { postTrackerComment } from './services/tracker-sync'
@@ -634,6 +636,45 @@ describe('projects with several repositories', () => {
         await choose(gate.id, 'resolve')
         expect((await issueRow(issueId)).cursor.step).toBe('resolve_conflicts')
         expect(await resolveRun(issueId)).toBeTruthy()
+      })
+
+      it.each([
+        { discard: false, pushes: true },
+        { discard: true, pushes: false },
+      ])('cancels the issue from its resolving run, which ends cancelled and never retried (discard $discard)', async ({ discard, pushes }) => {
+        const issueId = await issueAt(`Cancel resolving ${discard}`, 'auto_merge')
+        conflicting(await openMr(issueId, '42'))
+        await mergeIssue(harness.deps, issueId)
+        const run = await resolveRun(issueId)
+        expect((await issueRow(issueId)).lockedByRunId).toBe(run.id)
+        await db()('runs').where({ id: run.id }).update({ state: 'running', containerId: 'resolving-container' })
+
+        await admin.ok('POST', `/api/runs/${run.id}/cancel`, { discard })
+        expect((await issueRow(issueId)).factoryState).toBe('cancelled')
+
+        const steps: string[] = []
+        const sandbox = {
+          ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }),
+          reattach: async () => null,
+          stop: async () => undefined,
+          remove: async () => undefined,
+          runStep: async (_workspace: unknown, { op }: StepRequest) => {
+            steps.push(op)
+            return { exitCode: 0, stdout: '', stderr: '', values: op === 'bundle' ? { CHANGED: '1', AHEAD: '1' } : {} }
+          },
+        }
+        const subscriber = harness.deps.redis.duplicate()
+        try {
+          await executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'test-worker', subscriber }, run.id)
+        } finally {
+          subscriber.disconnect()
+        }
+        expect(await db()('runs').where({ id: run.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
+        expect(steps.includes('push')).toBe(pushes)
+        expect(await db()('runs').where({ parentRunId: run.id })).toHaveLength(0)
+        const row = await issueRow(issueId)
+        expect(row).toMatchObject({ factoryState: 'cancelled', lockedByRunId: null })
+        expect(await db()('runs').where({ issueId }).whereNot({ state: 'cancelled' })).toHaveLength(0)
       })
     })
   })

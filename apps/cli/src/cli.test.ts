@@ -3,10 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseSse } from '@factorix/runtime'
+import { decideApprovalInput } from '@factorix/schemas'
 import { describe, expect, it } from 'vitest'
 import { Client } from './client'
 import { createMcpHandler, TOOLS } from './mcp'
 import {
+  cancelRunOrIssue,
   findRunId,
   issueHandoffTarget,
   looksLikeIssue,
@@ -129,6 +131,20 @@ describe('findRunId', () => {
   })
 })
 
+describe('cancelRunOrIssue', () => {
+  it('cancels a run it is given, and an issue as a whole', async () => {
+    const { client, calls } = fakeClient({
+      'GET /api/issues?q=ins-7&limit=50': () => ({ issues: [{ id: 'i2', identifier: 'INS-7' }] }),
+      'GET /api/issues/i2': () => ({ issue: { id: 'i2', identifier: 'INS-7', activeRunId: RUN_ID, runs: [{ id: RUN_ID }] } }),
+      [`POST /api/runs/${RUN_ID}/cancel`]: () => ({ ok: true }),
+      'POST /api/issues/i2/cancel': () => ({ issue: { id: 'i2' } }),
+    })
+    expect(await cancelRunOrIssue(client, RUN_ID)).toBe('Cancel requested.')
+    expect(await cancelRunOrIssue(client, 'ins-7')).toBe('Cancelled INS-7.')
+    expect(calls.filter((call) => call.method === 'POST').map((call) => call.path)).toEqual([`/api/runs/${RUN_ID}/cancel`, '/api/issues/i2/cancel'])
+  })
+})
+
 describe('watchRun', () => {
   const started = { type: 'run.started', seq: 1, model: 'm', runtime: 'claude' }
   const call = { type: 'tool.call', seq: 2, tool: 'Bash', summary: 'yarn test' }
@@ -197,6 +213,12 @@ describe('MCP server', () => {
     }
     expect(failed.result.isError).toBe(true)
     expect(await handle({ method: 'notifications/initialized' })).toBeNull()
+  })
+
+  it('offers every choice the API decides on', () => {
+    const decide = TOOLS.find((tool) => tool.name === 'factorix_decide')
+    const properties = decide?.inputSchema.properties as { choice: { enum: string[] } } | undefined
+    expect(properties?.choice.enum).toEqual(decideApprovalInput.shape.choice.unwrap().options)
   })
 })
 

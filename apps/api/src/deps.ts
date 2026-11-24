@@ -85,6 +85,7 @@ export interface AppDeps {
     workflowSweepMs?: number
     previewSweepMs?: number
     heartbeatMs?: number
+    forceStopAfterCancelMs?: number
     leaseSeconds?: number
     suspendAfterMs?: number
     recoveryMs?: number

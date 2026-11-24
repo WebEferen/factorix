@@ -118,6 +118,7 @@ export function advance(
         actions.push({ type: ACTION_OF[step.action] })
         return
       case 'terminal':
+        if (step.state === 'cancelled') actions.push({ type: 'cancelQueuedRuns' })
         return
     }
   }

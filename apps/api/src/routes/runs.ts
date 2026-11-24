@@ -12,7 +12,7 @@ import { emit } from '../lib/outbox'
 import { buildAgentSnapshot } from '../services/agents'
 import { decideApproval } from '../services/approvals'
 import { getConnection } from '../services/connections'
-import { advanceIssue, requestRunCancel } from '../services/pipeline'
+import { cancelSelectedRun } from '../services/pipeline'
 import { openSse, type RedisFanout } from '../sse'
 
 export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFanout): void {
@@ -154,12 +154,7 @@ export function runRoutes(app: FastifyInstance, deps: AppDeps, fanout: RedisFano
       targetId: run.id,
       metadata: { discard: input.discard },
     })
-    if (run.issueId) {
-      if (input.discard) await db('runs').where({ id: run.id }).update({ discardOnCancel: true })
-      await advanceIssue(db, run.issueId, { type: 'cancel' })
-    } else {
-      await db.transaction((trx) => requestRunCancel(trx, run.id, `Cancelled by ${account.displayName}`, { discard: input.discard, by: account.id }))
-    }
+    await db.transaction((trx) => cancelSelectedRun(trx, run, `Cancelled by ${account.displayName}`, { discard: input.discard, by: account.id }))
     return { ok: true }
   })
 

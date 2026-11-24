@@ -122,7 +122,7 @@ Wherever a command takes `<run|issue>`, you can pass a ticket identifier like `E
 | `fx status <run\|issue>`                                      | Shows a run's state, result, and cost.                                                                                                |
 | `fx diff <run\|issue>`                                        | Prints the diff a run produced.                                                                                                       |
 | `fx msg <run\|issue> <text>`                                  | Sends a message to a running agent.                                                                                                   |
-| `fx cancel <run\|issue>`                                      | Cancels a run.                                                                                                                        |
+| `fx cancel <run\|issue>`                                      | Cancels a run, or a whole issue when given an issue.                                                                                  |
 
 ### Issues
 
@@ -137,11 +137,11 @@ Wherever a command takes `<run|issue>`, you can pass a ticket identifier like `E
 
 ### Decisions
 
-| Command                                                              | What it does                                                                                     |
-| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `fx inbox`                                                           | Lists what waits for you: approvals, and issues that failed.                                     |
-| `fx approve <id\|issue> [-m message] [--choice retry\|revert\|keep]` | Approves a plan, question, tool call, or merge. `--choice` answers a merge that stopped halfway. |
-| `fx reject <id\|issue> -m <message>`                                 | Rejects it. The message tells the agent what to change.                                          |
+| Command                                                                       | What it does                                                                                                                                                      |
+| ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fx inbox`                                                                    | Lists what waits for you: approvals, and issues that failed.                                                                                                      |
+| `fx approve <id\|issue> [-m message] [--choice retry\|revert\|keep\|resolve]` | Approves a plan, question, tool call, or merge. `--choice` answers a merge that stopped halfway, and `resolve` sends an agent to clear a merge's conflicts first. |
+| `fx reject <id\|issue> -m <message>`                                          | Rejects it. The message tells the agent what to change.                                                                                                           |
 
 ### Integration
 

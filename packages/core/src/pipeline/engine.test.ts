@@ -281,6 +281,7 @@ describe('builtin pipeline', () => {
     expect(live.cursor?.step).toBe('cancel')
     expect(live.last.factoryState).toBe('cancelled')
     expect(live.last.actions).toContainEqual({ type: 'cancelActiveRun' })
+    expect(live.last.actions).toContainEqual({ type: 'cancelQueuedRuns' })
     const again = advance(BUILTIN_PIPELINE, live.cursor, { autonomy: 'plan_first', now }, { type: 'cancel' })
     expect(again.handled).toBe(false)
   })

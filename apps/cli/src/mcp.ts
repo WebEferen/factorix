@@ -2,6 +2,7 @@ import { createInterface } from 'node:readline'
 import type { AgentDto, ApprovalDto, IssueDto, RunDto } from '@factorix/schemas'
 import type { Client } from './client'
 import {
+  cancelRunOrIssue,
   decide,
   describeApproval,
   describeIssue,
@@ -172,11 +173,13 @@ export const TOOLS: Tool[] = [
   },
   {
     name: 'factorix_run_cancel',
-    description: 'Cancels a run. For a run on an issue this cancels the issue.',
-    inputSchema: object({ run: RUN_REF }, ['run']),
+    description: "Cancels a run, or a whole issue when given an issue. Cancelling the run of an issue's current pipeline step cancels the issue too.",
+    inputSchema: object(
+      { run: { type: 'string', description: 'A run id, the start of one, or an issue identifier such as INS-123 to cancel the issue.' } },
+      ['run'],
+    ),
     async call(client, input) {
-      await client.post(`/api/runs/${await findRunId(client, need(input, 'run'))}/cancel`, {})
-      return 'Cancel requested.'
+      return cancelRunOrIssue(client, need(input, 'run'))
     },
   },
   {
@@ -193,13 +196,13 @@ export const TOOLS: Tool[] = [
     name: 'factorix_decide',
     description:
       'Approves or rejects something from the inbox, as the person whose token this is. Only do this when they asked for that decision. ' +
-      'A merge that stopped half way also takes choice: retry, revert, or keep.',
+      'A merge that stopped half way also takes choice: retry, revert, or keep. A merge gate also takes resolve, which sends an agent to clear conflicts first.',
     inputSchema: object(
       {
         approval: { type: 'string', description: 'An approval id from the inbox, or an issue identifier with one decision waiting.' },
         decision: { type: 'string', enum: ['approved', 'rejected'] },
         message: { type: 'string' },
-        choice: { type: 'string', enum: ['retry', 'revert', 'keep'] },
+        choice: { type: 'string', enum: ['retry', 'revert', 'keep', 'resolve'] },
       },
       ['approval', 'decision'],
     ),

@@ -2,10 +2,12 @@ import { createHmac } from 'node:crypto'
 import type { Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { RetryLaterError, signPlugin, type TrackerIssue } from '@factorix/connectors'
+import type { SandboxProvider } from '@factorix/sandbox'
 import { initialBlockConfig, pluginBlockType, pluginTriggerType, type WorkflowDefinition } from '@factorix/schemas'
 import { type BlockCall, definePlugin } from '@moxxy/factorix-plugin-sdk'
 import { serve } from '@moxxy/factorix-plugin-sdk/node'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { executeRun } from './services/executor'
 import { advanceIssue } from './services/pipeline'
 import { relayDomainEvents } from './services/relay'
 import { applyTrackerIssue, setTrackerState } from './services/tracker-sync'
@@ -880,6 +882,77 @@ describe('workflows', () => {
       await admin.ok('POST', `/api/workflow-runs/${run.id}/cancel`)
       expect((await db()('runs').where({ id: runId }).first()).state).toBe('cancelled')
       expect((await refresh(run.id)).status).toBe('cancelled')
+    })
+
+    it('cancels a ticket workflow agent run from its run page even without a pipeline cursor', async () => {
+      const issue = await ticket()
+      const run = await runOn(await publish(askFlow({ prompt: 'Wait for cancellation.' })), issue.id)
+      const runId = run.steps.find((item: { nodeId: string }) => item.nodeId === 'p').output.runId
+
+      await admin.ok('POST', `/api/runs/${runId}/cancel`, {})
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled' })
+      expect((await db()('issues').where({ id: issue.id }).first()).lockedByRunId).toBeNull()
+    })
+
+    const LOST = [
+      { lost: 'container', reattach: async () => null },
+      {
+        lost: 'runner',
+        reattach: async () => {
+          throw new Error('The runner is offline')
+        },
+      },
+    ]
+
+    /** Plays a worker that picks the run up again and finds its container as `reattach` says. */
+    async function pickUpAgain(runId: string, reattach: () => Promise<null>) {
+      const sandbox = {
+        ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }),
+        reattach,
+        stop: async () => undefined,
+        remove: async () => undefined,
+        runStep: async () => ({ exitCode: 0, stdout: '', stderr: '', values: {} }),
+      }
+      const subscriber = harness.deps.redis.duplicate()
+      try {
+        await executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'test-worker', subscriber }, runId)
+      } finally {
+        subscriber.disconnect()
+      }
+    }
+
+    it.each(LOST)('never retries a cancelled agent run whose $lost is gone when a worker picks it up again', async ({ reattach }) => {
+      const issue = await ticket()
+      const run = await runOn(await publish(askFlow({ prompt: 'Wait for cancellation.' })), issue.id)
+      const runId = run.steps.find((item: { nodeId: string }) => item.nodeId === 'p').output.runId
+      await db()('runs').where({ id: runId }).update({ state: 'running', containerId: 'agent-container' })
+      await admin.ok('POST', `/api/runs/${runId}/cancel`, {})
+
+      await pickUpAgain(runId, reattach)
+      await drain()
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
+      expect(await db()('runs').where({ parentRunId: runId })).toHaveLength(0)
+      expect((await db()('issues').where({ id: issue.id }).first()).lockedByRunId).toBeNull()
+      expect(statusOf(await refresh(run.id)).p).toBe('failed')
+    })
+
+    it.each(LOST)('starts none of a cancelled issue’s queued runs, even after the run ahead of them ends ($lost gone)', async ({ reattach }) => {
+      const issue = await ticket()
+      const asked = await runOn(await publish(askFlow({ prompt: 'Hold the ticket.' })), issue.id)
+      const holderId = asked.steps.find((item: { nodeId: string }) => item.nodeId === 'p').output.runId
+      await db()('runs').where({ id: holderId }).update({ state: 'running', containerId: 'agent-container' })
+      await admin.ok('POST', `/api/issues/${issue.id}/assign`, { agentId })
+      const step = await db()('runs').where({ issueId: issue.id, state: 'queued' }).first()
+      expect(step.pipelineStep).toBeTruthy()
+
+      await admin.ok('POST', `/api/issues/${issue.id}/cancel`)
+      expect(await db()('runs').where({ id: step.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled' })
+
+      await pickUpAgain(holderId, reattach)
+      await drain()
+      expect(await db()('runs').where({ id: holderId }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled' })
+      expect(await db()('runs').where({ issueId: issue.id }).whereNotIn('state', ['cancelled'])).toHaveLength(0)
+      expect((await db()('issues').where({ id: issue.id }).first()).lockedByRunId).toBeNull()
     })
 
     it('fails with a clear reason when a skill is gone or no agent can be found', async () => {

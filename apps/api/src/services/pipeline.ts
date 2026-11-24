@@ -11,23 +11,22 @@ import {
 import { type AccountRow, type AgentRow, type Db, type IssueRow, json, type PipelineRow, type ProjectRow, type RunRow } from '@factorix/db'
 import type { Knex } from 'knex'
 import { writeAudit } from '../lib/audit'
+import { conflict, notFound } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { agentRole, buildAgentSnapshot } from './agents'
 import { mergeRequestSnapshot, mergeRequestsOf } from './repos'
 import { retryDelayMs } from './retries'
 
 type Trx = Knex.Transaction
+type CancelOptions = { discard?: boolean; by?: string | null }
+type AdvanceOptions = CancelOptions & { selectedRunId?: string }
 
 /**
  * Serialized per issue by the row lock, so concurrent webhooks and run completions apply in some order, never interleaved.
  * `by` is the person who started the pass from inside Factorix. Its runs are theirs, so they may run on their own plan.
+ * A cancel stops `selectedRunId` when it names one, in place of whichever run holds the issue.
  */
-export async function advanceIssue(
-  db: Db,
-  issueId: string,
-  event: PipelineEvent,
-  options: { by?: string | null } = {},
-): Promise<AdvanceResult | null> {
+export async function advanceIssue(db: Db, issueId: string, event: PipelineEvent, options: AdvanceOptions = {}): Promise<AdvanceResult | null> {
   return db.transaction(async (trx) => {
     const issue = await trx<IssueRow>('issues').where({ id: issueId }).forUpdate().first()
     if (!issue) return null
@@ -76,13 +75,13 @@ export async function advanceIssue(
       },
     })
 
-    for (const action of result.actions) await applyAction(trx, issue, project, action)
+    for (const action of result.actions) await applyAction(trx, issue, project, action, options)
     await emit(trx, issue.orgId, { type: 'notify', kind: 'issue', id: issue.id, projectId: issue.projectId })
     return result
   })
 }
 
-async function applyAction(trx: Trx, issue: IssueRow, project: ProjectRow, action: PipelineAction): Promise<void> {
+async function applyAction(trx: Trx, issue: IssueRow, project: ProjectRow, action: PipelineAction, options: AdvanceOptions): Promise<void> {
   switch (action.type) {
     case 'enqueueRun':
       await enqueueRun(trx, issue, project, action)
@@ -99,9 +98,16 @@ async function applyAction(trx: Trx, issue: IssueRow, project: ProjectRow, actio
         .whereIn('kind', ['plan', 'merge', 'partial_merge', 'revert_blocked'])
         .update({ status: 'expired', decidedAt: trx.fn.now() })
       return
-    case 'cancelActiveRun':
-      if (issue.lockedByRunId) await requestRunCancel(trx, issue.lockedByRunId, 'The issue moved on or was cancelled')
+    case 'cancelActiveRun': {
+      const runId = options.selectedRunId ?? issue.lockedByRunId
+      if (runId) await requestRunCancel(trx, runId, 'The issue moved on or was cancelled', options)
       return
+    }
+    case 'cancelQueuedRuns': {
+      const queued: string[] = await trx<RunRow>('runs').where({ issueId: issue.id, state: 'queued' }).orderBy('created_at').pluck('id')
+      for (const runId of queued) await requestRunCancel(trx, runId, 'The issue was cancelled', options)
+      return
+    }
     case 'setTrackerState':
       await emit(trx, issue.orgId, { type: 'tracker.setState', issueId: issue.id, key: action.key })
       return
@@ -225,15 +231,27 @@ async function createGateApproval(trx: Trx, issue: IssueRow, kind: GateKind, tim
   if (kind === 'plan') await emit(trx, issue.orgId, { type: 'tracker.comment', issueId: issue.id, template: 'plan_ready', runId: runId ?? undefined })
 }
 
+/** Only the run that owns the current pipeline step can cancel the pipeline. */
+export async function cancelSelectedRun(trx: Trx, selected: RunRow, reason: string, options: CancelOptions): Promise<void> {
+  const issue = selected.issueId ? await trx<IssueRow>('issues').where({ id: selected.issueId }).forUpdate().first() : null
+  const run = await trx<RunRow>('runs').where({ id: selected.id }).forUpdate().first()
+  if (!run) throw notFound('Run')
+  if (run.state === 'cancelled') return
+  if (run.state === 'succeeded' || run.state === 'failed') throw conflict('This run has already finished')
+  if (run.cancelRequestedAt) return
+  if (run.state === 'finalizing') throw conflict('This run is already finalizing')
+  // The current step can be queued while a predecessor still owns the issue lock.
+  if (issue && run.pipelineStep && issue.cursor?.step === run.pipelineStep && (issue.lockedByRunId === run.id || run.state === 'queued')) {
+    const result = await advanceIssue(trx, issue.id, { type: 'cancel' }, { ...options, selectedRunId: run.id })
+    if (result?.handled) return
+  }
+  await requestRunCancel(trx, run.id, reason, options)
+}
+
 /** Works for both a live container (a command row the worker delivers) and one that never started (cancelled here). */
-export async function requestRunCancel(
-  trx: Trx,
-  runId: string,
-  reason: string,
-  options: { discard?: boolean; by?: string | null } = {},
-): Promise<void> {
+export async function requestRunCancel(trx: Trx, runId: string, reason: string, options: CancelOptions = {}): Promise<void> {
   const run = await trx<RunRow>('runs').where({ id: runId }).forUpdate().first()
-  if (!run || ['succeeded', 'failed', 'cancelled'].includes(run.state)) return
+  if (!run || run.cancelRequestedAt || ['succeeded', 'failed', 'cancelled'].includes(run.state)) return
   if (run.state === 'queued' || run.state === 'suspended') {
     await trx('runs')
       .where({ id: runId })

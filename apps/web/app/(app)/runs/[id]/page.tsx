@@ -143,7 +143,7 @@ export default function RunPage({ params }: { params: Promise<{ id: string }> })
         }
       >
         <RunStateChip state={run.state} />
-        {live ? (
+        {live && run.state !== 'finalizing' ? (
           <Button size="sm" variant="danger" onClick={() => void cancel()}>
             <Ban />
             Cancel

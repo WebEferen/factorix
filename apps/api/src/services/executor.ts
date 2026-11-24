@@ -177,6 +177,7 @@ class RunExecution {
       const handle = await this.attachOrStart()
       if (!handle) return
       this.handle = handle
+      if (this.run.cancelRequestedAt) this.armForceStop()
       await this.flushCommands()
       await this.ingest(handle)
       if (this.lostLease) return
@@ -307,14 +308,8 @@ class RunExecution {
         this.log('info', 'Worker reattached to the running container.')
         return handle
       }
-      if (this.run.state !== 'preparing') {
-        await this.finish({
-          state: 'failed',
-          outcome: 'failed',
-          result: 'failed',
-          error: { code: 'runtime_crash', message: 'The agent container disappeared while the worker was away.' },
-          retryable: true,
-        })
+      if (this.run.cancelRequestedAt || this.run.state !== 'preparing') {
+        await this.finalize(null, true)
         return null
       }
     }
@@ -488,6 +483,7 @@ class RunExecution {
 
   private async prepareAndStart(): Promise<AgentHandle | null> {
     const { db, sandbox } = this.deps
+    if (await this.cancelledBeforeStart()) return null
     if (this.run.runtime === 'scripted' && !(await readSettings(this.deps)).allowScriptedRuntime)
       throw new Error('The scripted runtime is disabled on this deployment')
     if (this.run.runtime !== 'scripted' && !this.deps.env.FACTORIX_PROXY_URL)
@@ -496,6 +492,7 @@ class RunExecution {
       )
     const workspace = this.workspace as Workspace
     const checkout = await this.mirrorAndCheckout()
+    if (await this.cancelledBeforeStart()) return null
     if (checkout.head)
       await db('workspaces').where({ id: this.run.workspaceId }).update({ headSha: checkout.head, branch: this.branch, lastUsedAt: db.fn.now() })
     const services = await this.startServices()
@@ -596,12 +593,23 @@ class RunExecution {
           ? { memoryBytes: this.project.limits.memoryMb ? this.project.limits.memoryMb * 1024 * 1024 : undefined, cpus: this.project.limits.cpus }
           : undefined,
     }
+    if (await this.cancelledBeforeStart()) return null
     const handle = await sandbox.startAgent(workspace, options)
     await db('runs').where({ id: this.run.id }).update({ containerId: handle.containerId, updatedAt: db.fn.now() })
     this.run.containerId = handle.containerId
     handle.send(encodeLine(spec))
     this.scheduleTimeout()
     return handle
+  }
+
+  /** A cancel accepted before the agent starts ends the run here, so its container never starts. */
+  private async cancelledBeforeStart(): Promise<boolean> {
+    const run = await this.deps.db<RunRow>('runs').where({ id: this.run.id }).first('cancelRequestedAt')
+    if (!run?.cancelRequestedAt) return false
+    this.log('info', 'The run was cancelled before its agent started.')
+    await this.clearCache()
+    await this.finish({ state: 'cancelled', outcome: 'cancelled', result: 'cancelled', error: null, retryable: false })
+    return true
   }
 
   /** An issue run gets the preview tools when the project's environment has something to open and the runtime can host them. */
@@ -646,9 +654,15 @@ class RunExecution {
   }
 
   private armForceStop(): void {
-    if (this.forceStop || !this.run.containerId) return
+    if (this.lostLease || this.forceStop || !this.run.containerId) return
     const containerId = this.run.containerId
-    this.forceStop = setTimeout(() => void this.deps.sandbox.stop(containerId, 5).catch(() => undefined), FORCE_STOP_AFTER_CANCEL_MS)
+    this.forceStop = setTimeout(() => {
+      if (this.lostLease) return
+      void this.deps.sandbox.stop(containerId, 5).catch(() => {
+        // Let the next heartbeat retry if the runner was temporarily unreachable.
+        this.forceStop = null
+      })
+    }, this.deps.timings?.forceStopAfterCancelMs ?? FORCE_STOP_AFTER_CANCEL_MS)
     this.forceStop.unref?.()
   }
 
@@ -788,14 +802,16 @@ class RunExecution {
 
   private async beat(): Promise<void> {
     const { db } = this.deps
-    const updated = await db('runs')
+    const [run] = await db<RunRow>('runs')
       .where({ id: this.run.id, leaseOwner: this.deps.owner })
       .update({ leaseExpiresAt: db.raw(`now() + interval '${this.deps.timings?.leaseSeconds ?? LEASE_SECONDS} seconds'`) })
-    if (updated === 0) {
+      .returning('cancelRequestedAt')
+    if (!run) {
       this.lostLease = true
       this.handle?.detach()
       return
     }
+    if (run.cancelRequestedAt) this.armForceStop()
     await this.flushCommands()
     if (this.waitingSince && Date.now() - this.waitingSince > (this.deps.timings?.suspendAfterMs ?? SUSPEND_AFTER_MS)) await this.suspend()
   }
@@ -806,24 +822,39 @@ class RunExecution {
     const { db } = this.deps
     const commands = await db('run_commands').where({ runId: this.run.id }).whereNull('deliveredAt').orderBy('id')
     for (const command of commands) {
+      if (command.payload.type === 'cancel') this.armForceStop()
       handle.send(encodeLine(command.payload))
       await db('run_commands').where({ id: command.id }).update({ deliveredAt: db.fn.now() })
-      if (command.payload.type === 'cancel') this.armForceStop()
     }
   }
 
   /** Nobody answered, so stop paying for an idle container. The session stays on the volume for the resume. */
   private async suspend(): Promise<void> {
+    const { db } = this.deps
     const containerId = this.run.containerId
+    await this.events.flush()
+    // Cancellation may have arrived after the heartbeat read the run.
+    const changed = await db('runs')
+      .where({ id: this.run.id, state: 'waiting_approval', leaseOwner: this.deps.owner })
+      .whereNull('cancelRequestedAt')
+      .update({
+        state: 'suspended',
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        containerId: null,
+        lastRunnerSeq: this.events.lastRunnerSeq,
+        updatedAt: db.fn.now(),
+      })
+    if (!changed) return
     this.suspended = true
     this.waitingSince = null
-    this.log('info', 'No decision yet, so the container is stopping. The run resumes when someone decides.')
-    await this.events.flush()
-    await this.setState('suspended', { leaseOwner: null, leaseExpiresAt: null, containerId: null, lastRunnerSeq: this.events.lastRunnerSeq })
+    this.run.state = 'suspended'
     this.run.containerId = null
+    this.log('info', 'No decision yet, so the container is stopping. The run resumes when someone decides.')
     if (containerId) await this.deps.sandbox.stop(containerId, 5).catch(() => undefined)
     await stopRunServices(this.deps, this.run.id).catch(() => undefined)
     this.handle?.detach()
+    await this.deps.redis.publish(orgChannel(this.run.orgId), JSON.stringify({ kind: 'run', id: this.run.id, projectId: this.run.projectId }))
   }
 
   /** It ends as a crash, which the project's retry loop starts afresh in a new container, rather than taking down its next worker too. */
@@ -848,14 +879,30 @@ class RunExecution {
     this.usage = done.payload.usage
   }
 
-  private async finalize(handle: AgentHandle | null): Promise<void> {
+  private async finalize(handle: AgentHandle | null, missingContainer = false): Promise<void> {
+    // Enter finalizing before reading the request so a run cancellation accepted during reattach is visible here.
+    await this.setState('finalizing', { sessionRef: this.run.sessionRef })
+    const cancellation = await this.deps.db<RunRow>('runs').where({ id: this.run.id }).first('cancelRequestedAt', 'discardOnCancel')
+    if (missingContainer && !cancellation?.cancelRequestedAt) {
+      await this.finish({
+        state: 'failed',
+        outcome: 'failed',
+        result: 'failed',
+        error: { code: 'runtime_crash', message: 'The agent container disappeared while the worker was away.' },
+        retryable: true,
+      })
+      return
+    }
+    this.run.discardOnCancel = cancellation?.discardOnCancel ?? this.run.discardOnCancel
     const done = this.doneEvent
     let outcome: RunOutcome = done?.outcome ?? 'failed'
     if (!done && handle) {
       const { exitCode } = await handle.wait().catch(() => ({ exitCode: -1 }))
       this.lastError ??= { code: 'runtime_crash', message: `The agent container exited with code ${exitCode} before finishing.` }
     }
-    if (this.timedOut) {
+    if (cancellation?.cancelRequestedAt) {
+      outcome = 'cancelled'
+    } else if (this.timedOut) {
       outcome = 'failed'
       this.lastError = { code: 'timeout', message: 'The run hit its time limit.' }
     } else if (this.budgetExceeded) {
@@ -865,7 +912,6 @@ class RunExecution {
     if (outcome === 'budget_exceeded') this.lastError ??= { code: 'policy', message: 'The agent reached its budget.' }
     if (outcome === 'max_turns') this.lastError ??= { code: 'policy', message: 'The agent reached its turn limit.' }
 
-    await this.setState('finalizing', { sessionRef: this.run.sessionRef })
     const structuredOutput = done?.structuredOutput ?? this.run.structuredOutput
     let result = 'failed'
     let diff: string | undefined
@@ -912,8 +958,8 @@ class RunExecution {
       error: state === 'failed' ? (this.lastError ?? { code: 'unknown', message: done?.finalText || 'The run failed.' }) : null,
       retryable: code ? BREAKDOWNS.includes(code) : false,
     })
-    if (state === 'succeeded' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
-    else if (state === 'cancelled' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
+    if ((this.run.state === 'succeeded' || this.run.state === 'cancelled') && this.run.containerId)
+      await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
   }
 
   /** Runs before the issue's lock is released, so it cannot pull a cache out from under the next run's install. */
@@ -945,7 +991,7 @@ class RunExecution {
     if (this.run.containerId) await this.deps.sandbox.stop(this.run.containerId, 5).catch(() => undefined)
   }
 
-  private async finish(input: {
+  private async finish(proposed: {
     state: TerminalState
     outcome: RunOutcome
     result: string
@@ -968,8 +1014,14 @@ class RunExecution {
           turns: this.usage.turns ?? 0,
           byModel: this.usage.byModel,
         }))
-    await db.transaction(async (trx) => {
+    this.run.state = await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
+      // Use the same lock order as cancellation so an accepted request wins over a pending terminal update.
+      const run = await trx<RunRow>('runs').where({ id: this.run.id }).forUpdate().first('cancelRequestedAt')
+      const input: typeof proposed =
+        run?.cancelRequestedAt && proposed.state !== 'cancelled'
+          ? { ...proposed, state: 'cancelled', outcome: 'cancelled', result: 'failed', error: null, retryable: false }
+          : proposed
       await trx('runs')
         .where({ id: this.run.id })
         .update({
@@ -1015,8 +1067,8 @@ class RunExecution {
         }
       }
       if (input.state === 'failed' && input.retryable) await retryAskedRun(trx, this.run, this.project)
+      return input.state
     })
-    this.run.state = input.state
     const asked = this.run.trigger as { workflowRunId?: string; nodeId?: string }
     // The workflow sweep settles the step if this is lost.
     if (asked.workflowRunId && asked.nodeId)

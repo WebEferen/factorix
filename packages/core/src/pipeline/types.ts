@@ -83,6 +83,7 @@ export type PipelineAction =
   | { type: 'createApproval'; kind: GateKind; timeoutMinutes?: number }
   | { type: 'closePendingApprovals' }
   | { type: 'cancelActiveRun' }
+  | { type: 'cancelQueuedRuns' }
   | { type: 'setTrackerState'; key: TrackerStateKey }
   | { type: 'postComment'; template: 'loops_exceeded' | 'run_failed' | CommentTemplate; step: string }
   | { type: 'scmMerge' }

@@ -7,6 +7,7 @@ import { ISSUE_SORTS, type RuntimeDto } from '@factorix/schemas'
 import { definePlugin, factorix } from '@moxxy/factorix-plugin-sdk'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { syncBundledPlugins } from './services/bundled-plugins'
+import { releaseIssueLock } from './services/pipeline'
 import { relayDomainEvents } from './services/relay'
 import { refreshRuntimeModels } from './services/runtime-models'
 import { FactorixTracker } from './services/tickets'
@@ -1437,6 +1438,32 @@ describe('API', () => {
         const { issue } = await admin.ok('POST', `/api/issues/${issues[0].id}/retry`)
         expect(issue.factoryState).toBe('active')
         expect((await admin.request('POST', `/api/issues/${issues[0].id}/retry`)).status).toBe(409)
+      })
+
+      it('cancels the current queued step while its predecessor still holds the issue lock', async () => {
+        const { issues } = await admin.ok('GET', '/api/issues?q=from%20the')
+        const issueId = issues[0].id
+        const { runs } = await admin.ok('GET', `/api/runs?issueId=${issueId}`)
+        const queued = runs.find((run: { state: string }) => run.state === 'queued')
+        const predecessor = runs.find((run: { state: string }) => run.state === 'cancelled')
+        const { db } = harness.deps
+        await db('runs').where({ id: predecessor.id }).update({ state: 'running', outcome: null, finishedAt: null, discardOnCancel: true })
+        await db('issues').where({ id: issueId }).update({ lockedByRunId: predecessor.id })
+
+        await admin.ok('POST', `/api/runs/${queued.id}/cancel`, {})
+        expect(await db('runs').where({ id: queued.id }).first()).toMatchObject({ state: 'cancelled' })
+        expect(await db('runs').where({ id: predecessor.id }).first()).toMatchObject({ state: 'running', discardOnCancel: true })
+        expect(await db('run_commands').where({ runId: predecessor.id })).toHaveLength(0)
+        expect(await db('issues').where({ id: issueId }).first()).toMatchObject({
+          factoryState: 'cancelled',
+          lockedByRunId: predecessor.id,
+        })
+
+        await db.transaction(async (trx) => {
+          await trx('runs').where({ id: predecessor.id }).update({ state: 'cancelled', outcome: 'cancelled', finishedAt: trx.fn.now() })
+          await releaseIssueLock(trx, issueId, predecessor.id)
+        })
+        expect(await db('issues').where({ id: issueId }).first()).toMatchObject({ factoryState: 'cancelled', lockedByRunId: null })
       })
 
       describe('sorting', () => {

@@ -20,6 +20,7 @@ import {
 } from './handoff'
 import { runMcpServer } from './mcp'
 import {
+  cancelRunOrIssue,
   connectChatgptPlan,
   connectClaudePlan,
   decide,
@@ -76,7 +77,7 @@ const HELP = `fx hands work to Factorix agents from a terminal.
                                              answers, and open it in the browser.
 
   fx inbox                                   What waits for you
-  fx approve <id|issue> [-m message] [--choice retry|revert|keep]
+  fx approve <id|issue> [-m message] [--choice retry|revert|keep|resolve]
   fx reject <id|issue> -m <message>
 
   fx plan                                    Your own model plans, which your runs use in place of the organization's keys
@@ -320,8 +321,7 @@ async function main(argv: string[]): Promise<number> {
       return 0
     }
     case 'cancel': {
-      await client.post(`/api/runs/${await findRunId(client, arg(0, 'a run or an issue'))}/cancel`, {})
-      out('Cancel requested.')
+      out(await cancelRunOrIssue(client, arg(0, 'a run or an issue')))
       return 0
     }
     case 'issues': {

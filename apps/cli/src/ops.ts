@@ -48,19 +48,36 @@ export async function findIssue(client: Client, ref: string): Promise<IssueDetai
   return (await client.get<{ issue: IssueDetailDto }>(`/api/issues/${id}`)).issue
 }
 
-/** Takes a run id, the start of one, or an issue, which means its active run or else its latest. */
-export async function findRunId(client: Client, ref: string): Promise<string> {
-  if (UUID.test(ref)) return ref
+/** Takes a run id or the start of one, and anything else as an issue. */
+async function findRunOrIssue(client: Client, ref: string): Promise<{ runId: string } | { issue: IssueDetailDto }> {
+  if (UUID.test(ref)) return { runId: ref }
   if (ID_PREFIX.test(ref)) {
     const { runs } = await client.get<{ runs: RunDto[] }>('/api/runs?limit=300')
     const matches = runs.filter((run) => run.id.startsWith(ref.toLowerCase()))
-    if (matches.length === 1) return (matches[0] as RunDto).id
+    if (matches.length === 1) return { runId: (matches[0] as RunDto).id }
     if (matches.length > 1) throw new UsageError(`${ref} matches ${matches.length} runs. Give more of the id.`)
   }
-  const issue = await findIssue(client, ref)
-  const id = issue.activeRunId ?? issue.runs[0]?.id
-  if (!id) throw new UsageError(`${issue.identifier} has no runs yet.`)
+  return { issue: await findIssue(client, ref) }
+}
+
+/** Takes a run id, the start of one, or an issue, which means its active run or else its latest. */
+export async function findRunId(client: Client, ref: string): Promise<string> {
+  const found = await findRunOrIssue(client, ref)
+  if ('runId' in found) return found.runId
+  const id = found.issue.activeRunId ?? found.issue.runs[0]?.id
+  if (!id) throw new UsageError(`${found.issue.identifier} has no runs yet.`)
   return id
+}
+
+/** Cancels a run it is given, or an issue it is given, through the issue's own cancel. */
+export async function cancelRunOrIssue(client: Client, ref: string): Promise<string> {
+  const found = await findRunOrIssue(client, ref)
+  if ('runId' in found) {
+    await client.post(`/api/runs/${found.runId}/cancel`, {})
+    return 'Cancel requested.'
+  }
+  await client.post(`/api/issues/${found.issue.id}/cancel`)
+  return `Cancelled ${found.issue.identifier}.`
 }
 
 /** Takes an approval id, the start of one, or an issue with exactly one decision waiting. */
