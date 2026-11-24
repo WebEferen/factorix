@@ -152,6 +152,7 @@ describe('plugin packages', () => {
       ...content,
       archetypes: [{ ...content.archetypes[0], description: '' }],
     })
+    expect(parsePackageManifest(JSON.parse(JSON.stringify(read.manifest)))).toEqual(read.manifest)
     expect(() => readPluginPackage(zip([{ name: PACKAGE_MANIFEST, data: manifest({ entry: undefined, content }) }]))).toThrow(
       'skills/review-checklist.md is not in the package',
     )
@@ -162,6 +163,7 @@ describe('plugin packages', () => {
     [{ entry: undefined }, 'either an entry'],
     [{ entry: undefined, content: {} }, 'lists nothing'],
     [{ entry: undefined, content, egress: ['api.example.com'] }, 'runs nothing'],
+    [{ entry: undefined, content, memoryMb: 512 }, 'runs nothing'],
     [{ entry: undefined, content: { skills: [{ key: 'A b', name: 'X', file: 'x.md' }] } }, 'lowercase'],
     [{ entry: undefined, content: { skills: [content.skills[0], content.skills[0]] } }, 'key of its own'],
     [{ entry: undefined, content: { archetypes: [{ ...content.archetypes[0], role: 'admin' }] } }, 'works as'],

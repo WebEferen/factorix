@@ -10,7 +10,7 @@ const published = {
   license: own.license,
   repository: own.repository,
   type: 'module',
-  exports: { '.': entry('index'), './node': entry('node'), './pack': entry('pack'), './testing': entry('testing') },
+  exports: { '.': entry('index'), './node': entry('node'), './pack': entry('pack'), './registry': entry('registry'), './testing': entry('testing') },
   bin: { 'factorix-plugin': './cli.js' },
   engines: own.engines,
   publishConfig: { access: 'public' },

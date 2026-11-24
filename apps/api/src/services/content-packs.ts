@@ -8,6 +8,7 @@ import {
   type ContentPackRow,
   type Db,
   json,
+  type PackageSource,
   type SkillRow,
   type WorkflowRow,
 } from '@factorix/db'
@@ -28,6 +29,7 @@ import {
 } from '@factorix/schemas'
 import type { Knex } from 'knex'
 import type { z } from 'zod'
+import { packageSourceDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { badRequest, conflict } from '../lib/errors'
 import { emit } from '../lib/outbox'
@@ -237,7 +239,12 @@ export async function inspectContentPack(
  * a draft that does nothing until its admin fills in what is local and publishes it, and an upgrade rewrites only what
  * nobody changed since the package wrote it.
  */
-export async function installContentPack(deps: { db: Db }, account: AccountRow, pkg: PluginPackage): Promise<ContentPackRow> {
+export async function installContentPack(
+  deps: { db: Db },
+  account: AccountRow,
+  pkg: PluginPackage,
+  source: PackageSource | null,
+): Promise<ContentPackRow> {
   const content = readContent(pkg)
   const { manifest } = pkg
   return deps.db.transaction(async (trx) => {
@@ -248,7 +255,13 @@ export async function installContentPack(deps: { db: Db }, account: AccountRow, 
       const names = conflicts.map((decision) => `the ${decision.kind} ${decision.kind === 'skill' ? decision.key : decision.name}`).join(', ')
       throw conflict(`This organization already has ${names}. Rename or remove ${conflicts.length === 1 ? 'it' : 'them'}, then upload again`)
     }
-    const values = { version: manifest.version, manifest: json(manifest) as never, sha256: pkg.sha256, installedBy: account.id }
+    const values = {
+      version: manifest.version,
+      manifest: json(manifest) as never,
+      sha256: pkg.sha256,
+      source: source ? (json(source) as never) : null,
+      installedBy: account.id,
+    }
     const [pack] = existing
       ? await trx<ContentPackRow>('content_packs')
           .where({ id: existing.id })
@@ -331,6 +344,7 @@ export async function installContentPack(deps: { db: Db }, account: AccountRow, 
         name: manifest.name,
         version: manifest.version,
         sha256: pkg.sha256,
+        source,
         created: count('create'),
         updated: count('update'),
         kept: count('keep'),
@@ -422,6 +436,7 @@ export async function listContentPacks(db: Db, orgId: string): Promise<ContentPa
           const target = targets.get(`${item.kind}:${item.targetId}`)
           return { kind: item.kind, key: item.key, id: target?.id ?? null, name: target?.name ?? null }
         }),
+      source: packageSourceDto(pack.source),
       updatedAt: pack.updatedAt.toISOString(),
     }
   })

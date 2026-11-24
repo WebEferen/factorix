@@ -10,6 +10,7 @@ const SECTIONS = [
   { href: '/integrations/connections', label: 'Connections' },
   { href: '/integrations/services', label: 'Integrations' },
   { href: '/integrations/plugins', label: 'Plugins' },
+  { href: '/integrations/market', label: 'Market' },
 ]
 
 export default function IntegrationsLayout({ children }: { children: ReactNode }) {

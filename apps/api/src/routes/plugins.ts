@@ -83,7 +83,7 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
     if (ids.length === 0) return new Map()
     const instances = await db<PluginInstanceRow>('plugin_instances')
       .whereIn('pluginId', ids)
-      .select('pluginId', 'runnerId', 'package', 'sha256', 'state', 'error', 'readyAt')
+      .select('pluginId', 'runnerId', 'package', 'sha256', 'state', 'error', 'readyAt', 'source')
     const runnerIds = instances.flatMap((instance) => (instance.runnerId ? [instance.runnerId] : []))
     const runners = runnerIds.length > 0 ? await db<RunnerRow>('runners').whereIn('id', runnerIds).select('id', 'name') : []
     const runnerById = new Map(runners.map((runner) => [runner.id, runner]))
@@ -264,27 +264,30 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
       { parseAs: 'buffer', bodyLimit: PACKAGE_LIMITS.archiveBytes },
       (_request, body, done) => done(null, body),
     )
-    const zip = (request: FastifyRequest): Buffer => {
+    const zip = async (request: FastifyRequest): Promise<Buffer> => {
+      if (!(await readSettings(deps)).allowPackageUploads) {
+        throw new HttpError(403, 'not_allowed', 'This installation installs packages only from its registries, under Integrations, Market')
+      }
       if (!Buffer.isBuffer(request.body)) throw badRequest('Send the package as application/zip')
       return request.body
     }
 
     scope.post('/api/plugin-packages/inspect', async (request) => {
       const { account } = requireAdmin(request)
-      return { package: await inspectPluginPackage(deps, account.orgId, zip(request)) }
+      return { package: await inspectPluginPackage(deps, account.orgId, readPackage(await zip(request)), null) }
     })
 
     scope.post('/api/plugin-packages', async (request) => {
       const { account, user } = requireAdmin(request)
-      const archive = zip(request)
+      const archive = await zip(request)
       const pkg = readPackage(archive)
       if (pkg.manifest.content) {
-        const pack = await installContentPack(deps, account, pkg)
+        const pack = await installContentPack(deps, account, pkg, null)
         return { contentPack: (await listContentPacks(db, account.orgId)).find((entry) => entry.id === pack.id) }
       }
       const runner = (request.query as { runner?: string }).runner || null
       if (runner && !UUID.test(runner)) throw badRequest('That runner is not in this organization')
-      const plugin = await installPluginPackage(deps, account, pkg, archive, runner)
+      const plugin = await installPluginPackage(deps, account, pkg, archive, runner, null)
       const enabled = await db<OrganizationPluginRow>('organization_plugins').where({ orgId: account.orgId, pluginId: plugin.id }).first()
       const packages = await packagesOf([plugin])
       return { plugin: pluginDto(plugin, enabled, user.installationAdmin, packages.get(plugin.id) ?? null) }

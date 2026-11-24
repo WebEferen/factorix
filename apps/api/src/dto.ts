@@ -10,6 +10,7 @@ import type {
   Db,
   IssueRow,
   OrganizationRow,
+  PackageSource,
   ProjectRepoRow,
   ProjectRow,
   RunRow,
@@ -27,6 +28,7 @@ import type {
   IssueDto,
   MergeRequestDto,
   NetworkSettings,
+  PackageSourceDto,
   ProjectDto,
   ProjectRepoDto,
   RunDto,
@@ -77,6 +79,10 @@ export function archetypeDto(row: ArchetypeRow, agents: ArchetypeDto['agents']):
     agents,
     updatedAt: row.updatedAt.toISOString(),
   }
+}
+
+export function packageSourceDto(source: PackageSource | null): PackageSourceDto | null {
+  return source ? { registryId: source.registryId, registry: source.registry, publisher: source.publisherName, trust: source.trust } : null
 }
 
 export function skillDto(row: SkillRow): SkillDto {

@@ -113,6 +113,16 @@ npx factorix-plugin pack
 
 An organization's admin uploads the zip under **Integrations → Plugins**. The server gets `PLUGIN_SECRET`, `PORT`, `HOST`, `FACTORIX_URL`, and `DATABASE_URL` from its environment, and reaches only the hosts it listed. `packPlugin` from `@moxxy/factorix-plugin-sdk/pack` does the same from code. A package can also carry skills, archetypes, and workflows with no server, under `factorix.content`. The format is in [`docs/plugin-packages.md`](https://github.com/WebEferen/factorix/blob/main/docs/plugin-packages.md).
 
+To list it in a registry, sign the zip as its publisher. Whoever runs the registry builds its signed index from the signed zips, and Factorix installs from it under **Integrations → Market**:
+
+```sh
+npx factorix-plugin keygen acme.key
+npx factorix-plugin sign hello-1.0.0.zip --key acme.key
+npx factorix-plugin registry ./market --key registry.key
+```
+
+`generateKey`, `signPackage`, and `buildRegistry` from `@moxxy/factorix-plugin-sdk/registry` do the same from code.
+
 ## Trackers
 
 `tracker(connection)` returns an object that Factorix calls for one connection. It is created for each request, so keep it cheap and keep no state in it.

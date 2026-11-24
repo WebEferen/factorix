@@ -1,6 +1,6 @@
 'use client'
 
-import type { ContentPackDto, ContentPackPlanDto, PluginDto, PluginPackageDto, RunnerDto } from '@factorix/schemas'
+import type { ContentPackDto, PluginDto, PluginPackageDto, RunnerDto } from '@factorix/schemas'
 import { Package, Plus, Puzzle, Upload } from 'lucide-react'
 import Link from 'next/link'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
@@ -9,63 +9,8 @@ import useSWR from 'swr'
 import { api, fetcher } from '@/modules/lib/api'
 import { useMe, usePlugins } from '@/modules/lib/data'
 import { PluginFields } from '@/modules/plugins/fields'
-import { Button, Chip, Dialog, DialogFooter, EmptyState, ErrorState, Field, Input, ListSkeleton, SectionTitle, Select } from '@/modules/ui'
-
-const HERE = 'here'
-
-function kilobytes(size: number): string {
-  return size < 1024 * 1024 ? `${Math.ceil(size / 1024)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`
-}
-
-const ITEM_KINDS: Record<ContentPackPlanDto['kind'], [string, string]> = {
-  skill: ['skill', 'skills'],
-  archetype: ['archetype', 'archetypes'],
-  workflow: ['workflow', 'workflows'],
-}
-
-const ACTIONS: Record<ContentPackPlanDto['action'], { label: string; tone: 'success' | 'info' | 'neutral' | 'outline' | 'danger' }> = {
-  create: { label: 'New', tone: 'success' },
-  update: { label: 'Updated', tone: 'info' },
-  keep: { label: 'Kept, it was changed here', tone: 'neutral' },
-  gone: { label: 'Not brought back', tone: 'neutral' },
-  release: { label: 'Stays, no longer in the package', tone: 'outline' },
-  conflict: { label: 'Name taken', tone: 'danger' },
-}
-
-function countOf(items: { kind: ContentPackPlanDto['kind'] }[]): string {
-  return (Object.keys(ITEM_KINDS) as ContentPackPlanDto['kind'][])
-    .map((kind) => [kind, items.filter((item) => item.kind === kind).length] as const)
-    .filter(([, count]) => count > 0)
-    .map(([kind, count]) => `${count} ${ITEM_KINDS[kind][count === 1 ? 0 : 1]}`)
-    .join(', ')
-}
-
-function ContentPlan({ items }: { items: ContentPackPlanDto[] }) {
-  const conflicts = items.some((item) => item.action === 'conflict')
-  return (
-    <>
-      <ul className="divide-y divide-divider rounded-md border border-divider">
-        {items.map((item) => (
-          <li key={`${item.kind}:${item.key}`} className="flex items-center gap-3 px-3 py-1.5">
-            <span className="w-20 shrink-0 text-xs text-ink-3 capitalize">{ITEM_KINDS[item.kind][0]}</span>
-            <span className="min-w-0 flex-1 truncate">{item.name}</span>
-            <Chip tone={ACTIONS[item.action].tone}>{ACTIONS[item.action].label}</Chip>
-          </li>
-        ))}
-      </ul>
-      {conflicts ? (
-        <p className="text-xs text-danger-ink">
-          This organization already has something by a name the package uses. Rename or remove it, then upload again.
-        </p>
-      ) : (
-        <p className="text-xs text-ink-2">
-          What it imports becomes this organization's own. Workflows arrive as drafts: pick their agents, projects, and connections, then publish
-          them.
-        </p>
-      )}
-    </>
-  )
-}
+import { ContentPlan, countOf, HERE, PackageSummary, PluginPlan } from '@/modules/plugins/package-plan'
+import { Button, Chip, Dialog, DialogFooter, EmptyState, ErrorState, Field, Input, ListSkeleton, SectionTitle } from '@/modules/ui'
 
 function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (open: boolean) => void; onDone: () => void }) {
   const input = useRef<HTMLInputElement>(null)
@@ -135,22 +80,7 @@ function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
         </button>
       ) : (
         <div className="flex flex-col gap-3 text-sm">
-          <div>
-            <div className="font-medium">
-              {found.name} <span className="text-ink-3">{found.version}</span>
-              {found.replaces ? <span className="text-ink-2"> replaces {found.replaces}</span> : null}
-            </div>
-            {found.description ? <p className="text-ink-2">{found.description}</p> : null}
-            <p className="text-xs text-ink-3">
-              {[
-                found.publisher ? `By ${found.publisher}` : null,
-                `${found.files} files, ${kilobytes(found.size)}`,
-                `sha256 ${found.sha256.slice(0, 12)}`,
-              ]
-                .filter(Boolean)
-                .join(' · ')}
-            </p>
-          </div>
+          <PackageSummary found={found} />
           {found.kind === 'content' ? (
             <ContentPlan items={found.items} />
           ) : (
@@ -178,59 +108,6 @@ function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
         </div>
       )}
     </Dialog>
-  )
-}
-
-function PluginPlan({
-  found,
-  runner,
-  setRunner,
-  runners,
-}: {
-  found: PluginPackageDto
-  runner: string
-  setRunner: (runner: string) => void
-  runners: RunnerDto[]
-}) {
-  return (
-    <>
-      <div className="rounded-md border border-divider p-3">
-        <p className="mb-1 font-medium">Once an admin turns it on, it may</p>
-        {found.permissions.length > 0 ? (
-          <ul className="flex list-disc flex-col gap-1 pl-5 text-ink-2">
-            {found.permissions.map((permission) => (
-              <li key={permission.id}>{permission.description}</li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-ink-2">Only read its own settings and connections.</p>
-        )}
-      </div>
-      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-ink-2">
-        <dt className="text-ink-3">Reaches</dt>
-        <dd className="min-w-0 break-words">{[...found.egress, 'Factorix'].join(', ')}</dd>
-        <dt className="text-ink-3">Database</dt>
-        <dd>{found.database ? 'A Postgres of its own' : 'None'}</dd>
-        <dt className="text-ink-3">Memory</dt>
-        <dd>Up to {found.memoryMb} MB</dd>
-      </dl>
-      {found.replaces ? (
-        <p className="text-xs text-ink-2">
-          It keeps its machine, data, and settings. A permission the new version adds waits until an admin saves its settings.
-        </p>
-      ) : (
-        <Field label="Runs on" hint="Its data stays on that machine.">
-          <Select
-            value={runner}
-            onChange={setRunner}
-            options={[
-              { value: HERE, label: 'This Factorix' },
-              ...runners.map((entry) => ({ value: entry.id, label: `${entry.name}${entry.online ? '' : ' (offline)'}` })),
-            ]}
-          />
-        </Field>
-      )}
-    </>
   )
 }
 
@@ -496,7 +373,7 @@ export default function PluginsPage() {
                     plugin.bundled
                       ? 'Comes with Factorix'
                       : plugin.package
-                        ? `Uploaded, runs on ${plugin.package.runner?.name ?? 'this Factorix'}`
+                        ? `${plugin.package.source ? `From ${plugin.package.source.registry}` : 'Uploaded'}, runs on ${plugin.package.runner?.name ?? 'this Factorix'}`
                         : plugin.url,
                   ]
                     .filter(Boolean)
@@ -592,7 +469,13 @@ export default function PluginsPage() {
                     {pack.name} <span className="text-ink-3">{pack.version}</span>
                   </div>
                   <div className="truncate text-xs text-ink-2">
-                    {[pack.description, countOf(pack.items.filter((item) => item.id !== null)) || 'Nothing left of it'].filter(Boolean).join(' · ')}
+                    {[
+                      pack.description,
+                      countOf(pack.items.filter((item) => item.id !== null)) || 'Nothing left of it',
+                      pack.source ? `From ${pack.source.registry}` : 'Uploaded',
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   </div>
                 </div>
                 {admin ? (

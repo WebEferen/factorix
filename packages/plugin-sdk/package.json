@@ -13,6 +13,7 @@
     ".": "./src/index.ts",
     "./node": "./src/node.ts",
     "./pack": "./src/pack.ts",
+    "./registry": "./src/registry.ts",
     "./testing": "./src/testing.ts"
   },
   "engines": {

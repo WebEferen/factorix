@@ -11,10 +11,11 @@ import {
   parsePackageManifest,
   readPluginPackage,
 } from '@factorix/connectors'
-import { type AccountRow, json, type PluginInstanceRow, type PluginRow, type RunnerRow } from '@factorix/db'
+import { type AccountRow, json, type PackageSource, type PluginInstanceRow, type PluginRow, type RunnerRow } from '@factorix/db'
 import { environmentDataVolume, type SandboxProvider, serviceContainerName } from '@factorix/sandbox'
 import type { PluginInstanceDto, PluginPackageDto } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
+import { packageSourceDto } from '../dto'
 import { writeAudit } from '../lib/audit'
 import { pluginKeys, previewKeys, proxyTokenKey } from '../lib/channels'
 import { badRequest, conflict } from '../lib/errors'
@@ -53,7 +54,12 @@ async function packagePlugin(deps: Pick<AppDeps, 'db'>, orgId: string, name: str
   return { plugin, instance }
 }
 
-export function pluginPackageDto(pkg: PluginPackage, replaces: string | null, items: PluginPackageDto['items'] = []): PluginPackageDto {
+export function pluginPackageDto(
+  pkg: PluginPackage,
+  current: { version: string; adds: PluginPackageDto['adds'] } | null,
+  items: PluginPackageDto['items'],
+  source: PackageSource | null,
+): PluginPackageDto {
   const { manifest } = pkg
   return {
     kind: manifest.content ? 'content' : 'plugin',
@@ -68,8 +74,10 @@ export function pluginPackageDto(pkg: PluginPackage, replaces: string | null, it
     files: pkg.files.size,
     size: pkg.size,
     sha256: pkg.sha256,
-    replaces,
+    replaces: current?.version ?? null,
+    adds: current?.adds ?? null,
     items,
+    source: packageSourceDto(source),
   }
 }
 
@@ -84,18 +92,30 @@ export function pluginInstanceDto(instance: PluginInstanceRow, runner: Pick<Runn
     egress: manifest.egress,
     runner: runner ? { id: runner.id, name: runner.name } : null,
     readyAt: instance.readyAt?.toISOString() ?? null,
+    source: packageSourceDto(instance.source),
   }
 }
 
 /** What a package asks for, read without storing or running any of it. */
-export async function inspectPluginPackage(deps: Pick<AppDeps, 'db'>, orgId: string, archive: Buffer): Promise<PluginPackageDto> {
-  const pkg = readPackage(archive)
+export async function inspectPluginPackage(
+  deps: Pick<AppDeps, 'db'>,
+  orgId: string,
+  pkg: PluginPackage,
+  source: PackageSource | null,
+): Promise<PluginPackageDto> {
   if (pkg.manifest.content) {
     const { replaces, items } = await inspectContentPack(deps, orgId, pkg)
-    return pluginPackageDto(pkg, replaces, items)
+    return pluginPackageDto(pkg, replaces ? { version: replaces, adds: null } : null, items, source)
   }
   const { instance } = await packagePlugin(deps, orgId, pkg.manifest.name)
-  return pluginPackageDto(pkg, instance ? parsePackageManifest(instance.package).version : null)
+  if (!instance) return pluginPackageDto(pkg, null, [], source)
+  const current = parsePackageManifest(instance.package)
+  const adds = {
+    permissions: pkg.manifest.permissions.filter((permission) => !current.permissions.includes(permission)),
+    egress: pkg.manifest.egress.filter((host) => !current.egress.includes(host)),
+    database: pkg.manifest.database && !current.database,
+  }
+  return pluginPackageDto(pkg, { version: current.version, adds }, [], source)
 }
 
 /**
@@ -108,6 +128,7 @@ export async function installPluginPackage(
   pkg: PluginPackage,
   archive: Buffer,
   runnerId: string | null,
+  source: PackageSource | null,
 ): Promise<PluginRow> {
   const { db, env } = deps
   if (!env.FACTORIX_PACKAGES_INTERNAL_URL) throw conflict('This installation has no package gateway. Set FACTORIX_PACKAGES_INTERNAL_URL')
@@ -127,6 +148,7 @@ export async function installPluginPackage(
           package: json(manifest) as never,
           archive,
           sha256: pkg.sha256,
+          source: source ? (json(source) as never) : null,
           state: 'starting',
           error: null,
           uploadedBy: account.id,
@@ -159,6 +181,7 @@ export async function installPluginPackage(
         package: json(manifest) as never,
         archive,
         sha256: pkg.sha256,
+        source: source ? (json(source) as never) : null,
         state: 'starting',
         uploadedBy: account.id,
       })
@@ -171,7 +194,14 @@ export async function installPluginPackage(
       action: 'plugin.uploaded',
       targetType: 'plugin',
       targetId: row.id,
-      metadata: { name: manifest.name, version: manifest.version, sha256: pkg.sha256, permissions: manifest.permissions, egress: manifest.egress },
+      metadata: {
+        name: manifest.name,
+        version: manifest.version,
+        sha256: pkg.sha256,
+        permissions: manifest.permissions,
+        egress: manifest.egress,
+        source,
+      },
     })
     return row
   })

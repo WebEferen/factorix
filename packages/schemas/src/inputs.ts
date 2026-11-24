@@ -196,6 +196,29 @@ export const pluginInput = z.object({
   secret: z.string().min(16).max(200),
 })
 
+export const PACKAGE_TRUST_LEVELS = ['signed', 'verified', 'reviewed'] as const
+
+export const pluginRegistryInput = z.object({
+  url: z.url({ protocol: /^https?$/, error: 'Use an http or https address' }).max(500),
+  /** The key that signs its index, as `ed25519:` and base64. */
+  publicKey: z.string().trim().max(100),
+  trust: z.enum(PACKAGE_TRUST_LEVELS).default('verified'),
+})
+
+export const pluginRegistryUpdateInput = z.object({ trust: z.enum(PACKAGE_TRUST_LEVELS) })
+
+/** One version of one package in a registry. The sha256 is what the admin saw, so a registry that changed since is refused. */
+export const marketPackageInput = z.object({
+  registryId: z.uuid(),
+  name: z.string().max(40),
+  version: z.string().max(60),
+  sha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .optional(),
+  runnerId: z.uuid().nullable().optional(),
+})
+
 export const pluginOrganizationInput = z.object({
   enabled: z.boolean(),
   /** Every settings field, secret ones included. A secret left out keeps its stored value. */

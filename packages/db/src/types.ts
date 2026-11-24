@@ -147,6 +147,8 @@ export interface PluginInstanceRow {
   containerId: string | null
   uploadedBy: string | null
   readyAt: Date | null
+  /** Null when an admin uploaded it as a file. */
+  source: PackageSource | null
   createdAt: Date
   updatedAt: Date
 }
@@ -159,6 +161,37 @@ export interface ContentPackRow {
   manifest: Record<string, unknown>
   sha256: string
   installedBy: string | null
+  source: PackageSource | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+/** A package installed from a registry: which one, and who signed it with which key. */
+export interface PackageSource {
+  registryId: string
+  /** What identifies the registry across being removed and added again. */
+  registryUrl: string
+  registry: string
+  publisher: string
+  publisherName: string
+  trust: 'signed' | 'verified' | 'reviewed'
+  keyId: string
+}
+
+export interface PluginRegistryRow {
+  id: string
+  name: string
+  url: string
+  publicKey: string
+  /** The least trust a version needs before an organization may install it. */
+  trust: 'signed' | 'verified' | 'reviewed'
+  /** The last index that passed its signature check. */
+  catalog: Record<string, unknown> | null
+  issuedAt: Date | null
+  fetchedAt: Date | null
+  /** Why the last refresh failed. The catalog stays as it was. */
+  error: string | null
+  addedBy: string | null
   createdAt: Date
   updatedAt: Date
 }

@@ -154,7 +154,8 @@ export function parsePackageManifest(value: unknown): PluginPackageManifest {
     throw new Error(`memoryMb is a whole number from ${PACKAGE_MEMORY_MB.min} to ${PACKAGE_MEMORY_MB.max}`)
   }
   if (raw.database !== undefined && typeof raw.database !== 'boolean') throw new Error('database is true or false')
-  if (content && (raw.database === true || egress.length > 0 || permissions.length > 0 || raw.memoryMb !== undefined)) {
+  // A stored manifest is read again, so the default memory it was given stays readable.
+  if (content && (raw.database === true || egress.length > 0 || permissions.length > 0 || memory !== PACKAGE_MEMORY_MB.default)) {
     throw new Error('Content runs nothing, so a package of content lists no database, egress, permissions, or memory')
   }
   const description = optionalText(raw.description, 300, 'description')

@@ -18,6 +18,7 @@ export interface PlatformSettings {
   previewMaxRunning: number
   previewIdleMinutes: number
   previewMaxHours: number
+  allowPackageUploads: boolean
 }
 
 export type PlatformSettingKey = keyof PlatformSettings
@@ -25,7 +26,7 @@ export type PlatformSettingKey = keyof PlatformSettings
 export interface PlatformSettingSpec {
   key: PlatformSettingKey
   env: string
-  group: 'Agents' | 'Sync' | 'Disk' | 'Previews' | 'Access'
+  group: 'Agents' | 'Sync' | 'Disk' | 'Previews' | 'Plugins' | 'Access'
   label: string
   hint: string
   kind: 'integer' | 'boolean' | 'url'
@@ -184,6 +185,14 @@ export const PLATFORM_SETTINGS: readonly PlatformSettingSpec[] = [
     unit: 'hours',
     min: 1,
     max: 720,
+  },
+  {
+    key: 'allowPackageUploads',
+    env: 'FACTORIX_ALLOW_PACKAGE_UPLOADS',
+    group: 'Plugins',
+    label: 'Let admins upload packages',
+    hint: 'A package uploaded as a file has no signature. With this off, organizations install only from the registries on Integrations, Market.',
+    kind: 'boolean',
   },
   {
     key: 'publicUrl',

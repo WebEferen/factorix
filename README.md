@@ -185,6 +185,7 @@ These can be set in both places:
 | `FACTORIX_PREVIEW_MAX_RUNNING`      | `3`                     | Previews running at once.                                                                                                   |
 | `FACTORIX_PREVIEW_IDLE_MINUTES`     | `60`                    | Stops a preview nobody opened for this long. `0` turns this off.                                                            |
 | `FACTORIX_PREVIEW_MAX_HOURS`        | `24`                    | Stops any preview this long after it started.                                                                               |
+| `FACTORIX_ALLOW_PACKAGE_UPLOADS`    | `true`                  | Lets an organization's admin upload a package as a file. Off, packages come only from registries.                           |
 
 These are set only in the environment:
 

@@ -9,6 +9,7 @@ import { catalogRoutes } from './routes/catalog'
 import { connectionRoutes } from './routes/connections'
 import { environmentRoutes } from './routes/environments'
 import { issueRoutes } from './routes/issues'
+import { marketRoutes } from './routes/market'
 import { pluginRoutes } from './routes/plugins'
 import { previewRoutes } from './routes/previews'
 import { projectRoutes } from './routes/projects'
@@ -83,6 +84,7 @@ export function buildApp(deps: AppDeps, options: { logger?: boolean } = {}): Fas
   projectRoutes(app, deps)
   issueRoutes(app, deps)
   pluginRoutes(app, deps)
+  marketRoutes(app, deps)
   previewRoutes(app, deps, fanout)
   runRoutes(app, deps, fanout)
   runnerRoutes(app, deps)

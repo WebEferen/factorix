@@ -12,6 +12,7 @@ import { createQueues, QUEUE_NAMES } from './queues'
 import { syncBundledPlugins } from './services/bundled-plugins'
 import { abandonActiveRuns, executeRun, newWorkerId, releaseActiveRuns } from './services/executor'
 import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from './services/maintenance'
+import { refreshRegistries } from './services/market'
 import { advanceIssue } from './services/pipeline'
 import { runPluginAction, sweepPluginInstances } from './services/plugin-packages'
 import { runPreviewAction, stopAllPumps, sweepPreviews } from './services/preview-runner'
@@ -30,6 +31,7 @@ const REAP_INTERVAL_MS = 15 * 60_000
 const SETTINGS_INTERVAL_MS = 15_000
 const PREVIEW_SWEEP_INTERVAL_MS = 30_000
 const BUNDLED_PLUGINS_INTERVAL_MS = 60_000
+const REGISTRY_INTERVAL_MS = 60 * 60_000
 
 export interface WorkerHandle {
   runConcurrency(): number
@@ -135,6 +137,7 @@ export function startWorkers(
       async (job) => {
         if (job.name === 'sync') await syncAllProjects(deps, log)
         else if (job.name === 'reap') await reapSandboxes(deps)
+        else if (job.name === 'registries') await refreshRegistries(deps, log)
       },
       { ...base, concurrency: 1 },
     ),
@@ -184,6 +187,10 @@ export function startWorkers(
     () => void deps.queues.maintenance.add('reap', {}, { jobId: `reap-${Math.floor(Date.now() / 60_000)}` }),
     REAP_INTERVAL_MS,
   )
+  const registryTimer = setInterval(
+    () => void deps.queues.maintenance.add('registries', {}, { jobId: `registries-${Math.floor(Date.now() / REGISTRY_INTERVAL_MS)}` }),
+    REGISTRY_INTERVAL_MS,
+  )
 
   const previewTimer = setInterval(() => {
     void sweepPreviews({ ...deps, sandbox: deps.sandbox, owner }).catch((error: Error) => log(`preview sweep failed: ${error.message}`))
@@ -208,6 +215,7 @@ export function startWorkers(
     clearInterval(recoveryTimer)
     clearInterval(syncTimer)
     clearInterval(reapTimer)
+    clearInterval(registryTimer)
     clearInterval(settingsTimer)
   }
   return {

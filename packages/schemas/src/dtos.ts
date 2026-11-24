@@ -66,6 +66,17 @@ export interface PluginInstanceDto {
   /** The runner it runs on, or null for Factorix's own machine. */
   runner: { id: string; name: string } | null
   readyAt: string | null
+  source: PackageSourceDto | null
+}
+
+export type PackageTrust = 'signed' | 'verified' | 'reviewed'
+
+/** The registry a package came from and who signed it. Null for a package uploaded as a file. */
+export interface PackageSourceDto {
+  registryId: string
+  registry: string
+  publisher: string
+  trust: PackageTrust
 }
 
 /** What an uploaded package asks for, shown before anything from it runs. */
@@ -85,8 +96,11 @@ export interface PluginPackageDto {
   sha256: string
   /** The version this organization runs now, when the upload would replace it. */
   replaces: string | null
+  /** What this version asks for that the one it replaces did not. */
+  adds: { permissions: string[]; egress: string[]; database: boolean } | null
   /** For content, what importing it would do to each item. */
   items: ContentPackPlanDto[]
+  source: PackageSourceDto | null
 }
 
 export type ContentPackItemKind = 'skill' | 'archetype' | 'workflow'
@@ -111,7 +125,49 @@ export interface ContentPackDto {
   publisher: string | null
   /** What it imported, as it is now. `id` is null once someone deleted it. */
   items: { kind: ContentPackItemKind; key: string; id: string | null; name: string | null }[]
+  source: PackageSourceDto | null
   updatedAt: string
+}
+
+export interface PluginRegistryDto {
+  id: string
+  name: string
+  url: string
+  publicKey: string
+  /** The least trust a version needs before an organization may install it. */
+  trust: PackageTrust
+  packages: number
+  issuedAt: string | null
+  fetchedAt: string | null
+  error: string | null
+}
+
+/** The newest version of a package in a registry, and where this organization stands with it. */
+export interface MarketPackageDto {
+  registryId: string
+  registry: string
+  kind: 'plugin' | 'content'
+  name: string
+  version: string
+  sha256: string
+  description: string | null
+  publisher: { id: string; name: string; verified: boolean }
+  trust: PackageTrust
+  permissions: { id: string; description: string }[]
+  egress: string[]
+  database: boolean
+  /** Why this organization may not install it, or null when it may. */
+  blocked: string | null
+  /** The version this organization has under the same name, and whether that one came from here. */
+  installed: { version: string; fromHere: boolean } | null
+  update: boolean
+}
+
+export interface MarketDto {
+  registries: PluginRegistryDto[]
+  packages: MarketPackageDto[]
+  /** Whether an admin may also upload a package as a file. */
+  uploads: boolean
 }
 
 export interface RunnerDto {

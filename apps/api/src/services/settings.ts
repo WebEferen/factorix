@@ -34,6 +34,7 @@ export function envSettings(env: Env): PlatformSettings {
     previewMaxRunning: env.FACTORIX_PREVIEW_MAX_RUNNING,
     previewIdleMinutes: env.FACTORIX_PREVIEW_IDLE_MINUTES,
     previewMaxHours: env.FACTORIX_PREVIEW_MAX_HOURS,
+    allowPackageUploads: env.FACTORIX_ALLOW_PACKAGE_UPLOADS,
   }
 }
 

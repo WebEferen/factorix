@@ -1,6 +1,6 @@
 # Plugin packages
 
-A plugin package is a zip that an organization's admin uploads under Integrations, Plugins. Factorix runs it for that organization only, in a container of its own, with a Postgres of its own when it asks for one. It is the third way to run a plugin, beside bundled plugins and external ones installed by address ([plugins.md](plugins.md)), and the one a marketplace builds on: whoever wrote a plugin ships one file, and nobody has to host anything.
+A plugin package is a zip that an organization's admin uploads under Integrations, Plugins. Factorix runs it for that organization only, in a container of its own, with a Postgres of its own when it asks for one. It is the third way to run a plugin, beside bundled plugins and external ones installed by address ([plugins.md](plugins.md)), and the one the market builds on: whoever wrote a plugin ships one signed file, and nobody has to run a server for it.
 
 A packaged plugin is an ordinary SDK plugin. Everything in [plugins.md](plugins.md) about pages, settings, permissions, blocks, and triggers applies unchanged.
 
@@ -147,11 +147,71 @@ Uploading one shows what it would do to each item before anything changes, and i
 - If the organization already has a skill with one of its slugs, or an archetype with one of its names, nothing is imported until that is renamed or removed.
 - Remove deletes what it imported, except anything changed, published, or used by an agent since.
 
-## Toward a marketplace
+## The market
 
-What exists now is the format, the runtime, and content packs. The next steps, roughly in order:
+Integrations, Market lists packages from registries an installation admin added. Installing one from there is the same as uploading it, except that Factorix downloads it and checks who signed it first.
 
-1. **A registry.** An index of packages with versions, descriptions, and screenshots, which Factorix reads so an admin installs from a list instead of a file. Installing from it is the same upload, fetched by the server.
-2. **Signatures and trust levels.** Publishers sign packages, and Factorix records who signed what it runs. An installation admin decides which publishers an organization may install from: reviewed, verified publisher, or anyone.
-3. **Updates.** The registry says when a newer version exists, and an admin upgrades with one click after seeing what changed in its permissions and hosts.
-4. **More to extend.** New things a plugin can provide (a code host, notification channels, agent tools) land in the manifest and the SDK, and packages get them like every other plugin.
+### Registries
+
+A registry is a folder of static files that any web host can serve:
+
+```
+market/
+  registry.json         who publishes here, written by whoever runs the registry
+  index.json            every package and version, built from the zips
+  index.json.sig        the registry's signature over index.json
+  acme/hello-1.0.0.zip
+  acme/hello-1.0.0.zip.sig   the publisher's signature over the zip
+```
+
+An installation admin adds one by its address and the public key that signs its index. Factorix reads the index then and every hour after. It keeps the last index whose signature checked out, and it refuses one older than that, so a host that replays an old index cannot bring back a version the registry withdrew.
+
+### Trust
+
+Every version in a registry is signed by its publisher. Beyond that, the registry vouches for some of them:
+
+| Level              | Meaning                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| Reviewed           | The registry read this version's code.                     |
+| Verified publisher | The registry knows who the publisher is.                   |
+| Signed             | Only the publisher's signature, which every version needs. |
+
+For each registry, the installation admin picks the least an organization may install: reviewed versions, packages by verified publishers, or any signed package. Settings, General, Let admins upload packages turns off uploading a file, so that organizations install only from registries.
+
+### Installing and updating
+
+An admin picks a package and Factorix downloads that version. It installs it only when the zip has the sha256 the signed index pins, a key the index lists for the publisher signed it, and its `factorix-plugin.json` asks for exactly what the index says. The admin then sees the same summary as for an upload, and Factorix records the registry, the publisher, the trust level, and the key on what it installs.
+
+When the registry lists a newer version of something an organization installed from it, the Market shows Update. The update dialog marks every permission, host, and database the new version asks for that the running one did not. A new permission still waits until an admin saves the plugin's settings.
+
+A package installed from one publisher is never replaced by another publisher's package of the same name, since the new one would get the old one's data and settings. Remove the old one first. Removing a registry leaves what came from it running, without updates.
+
+### Publishing
+
+A publisher makes a key once and signs each zip it packs:
+
+```sh
+npx factorix-plugin keygen acme.key          # prints the public key to give the registry
+npx factorix-plugin pack
+npx factorix-plugin sign hello-1.0.0.zip --key acme.key
+```
+
+Whoever runs the registry lists publishers and reviewed versions in `registry.json`, copies in the zips with their `.sig` files, and builds the index with a key of its own:
+
+```json
+{
+  "name": "Acme market",
+  "publishers": [{ "id": "acme", "name": "Acme", "verified": true, "keys": ["ed25519:..."] }],
+  "reviewed": ["hello@1.0.0"]
+}
+```
+
+```sh
+npx factorix-plugin registry ./market --key registry.key
+```
+
+The build refuses a zip without a `.sig`, or one no listed publisher signed. A package name belongs to one publisher per registry. A zip may also live elsewhere on HTTPS, since the index pins its sha256. To withdraw a version, delete its zip and build again.
+
+## What comes next
+
+New things a plugin can provide, such as a code host, notification channels, and agent tools, land in the manifest and the SDK, and packages get them like every other plugin.

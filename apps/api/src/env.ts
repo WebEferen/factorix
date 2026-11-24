@@ -42,6 +42,7 @@ const schema = z.object({
   FACTORIX_PREVIEW_MAX_RUNNING: count(3, 1),
   FACTORIX_PREVIEW_IDLE_MINUTES: count(60),
   FACTORIX_PREVIEW_MAX_HOURS: count(24, 1),
+  FACTORIX_ALLOW_PACKAGE_UPLOADS: enabledUnlessOff,
   /** Each bundled plugin's secret is derived from this. Without it bundled plugins stay off. */
   FACTORIX_PLUGINS_KEY: z.string().optional(),
   /** Where the API reaches the plugin host, as http://plugins:4110. */
