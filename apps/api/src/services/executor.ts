@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ScmConnector } from '@factorix/connectors'
 import { PHASES } from '@factorix/core'
-import { type IssueRow, json, type ProjectRow, type RunRow } from '@factorix/db'
+import { type IssueRow, json, type ProjectRow, plainText, type RunRow } from '@factorix/db'
 import {
   decodeEvent,
   type ErrorCode,
@@ -874,12 +874,12 @@ class RunExecution {
           state: input.state,
           outcome: input.outcome,
           result: input.result,
-          summary: input.summary ?? null,
+          summary: plainText(input.summary) ?? null,
           structuredOutput: input.structuredOutput === undefined ? null : json(input.structuredOutput),
           usage: json(this.usage),
           costUsd: cost ?? null,
           costEstimated: this.usage.costUsd === undefined,
-          diff: input.diff ?? null,
+          diff: plainText(input.diff) ?? null,
           error: input.error ? json(input.error) : null,
           sessionRef: this.run.sessionRef,
           finishedAt: trx.fn.now(),

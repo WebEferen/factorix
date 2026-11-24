@@ -43,22 +43,29 @@ export class EventBuffer {
   append(body: RunEventBody): RunEvent {
     const event = { ...body, seq: ++this.seq, ts: new Date().toISOString(), runId: this.runId } as RunEvent
     this.pending.push(event)
-    if (this.pending.length >= FLUSH_SIZE) void this.flush()
-    else if (!this.timer) this.timer = setTimeout(() => void this.flush(), FLUSH_INTERVAL_MS)
+    if (this.pending.length >= FLUSH_SIZE) this.flushInBackground()
+    else if (!this.timer) this.timer = setTimeout(() => this.flushInBackground(), FLUSH_INTERVAL_MS)
     return event
   }
 
   publishPartial(event: RunEvent): void {
-    void this.redis.publish(runChannel(this.runId), JSON.stringify({ kind: 'event', event }))
+    this.redis.publish(runChannel(this.runId), JSON.stringify({ kind: 'event', event })).catch(() => undefined)
   }
 
+  /** A rejection nobody handles ends the worker, and every run on it with it. A failed write keeps its events for the next flush. */
+  private flushInBackground(): void {
+    this.flush().catch((error: Error) => console.error(`[worker] writing events of run ${this.runId} failed: ${error.message}`))
+  }
+
+  /** Rejects with this flush's own failure only, so one failed write never fails every flush after it. */
   flush(): Promise<void> {
     if (this.timer) {
       clearTimeout(this.timer)
       this.timer = null
     }
-    this.flushing = this.flushing.then(() => this.write())
-    return this.flushing
+    const next = this.flushing.catch(() => undefined).then(() => this.write())
+    this.flushing = next
+    return next
   }
 
   private async write(): Promise<void> {
@@ -73,12 +80,17 @@ export class EventBuffer {
       const { seq, ts, runId, ...payload } = event
       return { runId, seq, type: event.type, ts, payload: json(payload) }
     })
-    await this.db.transaction(async (trx) => {
-      await trx('run_events').insert(rows).onConflict(['run_id', 'seq']).ignore()
-      await trx('runs')
-        .where({ id: this.runId })
-        .update({ lastSeq: batch.at(-1)?.seq, lastRunnerSeq: runnerSeq, updatedAt: trx.fn.now() })
-    })
+    try {
+      await this.db.transaction(async (trx) => {
+        await trx('run_events').insert(rows).onConflict(['run_id', 'seq']).ignore()
+        await trx('runs')
+          .where({ id: this.runId })
+          .update({ lastSeq: batch.at(-1)?.seq, lastRunnerSeq: runnerSeq, updatedAt: trx.fn.now() })
+      })
+    } catch (error) {
+      this.pending = [...batch, ...this.pending]
+      throw error
+    }
     const pipeline = this.redis.pipeline()
     for (const event of batch) pipeline.publish(runChannel(this.runId), JSON.stringify({ kind: 'event', event }))
     await pipeline.exec()
