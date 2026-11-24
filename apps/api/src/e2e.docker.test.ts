@@ -443,6 +443,29 @@ describe('factory end to end', () => {
     expect(events.filter((row) => row.payload.type === 'done')).toHaveLength(1)
   })
 
+  it('finishes a run whose tools print NUL characters, which Postgres refuses in JSON', async () => {
+    await setAutonomy('human_merge')
+    script = (phase) =>
+      phase === 'implement'
+        ? {
+            steps: [
+              { exec: "printf 'vite:reporter (!) \\000vite/preload-helper.js\\n'" },
+              { writeFile: { path: 'nul.txt', content: 'built\n' } },
+              { exec: 'git add nul.txt && git commit -qm "feat: build"' },
+            ],
+            structuredOutput: { summary: 'Built\u0000.', approach: 'Ran the build.', testing: 'None.', notes: '' },
+          }
+        : undefined
+    const { issueId } = await labelledIssue('Print a NUL')
+    await untilStep(issueId, 'await_merge', 180_000)
+    const run = (await runsOf(issueId)).find((candidate) => candidate.phase === 'implement') as RunRow
+    expect(run).toMatchObject({ state: 'succeeded', summary: 'Built.' })
+    const results = await harness.deps.db('run_events').where({ runId: run.id, type: 'tool.result' })
+    expect(results.map((row: { payload: { output?: string } }) => row.payload.output).join('\n')).toContain(
+      'vite:reporter (!) vite/preload-helper.js',
+    )
+  })
+
   it('refuses a Claude run when no egress proxy holds the model key', async () => {
     const archetypes = (await admin.ok('GET', '/api/archetypes')).archetypes as { id: string; name: string }[]
     const { agent } = await admin.ok('POST', '/api/agents', {

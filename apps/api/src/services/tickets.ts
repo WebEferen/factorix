@@ -9,7 +9,7 @@ import {
   type TrackerState,
   type TrackerTeam,
 } from '@factorix/connectors'
-import { type ConnectionRow, type Db, json } from '@factorix/db'
+import { type ConnectionRow, type Db, json, plainText } from '@factorix/db'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const CLOSED_STATES = FACTORIX_STATES.filter((state) => state.type === 'completed' || state.type === 'canceled').map((state) => state.id)
@@ -188,8 +188,8 @@ export class FactorixTracker implements TrackerConnector {
         .insert({
           boardId: board.id,
           number: nextNumber - 1,
-          title: input.title,
-          description: input.description ?? null,
+          title: plainText(input.title),
+          description: plainText(input.description) ?? null,
           priority: input.priority ?? 0,
           stateId,
           labelIds: json(input.labelIds ?? []),
@@ -239,13 +239,18 @@ export class FactorixTracker implements TrackerConnector {
 
   async comment(issueId: string, body: string): Promise<{ id: string }> {
     const ticket = await this.requireTicket(issueId)
-    const [row] = await this.db('ticket_comments').insert({ ticketId: ticket.id, body }).returning('id')
+    const [row] = await this.db('ticket_comments')
+      .insert({ ticketId: ticket.id, body: plainText(body) })
+      .returning('id')
     return { id: row.id as string }
   }
 
   async updateComment(commentId: string, body: string): Promise<void> {
     if (!UUID.test(commentId)) return
-    await this.db('ticket_comments').whereIn('ticket_id', this.tickets().clearSelect().select('tickets.id')).where({ id: commentId }).update({ body })
+    await this.db('ticket_comments')
+      .whereIn('ticket_id', this.tickets().clearSelect().select('tickets.id'))
+      .where({ id: commentId })
+      .update({ body: plainText(body) })
   }
 
   async registerWebhook() {

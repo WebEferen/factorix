@@ -54,7 +54,22 @@ export function createDb(connectionString: string, options: { max?: number } = {
   })
 }
 
-/** pg serializes JS arrays as Postgres arrays, so JSONB values must go through this on write. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+const ESCAPES_JSONB_REFUSES = /\\u(0000|d[89a-f])/i
+
+const storable = (_key: string, item: unknown) => (typeof item === 'string' ? item.replaceAll('\u0000', '').replace(LONE_SURROGATE, '\uFFFD') : item)
+
+/**
+ * pg serializes JS arrays as Postgres arrays, so JSONB values must go through this on write. JSONB also refuses U+0000, which tools print
+ * (a bundler's virtual module ids start with one), and half of a surrogate pair, which cutting text at a length leaves. A refused event
+ * is replayed on every reattach and refused again, so such strings are repaired here rather than the write failing.
+ */
 export function json(value: unknown): string {
-  return JSON.stringify(value)
+  const text = JSON.stringify(value)
+  return ESCAPES_JSONB_REFUSES.test(text) ? JSON.stringify(value, storable) : text
+}
+
+/** Text an agent wrote, for a text column, which refuses U+0000 just as JSONB does. */
+export function plainText<T extends string | null | undefined>(value: T): T {
+  return (typeof value === 'string' && value.includes('\u0000') ? value.replaceAll('\u0000', '') : value) as T
 }
