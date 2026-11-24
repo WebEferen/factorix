@@ -4,6 +4,8 @@ A plugin package is a zip that an organization's admin uploads under Integration
 
 A packaged plugin is an ordinary SDK plugin. Everything in [plugins.md](plugins.md) about pages, settings, permissions, blocks, and triggers applies unchanged.
 
+A package can carry content in place of a server: skills, archetypes, and workflows that Factorix imports as data. See [Content packs](#content-packs).
+
 ## The format
 
 ```
@@ -106,12 +108,50 @@ Uploading a newer version replaces it in place: same machine, same database, sam
 - Its pages load from Factorix's own address under `/_package/<slug>`, with the same sandbox policy as bundled pages: no cookies either way and no origin of their own.
 - The worker checks every running package each sweep, starts again one that stopped, and renews its grant.
 
+## Content packs
+
+A content pack runs nothing. Its manifest has `content` where a plugin has `entry`, and no database, egress, permissions, or memory:
+
+```json
+{
+  "format": 1,
+  "name": "security-kit",
+  "version": "1.0.0",
+  "description": "Security reviews",
+  "content": {
+    "skills": [{ "key": "review-checklist", "name": "Review checklist", "file": "skills/review-checklist.md" }],
+    "archetypes": [
+      {
+        "key": "security",
+        "name": "Security reviewer",
+        "role": "reviewer",
+        "description": "Reviews for security",
+        "prompt": "archetypes/security.md"
+      }
+    ],
+    "workflows": [{ "key": "triage", "file": "workflows/triage.json" }]
+  }
+}
+```
+
+- A skill's key is its slug, and its file is its Markdown.
+- An archetype's `role` is `engineer`, `reviewer`, or `other`, and its `prompt` file is its system prompt.
+- A workflow's file holds `{ "name", "description", "definition" }`, the graph the workflow editor stores. Its skill fields name skills by slug, and only built-in and integration blocks may appear, since a plugin's block names that plugin's id in one installation.
+
+Put the same `content` block in the `factorix` field of `package.json`, with no `entry`, and `factorix-plugin pack` builds it.
+
+Uploading one shows what it would do to each item before anything changes, and importing it makes every item the organization's own:
+
+- A workflow arrives as a draft that does nothing. Its agent, project, connection, channel, and people fields are left empty for the admin to fill before publishing it.
+- A newer version rewrites only what nobody changed since the pack wrote it. It keeps what someone edited, does not bring back what someone deleted, and leaves an item it dropped as it is. A workflow's update changes its draft only, so what runs stays the same until someone publishes.
+- If the organization already has a skill with one of its slugs, or an archetype with one of its names, nothing is imported until that is renamed or removed.
+- Remove deletes what it imported, except anything changed, published, or used by an agent since.
+
 ## Toward a marketplace
 
-What exists now is the format and the runtime a marketplace needs. The next steps, roughly in order:
+What exists now is the format, the runtime, and content packs. The next steps, roughly in order:
 
 1. **A registry.** An index of packages with versions, descriptions, and screenshots, which Factorix reads so an admin installs from a list instead of a file. Installing from it is the same upload, fetched by the server.
 2. **Signatures and trust levels.** Publishers sign packages, and Factorix records who signed what it runs. An installation admin decides which publishers an organization may install from: reviewed, verified publisher, or anyone.
 3. **Updates.** The registry says when a newer version exists, and an admin upgrades with one click after seeing what changed in its permissions and hosts.
 4. **More to extend.** New things a plugin can provide (a code host, notification channels, agent tools) land in the manifest and the SDK, and packages get them like every other plugin.
-5. **Content packs.** Packages with no server at all: workflows, archetypes, and phase templates that an organization imports as data.

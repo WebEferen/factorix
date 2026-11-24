@@ -1,7 +1,7 @@
 'use client'
 
-import type { PluginDto, PluginPackageDto, RunnerDto } from '@factorix/schemas'
-import { Plus, Puzzle, Upload } from 'lucide-react'
+import type { ContentPackDto, ContentPackPlanDto, PluginDto, PluginPackageDto, RunnerDto } from '@factorix/schemas'
+import { Package, Plus, Puzzle, Upload } from 'lucide-react'
 import Link from 'next/link'
 import { type ChangeEvent, type FormEvent, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
@@ -9,12 +9,62 @@ import useSWR from 'swr'
 import { api, fetcher } from '@/modules/lib/api'
 import { useMe, usePlugins } from '@/modules/lib/data'
 import { PluginFields } from '@/modules/plugins/fields'
-import { Button, Chip, Dialog, DialogFooter, EmptyState, ErrorState, Field, Input, ListSkeleton, Select } from '@/modules/ui'
+import { Button, Chip, Dialog, DialogFooter, EmptyState, ErrorState, Field, Input, ListSkeleton, SectionTitle, Select } from '@/modules/ui'
 
 const HERE = 'here'
 
 function kilobytes(size: number): string {
   return size < 1024 * 1024 ? `${Math.ceil(size / 1024)} KB` : `${(size / 1024 / 1024).toFixed(1)} MB`
+}
+
+const ITEM_KINDS: Record<ContentPackPlanDto['kind'], [string, string]> = {
+  skill: ['skill', 'skills'],
+  archetype: ['archetype', 'archetypes'],
+  workflow: ['workflow', 'workflows'],
+}
+
+const ACTIONS: Record<ContentPackPlanDto['action'], { label: string; tone: 'success' | 'info' | 'neutral' | 'outline' | 'danger' }> = {
+  create: { label: 'New', tone: 'success' },
+  update: { label: 'Updated', tone: 'info' },
+  keep: { label: 'Kept, it was changed here', tone: 'neutral' },
+  gone: { label: 'Not brought back', tone: 'neutral' },
+  release: { label: 'Stays, no longer in the package', tone: 'outline' },
+  conflict: { label: 'Name taken', tone: 'danger' },
+}
+
+function countOf(items: { kind: ContentPackPlanDto['kind'] }[]): string {
+  return (Object.keys(ITEM_KINDS) as ContentPackPlanDto['kind'][])
+    .map((kind) => [kind, items.filter((item) => item.kind === kind).length] as const)
+    .filter(([, count]) => count > 0)
+    .map(([kind, count]) => `${count} ${ITEM_KINDS[kind][count === 1 ? 0 : 1]}`)
+    .join(', ')
+}
+
+function ContentPlan({ items }: { items: ContentPackPlanDto[] }) {
+  const conflicts = items.some((item) => item.action === 'conflict')
+  return (
+    <>
+      <ul className="divide-y divide-divider rounded-md border border-divider">
+        {items.map((item) => (
+          <li key={`${item.kind}:${item.key}`} className="flex items-center gap-3 px-3 py-1.5">
+            <span className="w-20 shrink-0 text-xs text-ink-3 capitalize">{ITEM_KINDS[item.kind][0]}</span>
+            <span className="min-w-0 flex-1 truncate">{item.name}</span>
+            <Chip tone={ACTIONS[item.action].tone}>{ACTIONS[item.action].label}</Chip>
+          </li>
+        ))}
+      </ul>
+      {conflicts ? (
+        <p className="text-xs text-danger-ink">
+          This organization already has something by a name the package uses. Rename or remove it, then upload again.
+        </p>
+      ) : (
+        <p className="text-xs text-ink-2">
+          What it imports becomes this organization's own. Workflows arrive as drafts: pick their agents, projects, and connections, then publish
+          them.
+        </p>
+      )}
+    </>
+  )
 }
 
 function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenChange: (open: boolean) => void; onDone: () => void }) {
@@ -50,7 +100,8 @@ function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
     try {
       const query = runner === HERE || found.replaces ? '' : `?runner=${encodeURIComponent(runner)}`
       await api.upload(`/api/plugin-packages${query}`, file)
-      toast.success(found.replaces ? `Replacing ${found.name} ${found.replaces} with ${found.version}` : `Installing ${found.name}`)
+      const verb = found.kind === 'content' ? (found.replaces ? 'Updated' : 'Imported') : found.replaces ? 'Replacing' : 'Installing'
+      toast.success(found.replaces ? `${verb} ${found.name} ${found.replaces} with ${found.version}` : `${verb} ${found.name}`)
       onDone()
       onOpenChange(false)
     } catch (error) {
@@ -63,8 +114,8 @@ function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
     <Dialog
       open={open}
       onOpenChange={onOpenChange}
-      title="Upload a plugin package"
-      description="Factorix runs it for this organization only, in a container of its own. Nothing in it runs until you install it."
+      title="Upload a package"
+      description="A plugin Factorix runs for this organization only, or skills, archetypes, and workflows it imports. Nothing in it runs or changes until you confirm."
     >
       <input ref={input} type="file" accept=".zip,application/zip" className="hidden" onChange={(event) => void pick(event)} />
       {!found ? (
@@ -79,7 +130,7 @@ function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
           </span>
           <span className="text-sm font-medium">{loading ? 'Reading the package' : 'Choose a .zip'}</span>
           <span className="max-w-sm text-xs text-ink-2">
-            Built with <code>factorix-plugin pack</code> from the plugin SDK: one bundled server file and a factorix-plugin.json.
+            Built with <code>factorix-plugin pack</code> from the plugin SDK.
           </span>
         </button>
       ) : (
@@ -100,52 +151,126 @@ function UploadDialog({ open, onOpenChange, onDone }: { open: boolean; onOpenCha
                 .join(' · ')}
             </p>
           </div>
-          <div className="rounded-md border border-divider p-3">
-            <p className="mb-1 font-medium">Once an admin turns it on, it may</p>
-            {found.permissions.length > 0 ? (
-              <ul className="flex list-disc flex-col gap-1 pl-5 text-ink-2">
-                {found.permissions.map((permission) => (
-                  <li key={permission.id}>{permission.description}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-ink-2">Only read its own settings and connections.</p>
-            )}
-          </div>
-          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-ink-2">
-            <dt className="text-ink-3">Reaches</dt>
-            <dd className="min-w-0 break-words">{[...found.egress, 'Factorix'].join(', ')}</dd>
-            <dt className="text-ink-3">Database</dt>
-            <dd>{found.database ? 'A Postgres of its own' : 'None'}</dd>
-            <dt className="text-ink-3">Memory</dt>
-            <dd>Up to {found.memoryMb} MB</dd>
-          </dl>
-          {found.replaces ? (
-            <p className="text-xs text-ink-2">
-              It keeps its machine, data, and settings. A permission the new version adds waits until an admin saves its settings.
-            </p>
+          {found.kind === 'content' ? (
+            <ContentPlan items={found.items} />
           ) : (
-            <Field label="Runs on" hint="Its data stays on that machine.">
-              <Select
-                value={runner}
-                onChange={setRunner}
-                options={[
-                  { value: HERE, label: 'This Factorix' },
-                  ...(runners?.runners ?? []).map((entry) => ({ value: entry.id, label: `${entry.name}${entry.online ? '' : ' (offline)'}` })),
-                ]}
-              />
-            </Field>
+            <PluginPlan found={found} runner={runner} setRunner={setRunner} runners={runners?.runners ?? []} />
           )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => input.current?.click()} disabled={loading}>
               Choose another
             </Button>
-            <Button variant="primary" loading={loading} onClick={() => void install()}>
-              {found.replaces ? `Replace with ${found.version}` : 'Install'}
+            <Button
+              variant="primary"
+              loading={loading}
+              disabled={found.items.some((item) => item.action === 'conflict')}
+              onClick={() => void install()}
+            >
+              {found.kind === 'content'
+                ? found.replaces
+                  ? `Update to ${found.version}`
+                  : 'Import'
+                : found.replaces
+                  ? `Replace with ${found.version}`
+                  : 'Install'}
             </Button>
           </DialogFooter>
         </div>
       )}
+    </Dialog>
+  )
+}
+
+function PluginPlan({
+  found,
+  runner,
+  setRunner,
+  runners,
+}: {
+  found: PluginPackageDto
+  runner: string
+  setRunner: (runner: string) => void
+  runners: RunnerDto[]
+}) {
+  return (
+    <>
+      <div className="rounded-md border border-divider p-3">
+        <p className="mb-1 font-medium">Once an admin turns it on, it may</p>
+        {found.permissions.length > 0 ? (
+          <ul className="flex list-disc flex-col gap-1 pl-5 text-ink-2">
+            {found.permissions.map((permission) => (
+              <li key={permission.id}>{permission.description}</li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-ink-2">Only read its own settings and connections.</p>
+        )}
+      </div>
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-ink-2">
+        <dt className="text-ink-3">Reaches</dt>
+        <dd className="min-w-0 break-words">{[...found.egress, 'Factorix'].join(', ')}</dd>
+        <dt className="text-ink-3">Database</dt>
+        <dd>{found.database ? 'A Postgres of its own' : 'None'}</dd>
+        <dt className="text-ink-3">Memory</dt>
+        <dd>Up to {found.memoryMb} MB</dd>
+      </dl>
+      {found.replaces ? (
+        <p className="text-xs text-ink-2">
+          It keeps its machine, data, and settings. A permission the new version adds waits until an admin saves its settings.
+        </p>
+      ) : (
+        <Field label="Runs on" hint="Its data stays on that machine.">
+          <Select
+            value={runner}
+            onChange={setRunner}
+            options={[
+              { value: HERE, label: 'This Factorix' },
+              ...runners.map((entry) => ({ value: entry.id, label: `${entry.name}${entry.online ? '' : ' (offline)'}` })),
+            ]}
+          />
+        </Field>
+      )}
+    </>
+  )
+}
+
+function RemovePackDialog({
+  pack,
+  onOpenChange,
+  onDone,
+}: {
+  pack: ContentPackDto | null
+  onOpenChange: (open: boolean) => void
+  onDone: () => void
+}) {
+  const [loading, setLoading] = useState(false)
+  const remove = async () => {
+    if (!pack) return
+    setLoading(true)
+    try {
+      const { kept } = await api.delete<{ kept: string[] }>(`/api/content-packs/${pack.id}`)
+      toast.success(kept.length > 0 ? `Removed ${pack.name}. Kept ${kept.join(', ')}, which changed here or are in use` : `Removed ${pack.name}`)
+      onDone()
+      onOpenChange(false)
+    } catch (error) {
+      toast.error((error as Error).message)
+    } finally {
+      setLoading(false)
+    }
+  }
+  return (
+    <Dialog open={pack !== null} onOpenChange={onOpenChange} title={`Remove ${pack?.name ?? ''}`}>
+      <p className="text-sm text-ink-2">
+        This deletes what it imported, except anything changed here, published, or used by an agent since. Those stay as this organization's own.
+      </p>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)}>
+          Cancel
+        </Button>
+        <Button variant="danger" loading={loading} onClick={() => void remove()}>
+          Remove
+        </Button>
+      </DialogFooter>
     </Dialog>
   )
 }
@@ -297,7 +422,9 @@ export default function PluginsPage() {
   const [installing, setInstalling] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [removing, setRemoving] = useState<PluginDto | null>(null)
+  const [removingPack, setRemovingPack] = useState<ContentPackDto | null>(null)
   const [editing, setEditing] = useState<PluginDto | null>(null)
+  const packs = useSWR<{ contentPacks: ContentPackDto[] }>('/api/content-packs', fetcher as never)
   const busy = data?.plugins.some((plugin) => plugin.package?.state === 'starting' || plugin.package?.state === 'removing') ?? false
   useEffect(() => {
     if (!busy) return
@@ -453,8 +580,41 @@ export default function PluginsPage() {
           ))}
         </div>
       )}
+      {packs.data && packs.data.contentPacks.length > 0 ? (
+        <section className="mt-6">
+          <SectionTitle>Content packs</SectionTitle>
+          <div className="overflow-hidden rounded-lg border border-divider">
+            {packs.data.contentPacks.map((pack) => (
+              <div key={pack.id} className="flex min-h-14 items-center gap-3 border-b border-divider px-4 py-2 last:border-b-0">
+                <Package className="size-4 shrink-0 text-ink-3" />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm">
+                    {pack.name} <span className="text-ink-3">{pack.version}</span>
+                  </div>
+                  <div className="truncate text-xs text-ink-2">
+                    {[pack.description, countOf(pack.items.filter((item) => item.id !== null)) || 'Nothing left of it'].filter(Boolean).join(' · ')}
+                  </div>
+                </div>
+                {admin ? (
+                  <Button size="sm" variant="ghost" onClick={() => setRemovingPack(pack)}>
+                    Remove
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
       <InstallDialog open={installing} onOpenChange={setInstalling} onDone={() => void mutate()} />
-      <UploadDialog open={uploading} onOpenChange={setUploading} onDone={() => void mutate()} />
+      <UploadDialog
+        open={uploading}
+        onOpenChange={setUploading}
+        onDone={() => {
+          void mutate()
+          void packs.mutate()
+        }}
+      />
+      <RemovePackDialog pack={removingPack} onOpenChange={(open) => !open && setRemovingPack(null)} onDone={() => void packs.mutate()} />
       <RemoveDialog plugin={removing} onOpenChange={(open) => !open && setRemoving(null)} onDone={() => void mutate()} />
       <SettingsDialog plugin={editing} onOpenChange={(open) => !open && setEditing(null)} onDone={() => void mutate()} />
     </div>

@@ -3,8 +3,9 @@ import { crc32, gzipSync, inflateRawSync } from 'node:zlib'
 import { BUNDLED_PLUGIN_NAME, PLUGIN_PERMISSIONS, PLUGIN_PROTOCOL, type PluginManifest, type PluginPermission } from './protocol'
 
 /**
- * A package is a plugin Factorix runs itself, for the one organization whose admin uploaded it: a zip with
- * `factorix-plugin.json` at its root and one bundled JavaScript file that serves the plugin protocol.
+ * A package is a zip with `factorix-plugin.json` at its root, uploaded by an organization's admin for that organization
+ * alone. It holds either a plugin Factorix runs itself, as one bundled JavaScript file that serves the plugin protocol,
+ * or content Factorix imports as data: skills, archetypes, and workflows.
  */
 export const PACKAGE_FORMAT = 1
 export const PACKAGE_MANIFEST = 'factorix-plugin.json'
@@ -15,6 +16,17 @@ export const PACKAGE_PORT = 8080
 /** People open a package's pages under Factorix's own address, which the web passes to the preview gateway. */
 export const PACKAGE_PAGES = '/_package'
 export const PACKAGE_SLUG = /^[a-z0-9]{10}$/
+/** How many of each kind of content one package may hold. */
+export const PACKAGE_CONTENT_MAX = 100
+export const PACKAGE_ARCHETYPE_ROLES = ['engineer', 'reviewer', 'other'] as const
+
+export interface PackageContent {
+  /** A skill's key is its slug. */
+  skills: { key: string; name: string; file: string }[]
+  archetypes: { key: string; name: string; role: (typeof PACKAGE_ARCHETYPE_ROLES)[number]; description: string; prompt?: string }[]
+  /** Each file holds `{ name, description, definition }`, as the workflow editor stores it. */
+  workflows: { key: string; file: string }[]
+}
 
 export interface PluginPackageManifest {
   format: typeof PACKAGE_FORMAT
@@ -22,8 +34,9 @@ export interface PluginPackageManifest {
   version: string
   description?: string
   publisher?: string
-  /** The file `node` runs, relative to the package root. */
-  entry: string
+  /** The file `node` runs, relative to the package root. A package has this or `content`. */
+  entry?: string
+  content?: PackageContent
   /** Gives it a Postgres of its own, as DATABASE_URL. */
   database: boolean
   /** The only hosts it may reach, besides Factorix. `*.example.com` covers subdomains. */
@@ -44,6 +57,7 @@ const VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,30})?$/
 /** Safe to put in a shell command unquoted, which is how the entry reaches `node`. */
 const PATH_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,99}$/
 const HOST = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
+const KEY = /^[a-z0-9][a-z0-9-]{1,39}$/
 
 function packagePath(value: string): string {
   const segments = value.split('/')
@@ -59,6 +73,55 @@ const optionalText = (value: unknown, max: number, label: string): string | unde
   return value
 }
 
+function parseContent(value: unknown): PackageContent {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
+  const list = (kind: keyof PackageContent): Record<string, unknown>[] => {
+    const items = raw[kind] ?? []
+    if (!Array.isArray(items) || items.length > PACKAGE_CONTENT_MAX || !items.every((item) => item && typeof item === 'object')) {
+      throw new Error(`content.${kind} lists up to ${PACKAGE_CONTENT_MAX} entries`)
+    }
+    const keys = items.map((item) => String(item.key ?? ''))
+    const bad = keys.find((key) => !KEY.test(key))
+    if (bad !== undefined)
+      throw new Error(`content.${kind} has the key ${JSON.stringify(bad.slice(0, 60))}: use 2 to 40 lowercase letters, digits, and dashes`)
+    if (new Set(keys).size !== keys.length) throw new Error(`Each entry in content.${kind} needs a key of its own`)
+    return items
+  }
+  const name = (item: Record<string, unknown>, kind: string) => {
+    const text = String(item.name ?? '').trim()
+    if (!text || text.length > 60) throw new Error(`The ${kind} ${String(item.key)} needs a name of at most 60 characters`)
+    return text
+  }
+  const file = (item: Record<string, unknown>, field: string) => packagePath(String(item[field] ?? ''))
+  const content: PackageContent = {
+    skills: list('skills').map((item) => ({ key: String(item.key), name: name(item, 'skill'), file: file(item, 'file') })),
+    archetypes: list('archetypes').map((item) => {
+      const role = item.role as PackageContent['archetypes'][number]['role']
+      if (!PACKAGE_ARCHETYPE_ROLES.includes(role))
+        throw new Error(`The archetype ${String(item.key)} works as ${PACKAGE_ARCHETYPE_ROLES.join(', or ')}`)
+      return {
+        key: String(item.key),
+        name: name(item, 'archetype'),
+        role,
+        description: optionalText(item.description, 500, `The description of ${String(item.key)}`) ?? '',
+        ...(item.prompt === undefined ? {} : { prompt: file(item, 'prompt') }),
+      }
+    }),
+    workflows: list('workflows').map((item) => ({ key: String(item.key), file: file(item, 'file') })),
+  }
+  if (content.skills.length + content.archetypes.length + content.workflows.length === 0) throw new Error('content lists nothing to import')
+  return content
+}
+
+/** Every file a package's content points at. */
+export function packageContentFiles(content: PackageContent): string[] {
+  return [
+    ...content.skills.map((skill) => skill.file),
+    ...content.archetypes.flatMap((archetype) => (archetype.prompt ? [archetype.prompt] : [])),
+    ...content.workflows.map((workflow) => workflow.file),
+  ]
+}
+
 /** The manifest comes from whoever built the package, so it is read field by field and anything unexpected is refused. */
 export function parsePackageManifest(value: unknown): PluginPackageManifest {
   const raw = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>
@@ -69,9 +132,15 @@ export function parsePackageManifest(value: unknown): PluginPackageManifest {
     throw new Error('The package name is lowercase letters, digits, and dashes, up to 31 characters, starting with a letter')
   const version = String(raw.version ?? '')
   if (!VERSION.test(version)) throw new Error('The package version looks like 1.2.3')
-  const entry = String(raw.entry ?? '')
-  if (!/\.(?:mjs|cjs|js)$/.test(entry)) throw new Error('The entry is the JavaScript file to run, such as server.mjs')
-  packagePath(entry)
+  const content = raw.content === undefined ? undefined : parseContent(raw.content)
+  if ((raw.entry === undefined) === (content === undefined)) {
+    throw new Error('A package names either an entry, the server Factorix runs, or content, what Factorix imports')
+  }
+  const entry = content ? undefined : String(raw.entry ?? '')
+  if (entry !== undefined) {
+    if (!/\.(?:mjs|cjs|js)$/.test(entry)) throw new Error('The entry is the JavaScript file to run, such as server.mjs')
+    packagePath(entry)
+  }
   const egress = raw.egress ?? []
   if (!Array.isArray(egress) || egress.length > 20 || !egress.every((host) => typeof host === 'string' && host.length <= 253 && HOST.test(host))) {
     throw new Error('egress lists up to 20 host names, such as api.example.com or *.example.com')
@@ -85,6 +154,9 @@ export function parsePackageManifest(value: unknown): PluginPackageManifest {
     throw new Error(`memoryMb is a whole number from ${PACKAGE_MEMORY_MB.min} to ${PACKAGE_MEMORY_MB.max}`)
   }
   if (raw.database !== undefined && typeof raw.database !== 'boolean') throw new Error('database is true or false')
+  if (content && (raw.database === true || egress.length > 0 || permissions.length > 0 || raw.memoryMb !== undefined)) {
+    throw new Error('Content runs nothing, so a package of content lists no database, egress, permissions, or memory')
+  }
   const description = optionalText(raw.description, 300, 'description')
   const publisher = optionalText(raw.publisher, 80, 'publisher')
   return {
@@ -93,7 +165,8 @@ export function parsePackageManifest(value: unknown): PluginPackageManifest {
     version,
     ...(description ? { description } : {}),
     ...(publisher ? { publisher } : {}),
-    entry,
+    ...(entry ? { entry } : {}),
+    ...(content ? { content } : {}),
     database: raw.database === true,
     egress: [...new Set(egress as string[])],
     permissions: [...new Set(permissions as PluginPermission[])],
@@ -177,7 +250,9 @@ export function readPluginPackage(archive: Buffer): PluginPackage {
     throw new Error(`${PACKAGE_MANIFEST} is not JSON`)
   }
   const manifest = parsePackageManifest(parsed)
-  if (!files.has(manifest.entry)) throw new Error(`The entry ${manifest.entry} is not in the package`)
+  for (const path of manifest.content ? packageContentFiles(manifest.content) : [manifest.entry as string]) {
+    if (!files.has(path)) throw new Error(`${path} is not in the package`)
+  }
   return { manifest, files, sha256: createHash('sha256').update(archive).digest('hex'), size: archive.length }
 }
 

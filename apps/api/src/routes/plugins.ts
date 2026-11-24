@@ -1,6 +1,7 @@
 import { PACKAGE_LIMITS, type PluginPermission, signPluginPage, splitPluginValues, verifyPlugin } from '@factorix/connectors'
 import {
   type ConnectionRow,
+  type ContentPackRow,
   json,
   type OrganizationPluginRow,
   type OrganizationRow,
@@ -24,6 +25,7 @@ import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
 import { requireAdmin, requireAuth, requireInstallationAdmin } from '../lib/auth'
 import { badRequest, conflict, HttpError, isUniqueViolation, notFound, parseBody } from '../lib/errors'
+import { installContentPack, listContentPacks, removeContentPack } from '../services/content-packs'
 import {
   createPluginTicket,
   getPluginRun,
@@ -35,7 +37,14 @@ import {
   startPluginRun,
 } from '../services/plugin-api'
 import { firePluginTrigger } from '../services/plugin-blocks'
-import { inspectPluginPackage, installPluginPackage, pluginInstanceDto, removePluginPackage, restartPluginPackage } from '../services/plugin-packages'
+import {
+  inspectPluginPackage,
+  installPluginPackage,
+  pluginInstanceDto,
+  readPackage,
+  removePluginPackage,
+  restartPluginPackage,
+} from '../services/plugin-packages'
 import { enabledPlugin, endpointOf, getPlugin, manifestOf, pluginAllows, pluginDto, readManifest, secretsOf } from '../services/plugins'
 import { readSettings } from '../services/settings'
 import { finishPluginStep } from '../services/workflows'
@@ -267,13 +276,32 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
 
     scope.post('/api/plugin-packages', async (request) => {
       const { account, user } = requireAdmin(request)
+      const archive = zip(request)
+      const pkg = readPackage(archive)
+      if (pkg.manifest.content) {
+        const pack = await installContentPack(deps, account, pkg)
+        return { contentPack: (await listContentPacks(db, account.orgId)).find((entry) => entry.id === pack.id) }
+      }
       const runner = (request.query as { runner?: string }).runner || null
       if (runner && !UUID.test(runner)) throw badRequest('That runner is not in this organization')
-      const plugin = await installPluginPackage(deps, account, zip(request), runner)
+      const plugin = await installPluginPackage(deps, account, pkg, archive, runner)
       const enabled = await db<OrganizationPluginRow>('organization_plugins').where({ orgId: account.orgId, pluginId: plugin.id }).first()
       const packages = await packagesOf([plugin])
       return { plugin: pluginDto(plugin, enabled, user.installationAdmin, packages.get(plugin.id) ?? null) }
     })
+  })
+
+  app.get('/api/content-packs', async (request) => {
+    const { account } = requireAuth(request)
+    return { contentPacks: await listContentPacks(db, account.orgId) }
+  })
+
+  app.delete('/api/content-packs/:id', async (request) => {
+    const { account } = requireAdmin(request)
+    const { id } = request.params as { id: string }
+    const pack = UUID.test(id) ? await db<ContentPackRow>('content_packs').where({ id, orgId: account.orgId }).first() : undefined
+    if (!pack) throw notFound('Content pack')
+    return { kept: await removeContentPack(deps, account, pack) }
   })
 
   /**

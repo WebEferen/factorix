@@ -133,6 +133,43 @@ describe('plugin packages', () => {
     expect(() => parsePackageManifest(JSON.parse(manifest(extra).toString()))).toThrow(message)
   })
 
+  const content = {
+    skills: [{ key: 'review-checklist', name: 'Review checklist', file: 'skills/review-checklist.md' }],
+    archetypes: [{ key: 'security', name: 'Security reviewer', role: 'reviewer', prompt: 'archetypes/security.md' }],
+    workflows: [{ key: 'triage', file: 'workflows/triage.json' }],
+  }
+
+  it('reads a package of content, which runs nothing', () => {
+    const archive = zip([
+      { name: PACKAGE_MANIFEST, data: manifest({ entry: undefined, content }) },
+      { name: 'skills/review-checklist.md', data: Buffer.from('# Check') },
+      { name: 'archetypes/security.md', data: Buffer.from('You review for security.') },
+      { name: 'workflows/triage.json', data: Buffer.from('{}') },
+    ])
+    const read = readPluginPackage(archive)
+    expect(read.manifest.entry).toBeUndefined()
+    expect(read.manifest.content).toEqual({
+      ...content,
+      archetypes: [{ ...content.archetypes[0], description: '' }],
+    })
+    expect(() => readPluginPackage(zip([{ name: PACKAGE_MANIFEST, data: manifest({ entry: undefined, content }) }]))).toThrow(
+      'skills/review-checklist.md is not in the package',
+    )
+  })
+
+  it.each([
+    [{ content }, 'either an entry'],
+    [{ entry: undefined }, 'either an entry'],
+    [{ entry: undefined, content: {} }, 'lists nothing'],
+    [{ entry: undefined, content, egress: ['api.example.com'] }, 'runs nothing'],
+    [{ entry: undefined, content: { skills: [{ key: 'A b', name: 'X', file: 'x.md' }] } }, 'lowercase'],
+    [{ entry: undefined, content: { skills: [content.skills[0], content.skills[0]] } }, 'key of its own'],
+    [{ entry: undefined, content: { archetypes: [{ ...content.archetypes[0], role: 'admin' }] } }, 'works as'],
+    [{ entry: undefined, content: { workflows: [{ key: 'x1', file: '../x.json' }] } }, 'may not'],
+  ])('refuses content with %j', (extra, message) => {
+    expect(() => parsePackageManifest(JSON.parse(manifest(extra).toString()))).toThrow(message)
+  })
+
   it('unpacks with tar to the same files, root-owned and read-only for everyone else', () => {
     const files = new Map([
       ['server.mjs', Buffer.from('export {}\n')],

@@ -19,6 +19,7 @@ import { writeAudit } from '../lib/audit'
 import { pluginKeys, previewKeys, proxyTokenKey } from '../lib/channels'
 import { badRequest, conflict } from '../lib/errors'
 import { emit } from '../lib/outbox'
+import { inspectContentPack } from './content-packs'
 import { environmentProxyEnv, revokeProxyGrant, waitUntilReady } from './environment-runtime'
 import { endpointOf } from './plugins'
 import { GATEWAY_ALIAS } from './preview-runner'
@@ -38,7 +39,7 @@ const PORT_CHECK = `node -e "require('net').connect(${PACKAGE_PORT},'127.0.0.1')
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
-function readPackage(archive: Buffer): PluginPackage {
+export function readPackage(archive: Buffer): PluginPackage {
   try {
     return readPluginPackage(archive)
   } catch (error) {
@@ -52,9 +53,10 @@ async function packagePlugin(deps: Pick<AppDeps, 'db'>, orgId: string, name: str
   return { plugin, instance }
 }
 
-export function pluginPackageDto(pkg: PluginPackage, replaces: string | null): PluginPackageDto {
+export function pluginPackageDto(pkg: PluginPackage, replaces: string | null, items: PluginPackageDto['items'] = []): PluginPackageDto {
   const { manifest } = pkg
   return {
+    kind: manifest.content ? 'content' : 'plugin',
     name: manifest.name,
     version: manifest.version,
     description: manifest.description ?? null,
@@ -67,6 +69,7 @@ export function pluginPackageDto(pkg: PluginPackage, replaces: string | null): P
     size: pkg.size,
     sha256: pkg.sha256,
     replaces,
+    items,
   }
 }
 
@@ -87,6 +90,10 @@ export function pluginInstanceDto(instance: PluginInstanceRow, runner: Pick<Runn
 /** What a package asks for, read without storing or running any of it. */
 export async function inspectPluginPackage(deps: Pick<AppDeps, 'db'>, orgId: string, archive: Buffer): Promise<PluginPackageDto> {
   const pkg = readPackage(archive)
+  if (pkg.manifest.content) {
+    const { replaces, items } = await inspectContentPack(deps, orgId, pkg)
+    return pluginPackageDto(pkg, replaces, items)
+  }
   const { instance } = await packagePlugin(deps, orgId, pkg.manifest.name)
   return pluginPackageDto(pkg, instance ? parsePackageManifest(instance.package).version : null)
 }
@@ -95,10 +102,15 @@ export async function inspectPluginPackage(deps: Pick<AppDeps, 'db'>, orgId: str
  * Installs a package for the admin's organization, or replaces the one of the same name it runs now. A replacement keeps
  * its machine, database, settings, and what the admin allowed, so a permission the new version adds waits for them.
  */
-export async function installPluginPackage(deps: Deps, account: AccountRow, archive: Buffer, runnerId: string | null): Promise<PluginRow> {
+export async function installPluginPackage(
+  deps: Deps,
+  account: AccountRow,
+  pkg: PluginPackage,
+  archive: Buffer,
+  runnerId: string | null,
+): Promise<PluginRow> {
   const { db, env } = deps
   if (!env.FACTORIX_PACKAGES_INTERNAL_URL) throw conflict('This installation has no package gateway. Set FACTORIX_PACKAGES_INTERNAL_URL')
-  const pkg = readPackage(archive)
   const { manifest } = pkg
   const runner = runnerId ? await db<RunnerRow>('runners').where({ id: runnerId, orgId: account.orgId }).first() : undefined
   if (runnerId && !runner) throw badRequest('That runner is not in this organization')
@@ -212,6 +224,7 @@ async function withLock(deps: Pick<AppDeps, 'redis'>, pluginId: string, work: ()
 async function startInstance(deps: WorkerDeps, plugin: PluginRow, instance: PluginInstanceRow): Promise<void> {
   const { db, env, redis, sandbox } = deps
   const { manifest, files } = readPluginPackage(instance.archive)
+  if (!manifest.entry) throw new Error('This package has no server to run')
   const { slug } = instance
   const labels = { 'factorix.plugin': plugin.id }
   const settings = await readSettings(deps)

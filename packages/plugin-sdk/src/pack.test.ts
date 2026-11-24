@@ -46,6 +46,38 @@ describe('packPlugin', () => {
     expect(readFileSync(again.file).equals(readFileSync(packed.file))).toBe(true)
   })
 
+  it('packs content, which has no server and asks for nothing', async () => {
+    describeIt({
+      content: {
+        skills: [{ key: 'review-checklist', name: 'Review checklist', file: './skills/review-checklist.md' }],
+        archetypes: [{ key: 'security', name: 'Security reviewer', role: 'reviewer', prompt: 'archetypes/security.md' }],
+        workflows: [{ key: 'triage', file: 'workflows/triage.json' }],
+      },
+    })
+    write('skills/review-checklist.md', '# Checklist')
+    write('archetypes/security.md', 'You review for security.')
+    write('workflows/triage.json', '{}')
+    write('skills/draft.md', 'not listed')
+
+    const packed = await packPlugin(dir)
+    expect(packed.files).toEqual(['archetypes/security.md', 'factorix-plugin.json', 'skills/review-checklist.md', 'workflows/triage.json'])
+    expect(packed.manifest).toEqual({
+      format: 1,
+      name: 'hello',
+      version: '1.2.3',
+      description: 'Says hello',
+      content: {
+        skills: [{ key: 'review-checklist', name: 'Review checklist', file: 'skills/review-checklist.md' }],
+        archetypes: [{ key: 'security', name: 'Security reviewer', role: 'reviewer', prompt: 'archetypes/security.md' }],
+        workflows: [{ key: 'triage', file: 'workflows/triage.json' }],
+      },
+    })
+    describeIt({ content: { skills: [] }, permissions: ['members:read'] })
+    await expect(packPlugin(dir)).rejects.toThrow('runs nothing')
+    describeIt({ content: { workflows: [{ key: 'triage', file: 'workflows/missing.json' }] } })
+    await expect(packPlugin(dir)).rejects.toThrow('workflows/missing.json does not exist')
+  })
+
   it('says what is wrong before anything is written', async () => {
     describeIt({ entry: 'dist/server.mjs' })
     await expect(packPlugin(dir)).rejects.toThrow('Build the plugin first')

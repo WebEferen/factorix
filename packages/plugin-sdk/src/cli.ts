@@ -4,8 +4,8 @@ import { packPlugin } from './pack.js'
 
 const USAGE = `Usage: factorix-plugin pack [folder] [--out file.zip]
 
-Packs a built plugin into the zip an organization's admin uploads under Integrations, Plugins.
-The folder's package.json names the bundled entry in its "factorix" field.`
+Packs a built plugin, or content, into the zip an organization's admin uploads under Integrations, Plugins.
+The folder's package.json names the bundled entry, or the content, in its "factorix" field.`
 
 async function main(args: string[]): Promise<void> {
   const [command, ...rest] = args
@@ -18,10 +18,15 @@ async function main(args: string[]): Promise<void> {
   const out = outAt === -1 ? undefined : rest[outAt + 1]
   const dir = rest.find((value, index) => !value.startsWith('--') && (outAt === -1 || index !== outAt + 1)) ?? '.'
   const packed = await packPlugin(dir, { out })
-  const { name, version, permissions, egress, database } = packed.manifest
+  const { name, version, permissions = [], egress = [], database, content } = packed.manifest
   console.log(
     `Packed ${name} ${version} into ${relative(process.cwd(), packed.file)}, ${Math.ceil(packed.size / 1024)} KB in ${packed.files.length} files.`,
   )
+  if (content) {
+    const count = (items: unknown[] | undefined, one: string) => `${items?.length ?? 0} ${one}${items?.length === 1 ? '' : 's'}`
+    console.log(`Imports ${count(content.skills, 'skill')}, ${count(content.archetypes, 'archetype')}, and ${count(content.workflows, 'workflow')}.`)
+    return
+  }
   console.log(
     `Asks for: ${permissions.length ? permissions.join(', ') : 'no permissions'}. Reaches: ${egress.length ? egress.join(', ') : 'only Factorix'}.`,
   )

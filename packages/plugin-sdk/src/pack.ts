@@ -4,18 +4,30 @@ import { basename, join, relative, resolve, sep } from 'node:path'
 import { crc32, deflateRawSync } from 'node:zlib'
 import type { Permission } from './types.js'
 
-/** What Factorix reads first in a package. Its server must not ask for more than this lists. */
+/** Skills, archetypes, and workflows Factorix imports as data. Each points at a file in the package. */
+export interface PackageContent {
+  /** A skill's key is its slug. The file is its Markdown. */
+  skills?: { key: string; name: string; file: string }[]
+  /** The prompt file is the archetype's system prompt. */
+  archetypes?: { key: string; name: string; role: 'engineer' | 'reviewer' | 'other'; description?: string; prompt?: string }[]
+  /** Each file holds `{ name, description, definition }`, with skills named by slug. */
+  workflows?: { key: string; file: string }[]
+}
+
+/** What Factorix reads first in a package: a server to run, or content to import. A server must not ask for more than this lists. */
 export interface PackageManifest {
   format: 1
   name: string
   version: string
   description?: string
   publisher?: string
-  entry: string
-  database: boolean
-  egress: string[]
-  permissions: Permission[]
-  memoryMb: number
+  entry?: string
+  content?: PackageContent
+  /** The rest is for a server only. */
+  database?: boolean
+  egress?: string[]
+  permissions?: Permission[]
+  memoryMb?: number
 }
 
 export interface PackOptions {
@@ -42,6 +54,8 @@ interface FactorixField {
   publisher?: string
   /** More files or folders to ship, such as `public`. The entry and README.md always go. */
   files?: string[]
+  /** For a package of content in place of a server. */
+  content?: PackageContent
 }
 
 const NAME = /^[a-z][a-z0-9-]{0,30}$/
@@ -135,8 +149,9 @@ export async function packPlugin(dir: string, options: PackOptions = {}): Promis
   if (!NAME.test(name)) throw new Error(`"${name}" is not a plugin name. Set factorix.name to lowercase letters, digits, and dashes`)
   const version = String(own.version ?? '')
   if (!VERSION.test(version)) throw new Error('Set version in package.json, such as 1.0.0')
+  if (field.content) return packContent(root, field, { name, version, description: own.description }, options)
   if (!field.entry || !/\.(?:mjs|cjs|js)$/.test(field.entry)) {
-    throw new Error('Set factorix.entry to the bundled JavaScript file Factorix runs, such as dist/server.mjs')
+    throw new Error('Set factorix.entry to the bundled JavaScript file Factorix runs, such as dist/server.mjs, or factorix.content')
   }
   const entry = relative(root, resolve(root, field.entry)).split(sep).join('/')
   const unknown = (field.permissions ?? []).filter((permission) => !PERMISSIONS.includes(permission))
@@ -160,10 +175,55 @@ export async function packPlugin(dir: string, options: PackOptions = {}): Promis
   })
   for (const path of field.files ?? []) await collect(root, path, files)
   await collect(root, 'README.md', files).catch(() => undefined)
-  files.set('factorix-plugin.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`))
+  return write(root, manifest, files, options)
+}
 
+async function write(root: string, manifest: PackageManifest, files: Map<string, Buffer>, options: PackOptions): Promise<Packed> {
+  files.set('factorix-plugin.json', Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`))
   const archive = writeZip(files)
-  const file = resolve(options.out ?? join(root, `${name}-${version}.zip`))
+  const file = resolve(options.out ?? join(root, `${manifest.name}-${manifest.version}.zip`))
   await writeFile(file, archive)
   return { file, manifest, files: [...files.keys()].sort(), size: archive.length, sha256: createHash('sha256').update(archive).digest('hex') }
+}
+
+async function packContent(
+  root: string,
+  field: FactorixField,
+  about: { name: string; version: string; description?: string },
+  options: PackOptions,
+): Promise<Packed> {
+  if (field.entry || field.database || field.egress?.length || field.permissions?.length || field.memoryMb) {
+    throw new Error('A package of content runs nothing, so factorix lists no entry, database, egress, permissions, or memoryMb')
+  }
+  const content = field.content as PackageContent
+  const normal = (path: string) => relative(root, resolve(root, path)).split(sep).join('/')
+  const packed: PackageContent = {
+    ...(content.skills?.length ? { skills: content.skills.map((skill) => ({ ...skill, file: normal(skill.file) })) } : {}),
+    ...(content.archetypes?.length
+      ? { archetypes: content.archetypes.map((archetype) => ({ ...archetype, ...(archetype.prompt ? { prompt: normal(archetype.prompt) } : {}) })) }
+      : {}),
+    ...(content.workflows?.length ? { workflows: content.workflows.map((workflow) => ({ ...workflow, file: normal(workflow.file) })) } : {}),
+  }
+  const paths = [
+    ...(packed.skills ?? []).map((skill) => skill.file),
+    ...(packed.archetypes ?? []).flatMap((archetype) => (archetype.prompt ? [archetype.prompt] : [])),
+    ...(packed.workflows ?? []).map((workflow) => workflow.file),
+  ]
+  if (paths.length === 0 && !packed.archetypes?.length) throw new Error('factorix.content lists no skills, archetypes, or workflows')
+  const files = new Map<string, Buffer>()
+  for (const path of paths) {
+    await collect(root, path, files).catch((error: NodeJS.ErrnoException) => {
+      throw error.code === 'ENOENT' ? new Error(`${path} does not exist`) : error
+    })
+  }
+  await collect(root, 'README.md', files).catch(() => undefined)
+  const manifest: PackageManifest = {
+    format: 1,
+    name: about.name,
+    version: about.version,
+    ...(about.description ? { description: about.description.slice(0, 300) } : {}),
+    ...(field.publisher ? { publisher: field.publisher } : {}),
+    content: packed,
+  }
+  return write(root, manifest, files, options)
 }

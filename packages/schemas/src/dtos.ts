@@ -70,6 +70,8 @@ export interface PluginInstanceDto {
 
 /** What an uploaded package asks for, shown before anything from it runs. */
 export interface PluginPackageDto {
+  /** A plugin Factorix runs, or content it imports. */
+  kind: 'plugin' | 'content'
   name: string
   version: string
   description: string | null
@@ -83,6 +85,33 @@ export interface PluginPackageDto {
   sha256: string
   /** The version this organization runs now, when the upload would replace it. */
   replaces: string | null
+  /** For content, what importing it would do to each item. */
+  items: ContentPackPlanDto[]
+}
+
+export type ContentPackItemKind = 'skill' | 'archetype' | 'workflow'
+
+/**
+ * `update` rewrites an item nobody changed since the package wrote it, `keep` leaves one that someone changed or used,
+ * `gone` does not bring back one that someone deleted, and `release` leaves one a newer version dropped as it is.
+ * `conflict` means the organization already has another with that name, and nothing is imported.
+ */
+export interface ContentPackPlanDto {
+  kind: ContentPackItemKind
+  key: string
+  name: string
+  action: 'create' | 'update' | 'keep' | 'gone' | 'release' | 'conflict'
+}
+
+export interface ContentPackDto {
+  id: string
+  name: string
+  version: string
+  description: string | null
+  publisher: string | null
+  /** What it imported, as it is now. `id` is null once someone deleted it. */
+  items: { kind: ContentPackItemKind; key: string; id: string | null; name: string | null }[]
+  updatedAt: string
 }
 
 export interface RunnerDto {

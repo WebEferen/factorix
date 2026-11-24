@@ -151,6 +151,29 @@ export interface PluginInstanceRow {
   updatedAt: Date
 }
 
+export interface ContentPackRow {
+  id: string
+  orgId: string
+  name: string
+  version: string
+  manifest: Record<string, unknown>
+  sha256: string
+  installedBy: string | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type ContentPackItemKind = 'skill' | 'archetype' | 'workflow'
+
+export interface ContentPackItemRow {
+  packId: string
+  kind: ContentPackItemKind
+  key: string
+  targetId: string
+  /** What the item held when the package last wrote it. */
+  sha256: string
+}
+
 export interface OrganizationPluginRow {
   orgId: string
   pluginId: string
