@@ -281,6 +281,19 @@ describe('workflows', () => {
       expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
       expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
 
+      const unresolved = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('description', 'tracker.set_description', { description: '{{issue.descripton}}' }),
+          block('recover', 'tracker.comment', { body: 'Ticket description was empty' }),
+        ],
+        edges: [link('t', 'description'), link('description', 'recover', 'failed')],
+      })
+      const run = await runOn(unresolved, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', description: 'failed', recover: 'succeeded' })
+      expect(world().issues.get(issue.trackerIssueId)).toMatchObject(expected)
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject(expected)
+
       const clear = await publish({
         nodes: [block('t', 'trigger.manual'), block('clear', 'tracker.set_description')],
         edges: [link('t', 'clear')],
@@ -288,6 +301,34 @@ describe('workflows', () => {
       expect((await runOn(clear, issue.id)).status).toBe('succeeded')
       expect(world().issues.get(issue.trackerIssueId)).toMatchObject({ ...expected, description: null })
       expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ ...expected, description: null })
+    })
+
+    it('writes a long built-in ticket title in full and rejects one above the limit', async () => {
+      const { connection } = await admin.ok('POST', '/api/connections', { kind: 'factorix', name: 'Factorix tickets' })
+      const { team } = await admin.ok('POST', '/api/tracker/teams', { connectionId: connection.id, key: 'WF', name: 'Workflows' })
+      const { project } = await admin.ok('POST', '/api/projects', {
+        name: 'Built-in workflows',
+        trackerConnectionId: connection.id,
+        trackerTeamId: team.id,
+        scmConnectionId: gitlabId,
+        repos: [REPO],
+        stateMap: { in_progress: 'in_progress', in_review: 'in_review', done: 'done', blocked: 'blocked' },
+      })
+      const id = await publish({
+        nodes: [
+          block('t', 'trigger.manual'),
+          block('long', 'tracker.set_title', { title: 'Updated {{issue.title}}' }),
+          block('over', 'tracker.set_title', { title: '{{issue.title}} {{issue.title}}' }),
+          block('recover', 'tracker.comment', { body: 'Ticket title was too long' }),
+        ],
+        edges: [link('t', 'long'), link('long', 'over'), link('over', 'recover', 'failed')],
+      })
+      const issue = await ticket('x'.repeat(300), project.id)
+      const run = await runOn(id, issue.id)
+      expect(statusOf(run)).toEqual({ t: 'succeeded', long: 'succeeded', over: 'failed', recover: 'succeeded' })
+      const title = `Updated ${issue.title}`
+      expect(await db()('tickets').where({ id: issue.trackerIssueId }).first()).toMatchObject({ title })
+      expect(await db()('issues').where({ id: issue.id }).first()).toMatchObject({ title })
     })
 
     it('routes an empty rendered title to the failure branch without editing the ticket', async () => {

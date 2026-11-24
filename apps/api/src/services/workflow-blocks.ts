@@ -1,7 +1,7 @@
 import { TRACKER_SOURCES, type UpdateIssueInput } from '@factorix/connectors'
 import { type ConditionRule, escapeMarkdown, evaluateRules, renderTemplate } from '@factorix/core'
 import { type AccountRow, type AgentRow, type IssueRow, json, type ProjectRow, type RunRow, type SkillRow, type WorkflowRunRow } from '@factorix/db'
-import { type BlockType, SLACK_REPLY } from '@factorix/schemas'
+import { type BlockType, SLACK_REPLY, updateIssueInput } from '@factorix/schemas'
 import type { AppDeps } from '../deps'
 import { isTrackerClosed } from '../dto'
 import { writeAudit } from '../lib/audit'
@@ -107,6 +107,10 @@ export async function templateValues(
 
 async function updateTicket({ deps, issue, project }: TicketContext, change: UpdateIssueInput): Promise<BlockResult> {
   const connection = await getConnection(deps.db, issue.orgId, project.trackerConnectionId)
+  if (connection.kind === 'factorix') {
+    const validation = updateIssueInput.safeParse(change)
+    if (!validation.success) throw new Error(validation.error.issues[0]?.message ?? 'Invalid ticket update.')
+  }
   const tracker = trackerFor(deps, connection)
   if (!tracker.updateIssue) throw new Error('This tracker does not support editing ticket fields from a workflow.')
   for (const [field, value] of Object.entries(change)) {
@@ -219,14 +223,16 @@ export const BLOCK_HANDLERS: Record<ActionBlock, Handler> = {
   }),
 
   'tracker.set_title': onTicket(async (context) => {
-    const title = text(context, 'title').trim().slice(0, 255)
+    const title = text(context, 'title').trim()
     if (!title) throw new Error('The ticket title came out empty.')
     return updateTicket(context, { title })
   }),
 
   'tracker.set_description': onTicket(async (context) => {
+    if (!optional(context.config.description)) return updateTicket(context, { description: null })
     const description = markdown(context, 'description')
-    return updateTicket(context, { description: description.trim() ? description : null })
+    if (!description.trim()) throw new Error('The ticket description came out empty. Leave the field blank to clear it.')
+    return updateTicket(context, { description })
   }),
 
   'tracker.set_priority': onTicket(async (context) => {
