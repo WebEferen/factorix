@@ -29,7 +29,7 @@ import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
 import { orgChannel, proxyTokenKey, runCommandChannel, runProxyChannel } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
-import { emit } from '../lib/outbox'
+import { type DomainEvent, emit } from '../lib/outbox'
 import { resolveModelProvider, scmConnectionFor, scmFor } from './connections'
 import { restrictedHosts } from './egress'
 import { PREVIEW_DOMAIN } from './environment-runtime'
@@ -752,8 +752,11 @@ class RunExecution {
   /** A run found in finalizing lost its worker after the agent finished. What it ended with is in its events, stored before finalizing. */
   private async restoreOutcome(): Promise<void> {
     const last = (type: 'done' | 'error') => this.deps.db('run_events').where({ runId: this.run.id, type }).orderBy('seq', 'desc').first()
-    const [done, error] = await Promise.all([last('done'), last('error')])
-    if (error) this.lastError = { code: error.payload.code, message: error.payload.message }
+    const [done, error] = await Promise.all([last('done'), this.run.outcome === null ? last('error') : undefined])
+    if (this.run.outcome !== null) {
+      const stored = this.run.error
+      this.lastError = stored ? { code: (stored.code as ErrorCode | undefined) ?? 'unknown', message: stored.message } : null
+    } else if (error) this.lastError = { code: error.payload.code, message: error.payload.message }
     if (!done) return
     this.doneEvent = { ...done.payload, seq: done.seq, ts: new Date(done.ts).toISOString(), runId: this.run.id }
     this.usage = done.payload.usage
@@ -761,7 +764,7 @@ class RunExecution {
 
   private async finalize(handle: AgentHandle | null): Promise<void> {
     const done = this.doneEvent
-    let outcome: RunOutcome = done?.outcome ?? 'failed'
+    let outcome: RunOutcome = this.run.outcome ?? done?.outcome ?? 'failed'
     if (!done && handle) {
       const { exitCode } = await handle.wait().catch(() => ({ exitCode: -1 }))
       this.lastError ??= { code: 'runtime_crash', message: `The agent container exited with code ${exitCode} before finishing.` }
@@ -776,10 +779,15 @@ class RunExecution {
     if (outcome === 'budget_exceeded') this.lastError ??= { code: 'policy', message: 'The agent reached its budget.' }
     if (outcome === 'max_turns') this.lastError ??= { code: 'policy', message: 'The agent reached its turn limit.' }
 
-    await this.setState('finalizing', { sessionRef: this.run.sessionRef })
+    await this.setState('finalizing', {
+      sessionRef: this.run.sessionRef,
+      outcome,
+      error: this.lastError ? json(this.lastError) : null,
+    })
     const structuredOutput = done?.structuredOutput ?? this.run.structuredOutput
     let result = 'failed'
     let diff: string | undefined
+    let reviewComment: Extract<DomainEvent, { type: 'tracker.comment' }> | undefined
     try {
       const finalized = await finalizePhase({
         db: this.deps.db,
@@ -800,6 +808,7 @@ class RunExecution {
       })
       result = finalized.result
       diff = finalized.diff
+      reviewComment = finalized.reviewComment
     } catch (error) {
       const message = (error as Error).message
       this.log('error', message, 'finalize')
@@ -808,7 +817,9 @@ class RunExecution {
       outcome = outcome === 'completed' ? 'failed' : outcome
     }
 
+    if (this.lostLease) return
     await this.clearCache()
+    if (this.lostLease) return
 
     const cancelled = outcome === 'cancelled'
     const state: TerminalState = cancelled ? 'cancelled' : result === 'failed' ? 'failed' : 'succeeded'
@@ -820,9 +831,11 @@ class RunExecution {
       summary: summaryOf(structuredOutput, done?.finalText),
       structuredOutput,
       diff,
+      reviewComment,
       error: state === 'failed' ? (this.lastError ?? { code: 'unknown', message: done?.finalText || 'The run failed.' }) : null,
       retryable: code ? RETRYABLE.includes(code) : false,
     })
+    if (this.lostLease) return
     if (state === 'succeeded' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
     else if (state === 'cancelled' && this.run.containerId) await this.deps.sandbox.remove(this.run.containerId).catch(() => undefined)
   }
@@ -863,6 +876,7 @@ class RunExecution {
     summary?: string
     structuredOutput?: unknown
     diff?: string
+    reviewComment?: Extract<DomainEvent, { type: 'tracker.comment' }>
     error: { code?: string; message: string } | null
     retryable: boolean
   }): Promise<void> {
@@ -877,10 +891,10 @@ class RunExecution {
         cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
         turns: this.usage.turns ?? 0,
       })
-    await db.transaction(async (trx) => {
+    const finished = await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
-      await trx('runs')
-        .where({ id: this.run.id })
+      const updated = await trx('runs')
+        .where({ id: this.run.id, leaseOwner: this.deps.owner })
         .update({
           state: input.state,
           outcome: input.outcome,
@@ -898,6 +912,8 @@ class RunExecution {
           leaseExpiresAt: null,
           updatedAt: trx.fn.now(),
         })
+      if (!updated) return false
+      if (input.reviewComment) await emit(trx, this.run.orgId, input.reviewComment)
       await trx('approvals')
         .where({ runId: this.run.id, status: 'pending' })
         .whereIn('kind', ['tool', 'question'])
@@ -923,7 +939,12 @@ class RunExecution {
           })
         }
       }
+      return true
     })
+    if (!finished) {
+      this.lostLease = true
+      return
+    }
     this.run.state = input.state
     const asked = this.run.trigger as { workflowRunId?: string; nodeId?: string }
     // The workflow sweep settles the step if this is lost.

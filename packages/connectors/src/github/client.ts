@@ -343,9 +343,11 @@ export class GithubConnector implements ScmConnector {
     return { noteId: `c${comment.id}` }
   }
 
-  async approve(repoId: string, iid: number): Promise<boolean> {
+  async approve(repoId: string, iid: number, receipt?: string): Promise<boolean> {
+    const path = `${this.repo(repoId)}/pulls/${iid}/reviews`
+    if (receipt && (await this.pages(path)).some((review) => review.state !== 'PENDING' && review.body?.trim() === receipt.trim())) return true
     try {
-      await this.request('POST', `${this.repo(repoId)}/pulls/${iid}/reviews`, { body: { event: 'APPROVE' } })
+      await this.request('POST', path, { body: { event: 'APPROVE', body: receipt } })
       return true
     } catch (error) {
       // 422 is GitHub refusing an approval from the pull request's own author.

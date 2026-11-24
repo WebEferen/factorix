@@ -3,7 +3,7 @@ import { type AddressOutput, formatScmBody, type ImplementOutput, type ReviewOut
 import type { Db, IssueRow, ProjectRow, RunRow } from '@factorix/db'
 import type { RunEventBody, RunOutcome } from '@factorix/runtime'
 import type { SandboxProvider, StepResult, Workspace } from '@factorix/sandbox'
-import { emit } from '../lib/outbox'
+import { type DomainEvent, emit } from '../lib/outbox'
 import { refreshAfterPush } from './previews'
 import { type LinkedMergeRequest, mergeRequestsOf } from './repos'
 import { syncDiscussions } from './scm-sync'
@@ -50,6 +50,7 @@ export interface FinalizeContext {
 export interface FinalizeResult {
   result: string
   diff?: string
+  reviewComment?: Extract<DomainEvent, { type: 'tracker.comment' }>
 }
 
 async function step(context: FinalizeContext, repo: WorkRepo, op: 'bundle' | 'push' | 'diff', gitToken?: string): Promise<StepResult> {
@@ -289,10 +290,22 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
   const summaryOnly = context.project?.reviewComments === 'summary'
   const targetOf = (comment: ReviewOutput['comments'][number]): LinkedMergeRequest =>
     mergeRequests.find((mr) => mr.repo.name === comment.repo) ?? first
+  // Look at the host: a worker can die after a write is accepted but before it records anything locally.
+  const posted = new Map<string, string[]>()
+  const refreshPosted = async (mr: LinkedMergeRequest) => {
+    const bodies = (await scm.listDiscussions(mr.repo.scmRepoId, mr.mrIid)).flatMap(({ notes }) => notes.map(({ body }) => body.trimEnd()))
+    posted.set(mr.id, bodies)
+    return bodies
+  }
+  const marker = (item: string) => `<!-- factorix:review=${run.id}/${item} -->`
+  const hasMarker = (bodies: string[], item: string) => bodies.some((body) => body.endsWith(marker(item)))
+  const alreadyPosted = async (mr: LinkedMergeRequest, item: string) => hasMarker(posted.get(mr.id) ?? (await refreshPosted(mr)), item)
+  const marked = (body: string, item: string) => `${formatScmBody(body, run.id, agentHandle)}\n\n${marker(item)}`
   const details = new Map<string, Awaited<ReturnType<ScmConnector['getMergeRequest']>>>()
-  for (const comment of summaryOnly ? [] : (output.comments ?? [])) {
+  for (const [index, comment] of (summaryOnly ? [] : (output.comments ?? [])).entries()) {
     const target = targetOf(comment)
-    const body = formatScmBody(`**${comment.severity}:** ${comment.body}`, run.id, agentHandle)
+    const item = `comment-${index}`
+    if (await alreadyPosted(target, item)) continue
     try {
       if (comment.repo && target.repo.name !== comment.repo && mergeRequests.length > 1) throw new Error(`no merge request in ${comment.repo}`)
       const mr = details.get(target.id) ?? (await scm.getMergeRequest(target.repo.scmRepoId, target.mrIid))
@@ -302,35 +315,28 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
         path: comment.path,
         line: comment.line,
         side: comment.side,
-        body,
+        body: marked(`**${comment.severity}:** ${comment.body}`, item),
         diffRefs: mr.diffRefs,
       })
     } catch (error) {
+      // A failed response can mean the host accepted the comment. Use the same marker for the fallback.
+      if (hasMarker(await refreshPosted(target), item)) continue
       context.log({
         type: 'log',
         level: 'warn',
         source: 'finalize',
         message: `Inline comment on ${comment.path}:${comment.line} was refused, posting it as a note: ${(error as Error).message}`,
       })
-      await scm.postNote(
-        target.repo.scmRepoId,
-        target.mrIid,
-        formatScmBody(`\`${comment.path}:${comment.line}\`\n\n${comment.body}`, run.id, agentHandle),
-      )
+      await scm.postNote(target.repo.scmRepoId, target.mrIid, marked(`\`${comment.path}:${comment.line}\`\n\n${comment.body}`, item))
     }
   }
   for (const mr of mergeRequests) {
-    await scm.postNote(
-      mr.repo.scmRepoId,
-      mr.mrIid,
-      formatScmBody(
-        reviewNote(output, summaryOnly ? (output.comments ?? []).filter((comment) => targetOf(comment).id === mr.id) : []),
-        run.id,
-        agentHandle,
-      ),
-    )
+    if (!(await alreadyPosted(mr, 'summary'))) {
+      const body = reviewNote(output, summaryOnly ? (output.comments ?? []).filter((comment) => targetOf(comment).id === mr.id) : [])
+      await scm.postNote(mr.repo.scmRepoId, mr.mrIid, marked(body, 'summary'))
+    }
     if (output.verdict === 'approve') {
-      const approved = await scm.approve(mr.repo.scmRepoId, mr.mrIid)
+      const approved = await scm.approve(mr.repo.scmRepoId, mr.mrIid, marked('', 'approval'))
       if (!approved)
         context.log({
           type: 'log',
@@ -343,15 +349,17 @@ async function finalizeReview(context: FinalizeContext): Promise<FinalizeResult>
       context.log({ type: 'log', level: 'warn', source: 'finalize', message: `Could not mirror discussions: ${error.message}` }),
     )
   }
-  await emit(db, run.orgId, {
-    type: 'tracker.comment',
-    issueId: issue.id,
-    template: 'review_verdict',
-    runId: run.id,
-    agentHandle,
-    body: `${output.verdict === 'approve' ? 'Approved' : 'Changes requested'}: ${output.summary}`,
-  })
-  return { result: `verdict:${output.verdict}` }
+  return {
+    result: `verdict:${output.verdict}`,
+    reviewComment: {
+      type: 'tracker.comment',
+      issueId: issue.id,
+      template: 'review_verdict',
+      runId: run.id,
+      agentHandle,
+      body: `${output.verdict === 'approve' ? 'Approved' : 'Changes requested'}: ${output.summary}`,
+    },
+  }
 }
 
 async function finalizeTask({ db, run, issue, agentHandle, structuredOutput }: FinalizeContext): Promise<FinalizeResult> {

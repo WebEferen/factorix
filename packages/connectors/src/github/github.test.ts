@@ -196,6 +196,18 @@ describe('GithubConnector against a stub server', () => {
     expect(last()?.body).toEqual({ event: 'APPROVE' })
   })
 
+  it('does not submit an approval the host already accepted for this run', async () => {
+    const receipt = '<!-- factorix:review=run/approval -->'
+    const path = `${REPO}/pulls/7/reviews`
+    route({ [`GET ${path}`]: [], [`POST ${path}`]: { id: 1 } })
+    expect(await github.approve('42', 7, receipt)).toBe(true)
+    expect(last()?.body).toEqual({ event: 'APPROVE', body: receipt })
+
+    route({ [`GET ${path}`]: [{ id: 1, state: 'APPROVED', body: receipt }] })
+    expect(await github.approve('42', 7, receipt)).toBe(true)
+    expect(last()?.method).toBe('GET')
+  })
+
   it('reads CI from every check and status on the head commit', async () => {
     const ci = async (runs: unknown[], statuses: unknown[]) => {
       route({

@@ -54,10 +54,8 @@ export function createDb(connectionString: string, options: { max?: number } = {
   })
 }
 
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
-const ESCAPES_JSONB_REFUSES = /\\u(0000|d[89a-f])/i
-
-const storable = (_key: string, item: unknown) => (typeof item === 'string' ? item.replaceAll('\u0000', '').replace(LONE_SURROGATE, '\uFFFD') : item)
+// Consume escaped backslashes and valid surrogate pairs so neither is mistaken for a character to repair.
+const JSON_UNICODE_ESCAPES = /\\\\|\\ud[89ab][0-9a-f]{2}\\ud[c-f][0-9a-f]{2}|\\u(0000|d[89a-f][0-9a-f]{2})/gi
 
 /**
  * pg serializes JS arrays as Postgres arrays, so JSONB values must go through this on write. JSONB also refuses U+0000, which tools print
@@ -65,8 +63,7 @@ const storable = (_key: string, item: unknown) => (typeof item === 'string' ? it
  * is replayed on every reattach and refused again, so such strings are repaired here rather than the write failing.
  */
 export function json(value: unknown): string {
-  const text = JSON.stringify(value)
-  return ESCAPES_JSONB_REFUSES.test(text) ? JSON.stringify(value, storable) : text
+  return JSON.stringify(value)?.replace(JSON_UNICODE_ESCAPES, (token, invalid) => (invalid === '0000' ? '' : invalid ? '\uFFFD' : token))
 }
 
 /** Text an agent wrote, for a text column, which refuses U+0000 just as JSONB does. */

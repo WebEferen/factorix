@@ -1,3 +1,4 @@
+import { EMPTY_USAGE } from '@factorix/runtime'
 import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { EventBuffer } from './services/event-buffer'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
@@ -47,6 +48,21 @@ describe('EventBuffer', () => {
     await buffer.flush()
     const row = await harness.deps.db('run_events').where({ runId, seq: 6 }).first()
     expect(row.payload.output).toBe('built \uFFFD')
+  })
+
+  it('stores invalid Unicode in property names without changing literal escape text', async () => {
+    const buffer = new EventBuffer(harness.deps.db, harness.deps.redis, runId, 7, 0)
+    buffer.append({
+      type: 'done',
+      outcome: 'completed',
+      finalText: '',
+      sessionRef: 'session',
+      usage: EMPTY_USAGE,
+      structuredOutput: { 'a\u0000b': { '\ud800': '🚀', '\\u0000': 'literal' } },
+    })
+    await buffer.flush()
+    const row = await harness.deps.db('run_events').where({ runId, seq: 8 }).first()
+    expect(row.payload.structuredOutput).toEqual({ ab: { '\uFFFD': '🚀', '\\u0000': 'literal' } })
   })
 
   it('keeps writing after a write fails, and loses nothing it was given', async () => {

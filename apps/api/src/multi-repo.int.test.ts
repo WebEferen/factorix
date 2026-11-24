@@ -3,7 +3,10 @@ import { fileURLToPath } from 'node:url'
 import type { MergeRequest } from '@factorix/connectors'
 import { BUILTIN_PIPELINE, type PipelineDefinition } from '@factorix/core'
 import { json } from '@factorix/db'
+import { EMPTY_USAGE, type RunEventBody } from '@factorix/runtime'
+import type { SandboxProvider } from '@factorix/sandbox'
 import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { abandonActiveRuns, type ExecutorDeps, executeRun } from './services/executor'
 import { projectRepos } from './services/repos'
 import { handleScmEvent, mergeIssue, pollOpenMergeRequests, revertIssue } from './services/scm-inbound'
 import { postTrackerComment } from './services/tracker-sync'
@@ -88,6 +91,132 @@ describe('projects with several repositories', () => {
   const finished = (kind: 'mr.merged' | 'mr.closed', scmRepoId: string, iid: number) =>
     handleScmEvent(harness.deps, gitlabId, { kind, repoId: scmRepoId, iid, url: null, sourceBranch: null, sha: null })
   const issueRow = (id: string) => db()('issues').where({ id }).first()
+
+  async function interruptedReview(title: string, done: Extract<RunEventBody, { type: 'done' }>, effective: Record<string, unknown> = {}) {
+    const issueId = await issueAt(title, 'review')
+    const { orgId } = await issueRow(issueId)
+    const archetypeId = (await admin.ok('GET', '/api/archetypes')).archetypes[0].id
+    const { agent } = await admin.ok('POST', '/api/agents', {
+      handle: `reviewer-${issueId.slice(0, 8)}`,
+      displayName: 'Reviewer',
+      policy: { mode: 'read_only', allow: [], deny: [], requireApproval: [], networkAccess: false },
+      archetypeId,
+      runtime: 'scripted',
+    })
+    const [run] = await db()('runs')
+      .insert({
+        orgId,
+        issueId,
+        projectId,
+        agentId: agent.id,
+        agentSnapshot: json({}),
+        phase: 'review',
+        pipelineStep: 'review',
+        runtime: 'scripted',
+        state: 'finalizing',
+        lastSeq: 1,
+        lastRunnerSeq: 1,
+        ...effective,
+      })
+      .returning('id')
+    await db()('run_events').insert({ runId: run.id, seq: 1, type: 'done', payload: json(done) })
+    await db()('issues').where({ id: issueId }).update({ lockedByRunId: run.id })
+    return { issueId, runId: run.id as string }
+  }
+
+  function reviewWorker(owner: string): ExecutorDeps {
+    return {
+      ...harness.deps,
+      owner,
+      subscriber: harness.deps.redis.duplicate(),
+      sandbox: {
+        ensureWorkspace: async (key) => ({ key, volume: key, mirrorVolume: key }),
+        runStep: async (_workspace, { op }) => ({ op, exitCode: 0, stdout: '', stderr: '', values: {}, timedOut: false, durationMs: 0 }),
+      } as SandboxProvider,
+    }
+  }
+
+  it('recovers a review after the host accepts comments without posting them again', async () => {
+    const { issueId, runId } = await interruptedReview('Interrupted review', {
+      type: 'done',
+      outcome: 'completed',
+      finalText: '',
+      sessionRef: 'review',
+      usage: EMPTY_USAGE,
+      structuredOutput: {
+        verdict: 'request_changes',
+        summary: 'Fix the bug.',
+        comments: [{ path: 'a.ts', line: 3, side: 'new', severity: 'major', body: 'Fix this.' }],
+      },
+    })
+    const iid = await openMr(issueId, '42')
+    const firstWorker = reviewWorker('first')
+    const secondWorker = reviewWorker('second')
+    const scm = harness.world.scm('y')
+    const notes: Awaited<ReturnType<typeof scm.listDiscussions>> = []
+    const trackingScm = {
+      ...scm,
+      listDiscussions: async (repoId: string, iid: number) => [...(await scm.listDiscussions(repoId, iid)), ...notes],
+      postNote: async (repoId: string, iid: number, body: string) => {
+        const receipt = await scm.postNote(repoId, iid, body)
+        notes.push({
+          id: receipt.noteId,
+          notes: [
+            {
+              id: receipt.noteId,
+              body,
+              author: 'bot',
+              system: false,
+              path: null,
+              line: null,
+              createdAt: new Date().toISOString(),
+              resolvable: false,
+              resolved: false,
+            },
+          ],
+        })
+        // The summary is already visible at the host, but this worker never gets its receipt.
+        if (notes.length === 1) {
+          await abandonActiveRuns()
+          throw new Error('Worker stopped after the host accepted the summary')
+        }
+        return receipt
+      },
+    }
+    try {
+      firstWorker.connectors = { ...firstWorker.connectors, scm: () => trackingScm }
+      secondWorker.connectors = firstWorker.connectors
+      await executeRun(firstWorker, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'finalizing', outcome: 'completed' })
+      await db()('runs').where({ id: runId }).update({ leaseExpiresAt: new Date(0) })
+      await executeRun(secondWorker, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'succeeded' })
+      expect(await scm.listDiscussions('42', iid)).toHaveLength(1)
+      expect(notes).toHaveLength(1)
+      expect(await db()('domain_events').where({ type: 'tracker.comment' }).whereRaw("payload->>'runId' = ?", [runId])).toHaveLength(1)
+    } finally {
+      firstWorker.subscriber.disconnect()
+      secondWorker.subscriber.disconnect()
+    }
+  })
+
+  it('keeps a worker timeout when the runner acknowledged cancellation before recovery', async () => {
+    const error = { code: 'timeout', message: 'The run hit its time limit.' }
+    const { issueId, runId } = await interruptedReview(
+      'Timed out review',
+      { type: 'done', outcome: 'cancelled', finalText: '', sessionRef: 'timeout', usage: EMPTY_USAGE },
+      { outcome: 'failed', error: json(error) },
+    )
+    const worker = reviewWorker('recovery')
+    try {
+      await executeRun(worker, runId)
+      expect(await db()('runs').where({ id: runId }).first()).toMatchObject({ state: 'failed', outcome: 'failed', error })
+      const event = await db()('domain_events').where({ type: 'pipeline.advance' }).whereRaw("payload->>'issueId' = ?", [issueId]).first()
+      expect(event.payload.event).toEqual({ type: 'run.finished', result: 'failed', retryable: true })
+    } finally {
+      worker.subscriber.disconnect()
+    }
+  })
 
   it('keeps the repositories in the order they were picked, each in its own folder', async () => {
     const { project } = await admin.ok('GET', `/api/projects/${projectId}`)

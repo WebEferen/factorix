@@ -103,7 +103,7 @@ export interface ScmConnector {
   resolveDiscussion(repoId: string, iid: number, discussionId: string, resolved: boolean): Promise<void>
   postNote(repoId: string, iid: number, body: string): Promise<{ noteId: string }>
   /** Resolves to false when the server refuses, which happens when the bot authored the MR. */
-  approve(repoId: string, iid: number): Promise<boolean>
+  approve(repoId: string, iid: number, receipt?: string): Promise<boolean>
   getCiStatus(repoId: string, iid: number): Promise<CiResult>
   merge(
     repoId: string,
