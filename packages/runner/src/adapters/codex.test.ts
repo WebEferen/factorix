@@ -158,7 +158,7 @@ describe('CodexNormalizer', () => {
     const [event] = normalizer.normalize({ type: 'turn.completed', usage })
     expect(event).toMatchObject({
       type: 'usage',
-      inputTokens: 20,
+      inputTokens: 16,
       cacheReadTokens: 4,
       cacheWriteTokens: 2,
       outputTokens: 10,
@@ -166,6 +166,15 @@ describe('CodexNormalizer', () => {
       turns: 2,
     })
     expect((event as { costUsd?: number }).costUsd).toBeUndefined()
+  })
+
+  it('prices Codex usage without charging cached input twice', () => {
+    const normalizer = new CodexNormalizer('gpt-5.4')
+    const [event] = normalizer.normalize({
+      type: 'turn.completed',
+      usage: { input_tokens: 1_000_000, cached_input_tokens: 500_000, output_tokens: 100_000 },
+    })
+    expect(event).toMatchObject({ type: 'usage', costUsd: 2.875 })
   })
 
   it('adds what helpers spent, by model, and prices each share', () => {

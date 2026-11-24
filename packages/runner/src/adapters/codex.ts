@@ -217,10 +217,11 @@ export class CodexRuntime implements AgentRuntime {
     const turn = await thread.run(buildHelperTurn(helper, task), { signal })
     const key = model ?? 'default'
     const spent = this.helperUsage[key] ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }
+    const cached = turn.usage?.cached_input_tokens ?? 0
     this.helperUsage[key] = {
-      inputTokens: spent.inputTokens + (turn.usage?.input_tokens ?? 0),
+      inputTokens: spent.inputTokens + Math.max(0, (turn.usage?.input_tokens ?? 0) - cached),
       outputTokens: spent.outputTokens + (turn.usage?.output_tokens ?? 0),
-      cacheReadTokens: spent.cacheReadTokens + (turn.usage?.cached_input_tokens ?? 0),
+      cacheReadTokens: spent.cacheReadTokens + cached,
       cacheWriteTokens: spent.cacheWriteTokens,
     }
     return turn.finalResponse

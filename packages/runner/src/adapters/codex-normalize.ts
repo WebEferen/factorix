@@ -213,10 +213,11 @@ export class CodexNormalizer {
 
   private turnCompleted(event: LooseEvent): RunEventBody[] {
     const usage = event.usage
+    const cached = usage?.cached_input_tokens ?? 0
     const next: UsageSnapshot = {
-      inputTokens: this.own.inputTokens + (usage?.input_tokens ?? 0),
+      inputTokens: this.own.inputTokens + Math.max(0, (usage?.input_tokens ?? 0) - cached),
       outputTokens: this.own.outputTokens + (usage?.output_tokens ?? 0),
-      cacheReadTokens: this.own.cacheReadTokens + (usage?.cached_input_tokens ?? 0),
+      cacheReadTokens: this.own.cacheReadTokens + cached,
       cacheWriteTokens: this.own.cacheWriteTokens + (usage?.cache_write_input_tokens ?? 0),
       reasoningTokens: (this.own.reasoningTokens ?? 0) + (usage?.reasoning_output_tokens ?? 0),
       turns: this.own.turns + 1,

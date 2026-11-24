@@ -6,7 +6,6 @@ import {
   decodeEvent,
   type ErrorCode,
   encodeLine,
-  estimateCostUsd,
   estimateRunCostUsd,
   MODEL_DIALECTS,
   MODEL_PLANS,
@@ -735,10 +734,15 @@ class RunExecution {
     this.handle?.send(encodeLine(response))
   }
 
+  /** A runtime that reports only tokens has its cost priced by the runner from the table, so it is an estimate even when the event carries one. */
+  private costEstimated(reported: number | undefined): boolean {
+    return !this.run.modelPlan && (RUNTIME_CAPABILITIES[this.run.runtime].costReporting === 'tokens' || reported === undefined)
+  }
+
   private async onUsage(event: Extract<RunEvent, { type: 'usage' }>): Promise<void> {
     const { db } = this.deps
     this.usage = event
-    const estimated = !this.run.modelPlan && event.costUsd === undefined
+    const estimated = this.costEstimated(event.costUsd)
     const cost = this.run.modelPlan ? null : (event.costUsd ?? estimateRunCostUsd(this.run.model ?? undefined, event))
     await db('runs')
       .where({ id: this.run.id })
@@ -945,12 +949,13 @@ class RunExecution {
     const cost = this.run.modelPlan
       ? null
       : (this.usage.costUsd ??
-        estimateCostUsd(this.run.model ?? undefined, {
+        estimateRunCostUsd(this.run.model ?? undefined, {
           inputTokens: this.usage.inputTokens ?? 0,
           outputTokens: this.usage.outputTokens ?? 0,
           cacheReadTokens: this.usage.cacheReadTokens ?? 0,
           cacheWriteTokens: this.usage.cacheWriteTokens ?? 0,
           turns: this.usage.turns ?? 0,
+          byModel: this.usage.byModel,
         }))
     await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
@@ -964,7 +969,7 @@ class RunExecution {
           structuredOutput: input.structuredOutput === undefined ? null : json(input.structuredOutput),
           usage: json(this.usage),
           costUsd: cost ?? null,
-          costEstimated: !this.run.modelPlan && this.usage.costUsd === undefined,
+          costEstimated: this.costEstimated(this.usage.costUsd),
           diff: plainText(input.diff) ?? null,
           error: input.error ? json(input.error) : null,
           sessionRef: this.run.sessionRef,

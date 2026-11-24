@@ -535,6 +535,11 @@ export interface SpendRowDto {
   key: string
   label: string
   runs: number
+  pricedRuns: number
+  /** Used tokens on a model with no known price, so the cost totals leave them out. */
+  unpricedRuns: number
+  /** Ran on their author's own plan, so they cost the organization nothing and are neither priced nor unpriced. */
+  planRuns: number
   costUsd: number
   estimatedCostUsd: number
   inputTokens: number

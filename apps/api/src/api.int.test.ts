@@ -1600,6 +1600,47 @@ describe('API', () => {
       const spend = await admin.ok('GET', '/api/spend')
       expect(spend.totalUsd).toBe(0)
     })
+
+    it('totals estimates and tells runs with no price apart from runs on a plan', async () => {
+      const { db } = harness.deps
+      const spendAdmin = new ApiClient(harness.app)
+      await spendAdmin.ok('POST', '/api/auth/login', { email: SETUP.email, password: SETUP.password })
+      const { org } = await spendAdmin.ok('POST', '/api/orgs', { name: 'Spend fixtures' })
+      await spendAdmin.ok('POST', '/api/auth/switch', { orgId: org.id })
+      const { agents } = await spendAdmin.ok('GET', '/api/agents')
+      const [priced, unpriced] = agents
+      const run = {
+        orgId: org.id,
+        agentId: priced.id,
+        agentSnapshot: json({}),
+        phase: 'implement',
+        state: 'succeeded',
+        runtime: 'codex',
+      }
+      await db('runs').insert([
+        { ...run, usage: json({ inputTokens: 100_000 }), costUsd: 0.25, costEstimated: true },
+        { ...run, modelPlan: 'chatgpt', usage: json({ inputTokens: 40_000 }) },
+        { ...run, agentId: unpriced.id, usage: json({ cacheReadTokens: 25 }) },
+        { ...run, agentId: unpriced.id, state: 'queued' },
+        {
+          ...run,
+          agentId: unpriced.id,
+          state: 'failed',
+          costUsd: 0,
+          costEstimated: true,
+          usage: json({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }),
+        },
+      ])
+      const spend = await spendAdmin.ok('GET', '/api/spend')
+      expect(spend.totalUsd).toBe(0.25)
+      expect(spend.byAgent[0]).toMatchObject({ key: priced.id, runs: 2, estimatedCostUsd: 0.25, pricedRuns: 1, unpricedRuns: 0, planRuns: 1 })
+      expect(spend.byAgent.find((row: { key: string }) => row.key === unpriced.id)).toMatchObject({
+        runs: 3,
+        pricedRuns: 0,
+        unpricedRuns: 1,
+        planRuns: 0,
+      })
+    })
   })
 
   it('reports health', async () => {
