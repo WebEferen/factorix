@@ -139,6 +139,16 @@ export function bundledPluginSecret(key: string, name: string): string {
 export const BUNDLED_PLUGIN_PAGES = '/_plugin'
 
 /**
+ * Bundled and packaged pages are served from Factorix's own address, so this policy is what keeps them apart from it:
+ * each runs without an origin, as in a frame without `allow-same-origin`, even when opened on its own. It goes out next
+ * to whatever policy the plugin sends, and browsers enforce both.
+ */
+export const PAGE_POLICY = "sandbox allow-scripts allow-forms allow-popups allow-downloads; frame-ancestors 'self'"
+/** A page must not receive Factorix's session, nor set or clear Factorix's cookies. */
+export const PAGE_REQUEST_DROPS = ['cookie', 'authorization']
+export const PAGE_RESPONSE_DROPS = ['set-cookie', 'clear-site-data']
+
+/**
  * Where Factorix calls a bundled plugin, through the plugin host on the internal network, and where people open its
  * pages: under Factorix's own address, which the web passes to the plugin host. The host serves them with a sandbox
  * policy, so each page runs without an origin and reaches neither Factorix's session nor another plugin.
@@ -205,9 +215,6 @@ export function parsePluginManifest(value: unknown): PluginManifest {
   if (!Array.isArray(blocks) || blocks.length > 20) throw new Error('The plugin manifest lists its blocks wrongly')
   const triggers = (raw.triggers ?? []) as Record<string, unknown>[]
   if (!Array.isArray(triggers) || triggers.length > 20) throw new Error('The plugin manifest lists its triggers wrongly')
-  if (provides.length === 0 && pages.length === 0 && blocks.length === 0 && triggers.length === 0) {
-    throw new Error('The plugin provides nothing this Factorix can use: no tracker, no pages, and no blocks')
-  }
   const permissions = (raw.permissions ?? []) as unknown[]
   if (!Array.isArray(permissions)) throw new Error('The plugin manifest lists its permissions wrongly')
   const unknown = permissions.find((permission) => typeof permission !== 'string' || !Object.hasOwn(PLUGIN_PERMISSIONS, permission))

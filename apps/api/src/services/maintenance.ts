@@ -52,6 +52,8 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'
   const envKeys = [...new Set([...managed.containers, ...managed.volumes].flatMap((item) => (item.envKey ? [item.envKey] : [])))]
   const instances = envKeys.length > 0 ? await db<EnvironmentInstanceRow>('environment_instances').whereIn('slug', envKeys) : []
   const instanceBySlug = new Map(instances.map((instance) => [instance.slug, instance]))
+  // An uploaded plugin's environment is its own to keep: only removing the plugin takes it, data included.
+  const pluginSlugs = new Set<string>(envKeys.length > 0 ? await db('plugin_instances').whereIn('slug', envKeys).pluck('slug') : [])
   const now = Date.now()
   let containers = 0
   for (const container of managed.containers) {
@@ -61,6 +63,7 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'
     if (container.kind === 'step') {
       remove = !container.running && age > HOUR
     } else if (container.kind === 'env') {
+      if (container.envKey && pluginSlugs.has(container.envKey)) continue
       // A start creates containers before it marks anything, so only leftovers older than a start are taken.
       const instance = container.envKey ? instanceBySlug.get(container.envKey) : undefined
       remove = age > 10 * 60_000 && (!instance || !LIVE_STATES.includes(instance.state))
@@ -124,6 +127,7 @@ export async function reapSandboxes(deps: Pick<AppDeps, 'db' | 'env' | 'sandbox'
     .select('id', 'factoryState')
   const previewIssueState = new Map(previewIssues.map((issue) => [issue.id, issue.factoryState]))
   for (const key of volumeKeys) {
+    if (pluginSlugs.has(key)) continue
     const instance = instanceBySlug.get(key)
     if (instance && LIVE_STATES.includes(instance.state)) continue
     const since = instance ? (instance.stoppedAt ?? instance.updatedAt).getTime() : 0

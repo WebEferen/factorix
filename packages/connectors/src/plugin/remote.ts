@@ -56,7 +56,12 @@ export async function callPlugin(endpoint: PluginEndpoint, method: string, param
 }
 
 export async function fetchPluginManifest(endpoint: PluginEndpoint): Promise<PluginManifest> {
-  return parsePluginManifest(await callPlugin(endpoint, 'manifest', [], null))
+  const manifest = parsePluginManifest(await callPlugin(endpoint, 'manifest', [], null))
+  // Checked here rather than in the parser, which also reads an uploaded package's stand-in until its server answers.
+  if (manifest.provides.length + manifest.pages.length + manifest.blocks.length + manifest.triggers.length === 0) {
+    throw new Error('The plugin provides nothing this Factorix can use: no tracker, no pages, and no blocks')
+  }
+  return manifest
 }
 
 export async function runPluginBlock(endpoint: PluginEndpoint, block: PluginBlock, call: PluginBlockCall): Promise<PluginBlockAnswer> {

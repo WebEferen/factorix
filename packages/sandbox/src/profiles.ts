@@ -189,6 +189,19 @@ export function serviceContainerConfig(environment: Environment, spec: ServiceSp
   }
 }
 
+/** Empties an environment's source volume so it can take the files copied in after. It has no network and runs nothing else. */
+export function sourceWriterConfig(key: string, defaults: ContainerDefaults): ContainerCreateOptions {
+  return {
+    Image: defaults.image,
+    Entrypoint: ['find', '/source', '-mindepth', '1', '-delete'],
+    Cmd: [],
+    User: '0:0',
+    WorkingDir: '/',
+    Labels: { ...managedLabels(defaults), 'factorix.kind': 'step', 'factorix.step': 'source', 'factorix.env': key },
+    HostConfig: { ...hardening(DEFAULT_LIMITS), Mounts: [volumeMount(environmentSourceVolume(key), '/source', 'rw')], NetworkMode: 'none' },
+  }
+}
+
 export function parseStepValues(stdout: string): Record<string, string> {
   const values: Record<string, string> = {}
   for (const line of stdout.split('\n')) {

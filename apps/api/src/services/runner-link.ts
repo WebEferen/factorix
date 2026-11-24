@@ -104,7 +104,10 @@ export class RunnerLinks {
       runnerOfWorkspace: (key) => this.runnerOfWorkspace(key),
       runnerOfEnvironment: async (key) => {
         const instance = await db('environment_instances').where({ slug: key }).first()
-        if (!instance) return undefined
+        if (!instance) {
+          const plugin = await db('plugin_instances').where({ slug: key }).first('runner_id')
+          return plugin ? (plugin.runnerId ?? null) : undefined
+        }
         const workspaceKey = instance.issueId ?? instance.runId
         if (workspaceKey) return this.runnerOfWorkspace(workspaceKey)
         return (await db('projects').where({ id: instance.projectId }).first('runner_id'))?.runnerId ?? null

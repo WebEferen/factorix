@@ -1,10 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { Redis } from 'ioredis'
-import { createGateway, type PreviewRoute } from './gateway'
+import { createGateway, type PreviewRoute, type PreviewTarget } from './gateway'
+import { createPackageGateway } from './packages'
 import { createRunnerDialer } from './runners'
 
 const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:56379', { maxRetriesPerRequest: 3 })
 const port = Number(process.env.PORT ?? 4102)
+/** Only the internal network reaches this one. Nothing routes a public address to it. */
+const packagePort = Number(process.env.PACKAGE_PORT ?? 4103)
 const baseUrl = process.env.FACTORIX_PREVIEW_URL ?? 'http://preview.localhost:4102'
 const SEEN_EVERY_MS = 30_000
 const lastSeen = new Map<string, number>()
@@ -39,8 +42,19 @@ const server = createGateway({
 
 server.listen(port, '0.0.0.0', () => console.error(`[preview-gateway] listening on ${port} for ${baseUrl}`))
 
+const packages = createPackageGateway({
+  dial: runners.dial,
+  async route(slug) {
+    const raw = await redis.get(`plugin:route:${slug}`)
+    return raw ? (JSON.parse(raw) as PreviewTarget) : null
+  },
+  log: (message) => console.error(`[preview-gateway] ${message}`),
+})
+packages.listen(packagePort, '0.0.0.0', () => console.error(`[preview-gateway] serving plugin packages on ${packagePort}`))
+
 const shutdown = () => {
   server.close()
+  packages.close()
   runners.close()
   redis.disconnect()
   process.exit(0)

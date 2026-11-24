@@ -78,6 +78,9 @@ function fakeProvider(overrides: Partial<SandboxProvider> = {}) {
     stopEnvironment: async (key: string) => {
       calls.push(['stopEnvironment', key])
     },
+    writeEnvironmentSource: async (key: string, archive: Buffer) => {
+      calls.push(['writeEnvironmentSource', key, archive])
+    },
     ...overrides,
   } as unknown as SandboxProvider
   return { provider, calls, agents }
@@ -100,6 +103,13 @@ describe('a sandbox on another machine', () => {
     expect(step.values).toEqual({ HEAD: 'abc' })
     expect(calls.at(-1)).toEqual(['runStep', workspace, { op: 'checkout', env: { FX_REPO_NAME: 'web' } }])
     await expect(remote.runStep(workspace, { op: 'push', gitToken: 't' })).rejects.toThrow('push refused')
+  })
+
+  it('carries a source archive byte for byte', async () => {
+    const { remote, calls } = connect()
+    const archive = Buffer.from([0x1f, 0x8b, 0, 255, 10, 13])
+    await remote.writeEnvironmentSource('envaaaaaaa', archive)
+    expect(calls.at(-1)).toEqual(['writeEnvironmentSource', 'envaaaaaaa', archive])
   })
 
   it('streams an agent both ways and tags its container with the runner', async () => {

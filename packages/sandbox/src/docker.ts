@@ -16,6 +16,7 @@ import {
   parseStepValues,
   STEP_PROFILES,
   serviceContainerConfig,
+  sourceWriterConfig,
   stepContainerConfig,
 } from './profiles'
 import type {
@@ -526,6 +527,18 @@ export class DockerSandboxProvider implements SandboxProvider {
       await network.remove()
     } catch (error) {
       if (!isNotFound(error)) throw error
+    }
+  }
+
+  async writeEnvironmentSource(key: string, archive: Buffer): Promise<void> {
+    const container = await this.docker.createContainer(sourceWriterConfig(key, this.defaults))
+    try {
+      await container.start()
+      const { StatusCode } = (await container.wait()) as { StatusCode: number }
+      if (StatusCode !== 0) throw new Error(`Emptying the source of ${key} exited with ${StatusCode}`)
+      await container.putArchive(archive, { path: '/source' })
+    } finally {
+      await container.remove({ force: true }).catch(() => undefined)
     }
   }
 

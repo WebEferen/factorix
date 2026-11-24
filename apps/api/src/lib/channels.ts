@@ -11,6 +11,12 @@ export const runProxyChannel = (runId: string) => `run:${runId}:proxy`
 export const proxyTokenKey = (token: string) => `proxy:token:${token}`
 
 /** Shared with apps/preview-gateway, which reads routes, consumes tickets, and records visits under the same names. */
+/** The gateway reads a package's route here, and the worker holds a lock while it starts or removes one. */
+export const pluginKeys = {
+  route: (slug: string) => `plugin:route:${slug}`,
+  lock: (pluginId: string) => `plugin:lock:${pluginId}`,
+}
+
 export const previewKeys = {
   route: (slug: string) => `preview:route:${slug}`,
   ticket: (token: string) => `preview:ticket:${token}`,

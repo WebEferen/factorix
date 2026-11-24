@@ -98,6 +98,21 @@ PLUGIN_SECRET=$(openssl rand -hex 24) npx tsx plugin.ts
 
 When you release a version with a changed manifest, press **Refresh** on the plugin's row so Factorix reads it again.
 
+### Or upload it as a package
+
+Factorix can run the plugin for you. Bundle it into one file, describe it in the `factorix` field of `package.json`, and pack it:
+
+```sh
+npx esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/server.mjs
+npx factorix-plugin pack
+```
+
+```json
+"factorix": { "entry": "dist/server.mjs", "database": true, "egress": ["api.example.com"], "permissions": ["members:read"] }
+```
+
+An organization's admin uploads the zip under **Integrations → Plugins**. The server gets `PLUGIN_SECRET`, `PORT`, `HOST`, `FACTORIX_URL`, and `DATABASE_URL` from its environment, and reaches only the hosts it listed. `packPlugin` from `@moxxy/factorix-plugin-sdk/pack` does the same from code. The format is in [`docs/plugin-packages.md`](https://github.com/WebEferen/factorix/blob/main/docs/plugin-packages.md).
+
 ## Trackers
 
 `tracker(connection)` returns an object that Factorix calls for one connection. It is created for each request, so keep it cheap and keep no state in it.

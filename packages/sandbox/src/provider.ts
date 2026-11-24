@@ -161,4 +161,6 @@ export interface SandboxProvider {
   stopEnvironment(key: string, services?: string[]): Promise<void>
   /** Deletes data volumes, and with `source` the source volume too. Stop the environment first. */
   removeEnvironmentVolumes(key: string, options: { source: boolean }): Promise<void>
+  /** Empties an environment's source volume and unpacks a gzipped tar into it, such as a plugin package's files. */
+  writeEnvironmentSource(key: string, archive: Buffer): Promise<void>
 }

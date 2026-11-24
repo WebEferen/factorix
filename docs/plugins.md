@@ -4,18 +4,18 @@ A plugin adds something to Factorix from a server of its own: a tracker, pages i
 
 Two plugins ship with Factorix. The daily digest lives in [`plugins/digest`](../plugins/digest) and is a good one to read next to this page. Company lives in [`plugins/company`](../plugins/company): it keeps who is in which department, and runs the company's processes with an engine of its own, where a form starts a case and people, approvals, agents, and tickets take it step by step.
 
-## Two ways to run one
+## Three ways to run one
 
-|                      | Bundled                                          | External                                                                        |
-| -------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| Where the code lives | `plugins/<name>` in this repository              | Any repository, any language                                                    |
-| Who runs it          | The `plugins` container, one process per plugin  | Whoever owns it, behind HTTPS                                                   |
-| Installing           | Nothing to do: the worker registers it           | An installation admin enters its address and secret under Integrations, Plugins |
-| Secret               | Derived from `FACTORIX_PLUGINS_KEY` and its name | Chosen by whoever runs it, at least 16 characters                               |
-| Pages                | `https://<name>.plugins.<domain>`                | Its own address                                                                 |
-| Database             | Its own Postgres database, on request            | Its own                                                                         |
+|                      | Bundled                                          | External                                                                        | Package                                                   |
+| -------------------- | ------------------------------------------------ | ------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Where the code lives | `plugins/<name>` in this repository              | Any repository, any language                                                    | A zip built with the SDK                                  |
+| Who runs it          | The `plugins` container, one process per plugin  | Whoever owns it, behind HTTPS                                                   | Factorix, in a container of its own on the machine picked |
+| Installing           | Nothing to do: the worker registers it           | An installation admin enters its address and secret under Integrations, Plugins | An organization's admin uploads it, for that organization |
+| Secret               | Derived from `FACTORIX_PLUGINS_KEY` and its name | Chosen by whoever runs it, at least 16 characters                               | Made by Factorix, given to it as `PLUGIN_SECRET`          |
+| Pages                | Factorix's own address, under `/_plugin/<name>`  | Its own address                                                                 | Factorix's own address, under `/_package/<slug>`          |
+| Database             | Its own Postgres database, on request            | Its own                                                                         | Its own Postgres beside it, on request                    |
 
-Either way, each organization turns a plugin on for itself under Integrations, Plugins, and sees what it may do before it does.
+Either way, each organization turns a plugin on for itself under Integrations, Plugins, and sees what it may do before it does. Packages have a page of their own: [plugin-packages.md](plugin-packages.md).
 
 ## Building a bundled plugin
 

@@ -46,6 +46,8 @@ const schema = z.object({
   FACTORIX_PLUGINS_KEY: z.string().optional(),
   /** Where the API reaches the plugin host, as http://plugins:4110. */
   FACTORIX_PLUGINS_INTERNAL_URL: z.preprocess((value) => (value === '' ? undefined : value), z.url({ protocol: /^https?$/ }).optional()),
+  /** Where the API reaches uploaded plugin packages, through the preview gateway's internal port, as http://preview-gateway:4103. */
+  FACTORIX_PACKAGES_INTERNAL_URL: z.preprocess((value) => (value === '' ? undefined : value), z.url({ protocol: /^https?$/ }).optional()),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENAI_API_KEY: z.string().optional(),
 })

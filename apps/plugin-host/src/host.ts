@@ -3,10 +3,11 @@ import { createServer, request as httpRequest, type IncomingHttpHeaders, type In
 import { createRequire } from 'node:module'
 import { connect, createServer as createNetServer } from 'node:net'
 import { createInterface } from 'node:readline'
+import { PAGE_POLICY, PAGE_REQUEST_DROPS, PAGE_RESPONSE_DROPS } from '@factorix/connectors'
 import type { BundledPlugin } from './plugins'
 import { LIST_PATH, routeOf } from './routing'
 
-export { LIST_PATH }
+export { LIST_PATH, PAGE_POLICY }
 
 export interface HostOptions {
   plugins: BundledPlugin[]
@@ -26,15 +27,6 @@ export interface PluginHost {
 }
 
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
-/**
- * Pages are served from Factorix's own address, so this policy is what keeps them apart from it: each runs without an
- * origin, as in a frame without `allow-same-origin`, even when opened on its own. It goes out next to whatever policy
- * the plugin sends, and browsers enforce both.
- */
-export const PAGE_POLICY = "sandbox allow-scripts allow-forms allow-popups allow-downloads; frame-ancestors 'self'"
-/** A page must not receive Factorix's session, nor set or clear Factorix's cookies. */
-const PAGE_REQUEST_DROPS = ['cookie', 'authorization']
-const PAGE_RESPONSE_DROPS = ['set-cookie', 'clear-site-data']
 const DEFAULT_BACKOFF = { initialMs: 1000, maxMs: 30_000, resetAfterMs: 60_000 }
 const STOP_GRACE_MS = 5000
 

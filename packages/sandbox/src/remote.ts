@@ -322,6 +322,10 @@ export class RemoteSandboxProvider implements SandboxProvider {
   removeEnvironmentVolumes(key: string, options: { source: boolean }): Promise<void> {
     return this.call('removeEnvironmentVolumes', { key, options }, START_TIMEOUT_MS)
   }
+
+  writeEnvironmentSource(key: string, archive: Buffer): Promise<void> {
+    return this.call('writeEnvironmentSource', { key, archive: archive.toString('base64') }, START_TIMEOUT_MS)
+  }
 }
 
 export interface ServeSandboxOptions {
@@ -393,6 +397,7 @@ export function serveSandbox(provider: SandboxProvider, transport: FrameTranspor
     },
     stopEnvironment: ({ key, services }) => provider.stopEnvironment(key, services),
     removeEnvironmentVolumes: (args) => provider.removeEnvironmentVolumes(args.key, args.options),
+    writeEnvironmentSource: ({ key, archive }) => provider.writeEnvironmentSource(key, Buffer.from(String(archive), 'base64')),
   }
 
   const stopListening = transport.onFrame((frame) => {

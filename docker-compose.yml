@@ -24,6 +24,7 @@ x-app-env: &app-env
   FACTORIX_PREVIEW_MAX_HOURS: ${FACTORIX_PREVIEW_MAX_HOURS:-}
   FACTORIX_PLUGINS_KEY: ${FACTORIX_PLUGINS_KEY:-}
   FACTORIX_PLUGINS_INTERNAL_URL: http://plugins:4110
+  FACTORIX_PACKAGES_INTERNAL_URL: http://preview-gateway:4103
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
@@ -136,6 +137,8 @@ services:
     environment:
       REDIS_URL: redis://redis:6379
       PORT: 4102
+      # Uploaded plugin packages. Never published: the API calls it, and the web passes /_package to it.
+      PACKAGE_PORT: 4103
       FACTORIX_PREVIEW_URL: ${FACTORIX_PREVIEW_URL:-http://preview.localhost:4102}
     labels:
       factorix.role: gateway
@@ -146,7 +149,7 @@ services:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
     restart: unless-stopped
-    networks: [fx-backend]
+    networks: [fx-backend, fx-public]
 
   # Runs every plugin in plugins/ as its own process. Browsers reach their pages through web under /_plugin, and the
   # host reaches the API to call back and its own database, never Factorix's.
@@ -191,6 +194,7 @@ services:
         FACTORIX_PUBLIC_URL: ${FACTORIX_PUBLIC_URL:-http://localhost:4101}
         FACTORIX_PREVIEW_URL: ${FACTORIX_PREVIEW_URL:-http://preview.localhost:4102}
         FACTORIX_PLUGINS_INTERNAL_URL: http://plugins:4110
+        FACTORIX_PACKAGES_INTERNAL_URL: http://preview-gateway:4103
     image: factorix/web:dev
     ports:
       - ${FACTORIX_WEB_BIND:-127.0.0.1}:4101:4101

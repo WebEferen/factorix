@@ -143,4 +143,8 @@ export class RoutingSandboxProvider implements SandboxProvider {
   async removeEnvironmentVolumes(key: string, options: { source: boolean }): Promise<void> {
     return (await this.byEnvironment(key)).removeEnvironmentVolumes(key, options)
   }
+
+  async writeEnvironmentSource(key: string, archive: Buffer): Promise<void> {
+    return (await this.byEnvironment(key)).writeEnvironmentSource(key, archive)
+  }
 }

@@ -12,6 +12,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./node": "./src/node.ts",
+    "./pack": "./src/pack.ts",
     "./testing": "./src/testing.ts"
   },
   "engines": {

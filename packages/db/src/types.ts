@@ -119,10 +119,34 @@ export interface PluginRow {
   pageUrl: string | null
   /** Ships in the repository's plugins/ folder and registers itself. */
   bundled: boolean
+  /** Set for a package an organization uploaded: only that organization sees it, and Factorix runs it. */
+  orgId: string | null
   manifest: Record<string, unknown>
   secretCiphertext: Buffer
   secretNonce: Buffer
   keyVersion: number
+  createdAt: Date
+  updatedAt: Date
+}
+
+export type PluginInstanceState = 'starting' | 'ready' | 'failed' | 'removing'
+
+export interface PluginInstanceRow {
+  pluginId: string
+  orgId: string
+  /** Names its environment, as a preview's slug does. */
+  slug: string
+  /** The machine it runs on, or null for this one. */
+  runnerId: string | null
+  /** The package's own manifest, as parsed when it was uploaded. */
+  package: Record<string, unknown>
+  archive: Buffer
+  sha256: string
+  state: PluginInstanceState
+  error: string | null
+  containerId: string | null
+  uploadedBy: string | null
+  readyAt: Date | null
   createdAt: Date
   updatedAt: Date
 }

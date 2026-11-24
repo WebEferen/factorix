@@ -1,5 +1,14 @@
-import { type PluginPermission, signPluginPage, splitPluginValues, verifyPlugin } from '@factorix/connectors'
-import { type ConnectionRow, json, type OrganizationPluginRow, type OrganizationRow, type PluginRow } from '@factorix/db'
+import { PACKAGE_LIMITS, type PluginPermission, signPluginPage, splitPluginValues, verifyPlugin } from '@factorix/connectors'
+import {
+  type ConnectionRow,
+  json,
+  type OrganizationPluginRow,
+  type OrganizationRow,
+  type PluginInstanceRow,
+  type PluginRow,
+  type RunnerRow,
+} from '@factorix/db'
+import type { PluginDto } from '@factorix/schemas'
 import {
   pluginActivityInput,
   pluginCallInput,
@@ -26,11 +35,13 @@ import {
   startPluginRun,
 } from '../services/plugin-api'
 import { firePluginTrigger } from '../services/plugin-blocks'
+import { inspectPluginPackage, installPluginPackage, pluginInstanceDto, removePluginPackage, restartPluginPackage } from '../services/plugin-packages'
 import { enabledPlugin, endpointOf, getPlugin, manifestOf, pluginAllows, pluginDto, readManifest, secretsOf } from '../services/plugins'
 import { readSettings } from '../services/settings'
 import { finishPluginStep } from '../services/workflows'
 
 const PAGE_TTL_MS = 5 * 60_000
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
   const { db } = deps
@@ -52,14 +63,42 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
       .whereRaw("config->>'pluginId' = ?", [pluginId])
       .first('id')
 
+  /** A package belongs to the organization that uploaded it. Every other one is told it does not exist. */
+  const visible = (plugin: PluginRow, orgId: string): PluginRow => {
+    if (plugin.orgId && plugin.orgId !== orgId) throw notFound('Plugin')
+    return plugin
+  }
+
+  const packagesOf = async (plugins: PluginRow[]): Promise<Map<string, PluginDto['package']>> => {
+    const ids = plugins.flatMap((plugin) => (plugin.orgId ? [plugin.id] : []))
+    if (ids.length === 0) return new Map()
+    const instances = await db<PluginInstanceRow>('plugin_instances')
+      .whereIn('pluginId', ids)
+      .select('pluginId', 'runnerId', 'package', 'sha256', 'state', 'error', 'readyAt')
+    const runnerIds = instances.flatMap((instance) => (instance.runnerId ? [instance.runnerId] : []))
+    const runners = runnerIds.length > 0 ? await db<RunnerRow>('runners').whereIn('id', runnerIds).select('id', 'name') : []
+    const runnerById = new Map(runners.map((runner) => [runner.id, runner]))
+    return new Map(
+      instances.map((instance) => [
+        instance.pluginId,
+        pluginInstanceDto(instance as PluginInstanceRow, instance.runnerId ? runnerById.get(instance.runnerId) : undefined),
+      ]),
+    )
+  }
+
   app.get('/api/plugins', async (request) => {
     const { account, user } = requireAuth(request)
     const [plugins, enabled] = await Promise.all([
-      db<PluginRow>('plugins').orderBy('name'),
+      db<PluginRow>('plugins')
+        .where((query) => query.whereNull('orgId').orWhere({ orgId: account.orgId }))
+        .orderBy('name'),
       db<OrganizationPluginRow>('organization_plugins').where({ orgId: account.orgId }),
     ])
     const byPlugin = new Map(enabled.map((row) => [row.pluginId, row]))
-    return { plugins: plugins.map((plugin) => pluginDto(plugin, byPlugin.get(plugin.id), user.installationAdmin)) }
+    const packages = await packagesOf(plugins)
+    return {
+      plugins: plugins.map((plugin) => pluginDto(plugin, byPlugin.get(plugin.id), user.installationAdmin, packages.get(plugin.id) ?? null)),
+    }
   })
 
   /** What the web's content security policy lets a frame load. Only the origins, since anyone signed in can ask. */
@@ -99,6 +138,7 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
   app.post('/api/plugins/:id/refresh', async (request) => {
     const { account } = requireInstallationAdmin(request)
     const plugin = await getPlugin(db, (request.params as { id: string }).id)
+    if (plugin.orgId) throw conflict(`${plugin.name} is an uploaded package. Restart it, or upload a new version`)
     const manifest = await readManifest(endpointOf(deps, plugin))
     const [row] = await db<PluginRow>('plugins')
       .where({ id: plugin.id })
@@ -109,8 +149,16 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
   })
 
   app.delete('/api/plugins/:id', async (request) => {
-    const { account } = requireInstallationAdmin(request)
+    requireAuth(request)
     const plugin = await getPlugin(db, (request.params as { id: string }).id)
+    if (plugin.orgId) {
+      const { account } = requireAdmin(request)
+      visible(plugin, account.orgId)
+      if (await usedBy(plugin.id)) throw conflict(`A connection still uses ${plugin.name}. Remove it first`)
+      await removePluginPackage(deps, account, plugin)
+      return { ok: true }
+    }
+    const { account } = requireInstallationAdmin(request)
     if (plugin.bundled) throw conflict(`${plugin.name} comes with this installation. Each organization can turn it off instead`)
     if (await usedBy(plugin.id)) throw conflict(`A connection still uses ${plugin.name}. Remove it first`)
     await db('plugins').where({ id: plugin.id }).delete()
@@ -129,9 +177,13 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
   /** An organization turns a plugin on or off for itself, and sets what the plugin asks for. */
   app.put('/api/plugins/:id/organization', async (request) => {
     const { account, user } = requireAdmin(request)
-    const plugin = await getPlugin(db, (request.params as { id: string }).id)
+    const plugin = visible(await getPlugin(db, (request.params as { id: string }).id), account.orgId)
     const input = parseBody(pluginOrganizationInput, request.body)
     const current = await db<OrganizationPluginRow>('organization_plugins').where({ orgId: account.orgId, pluginId: plugin.id }).first()
+    if (input.enabled && plugin.orgId) {
+      const instance = await db<PluginInstanceRow>('plugin_instances').where({ pluginId: plugin.id }).first('state')
+      if (instance?.state !== 'ready') throw conflict(`${plugin.name} is not running yet, so there is nothing to turn on`)
+    }
     if (!input.enabled) {
       if (await usedBy(plugin.id, account.orgId)) throw conflict(`A connection still uses ${plugin.name}. Remove it first`)
       await db('organization_plugins').where({ orgId: account.orgId, pluginId: plugin.id }).delete()
@@ -184,7 +236,44 @@ export function pluginRoutes(app: FastifyInstance, deps: AppDeps): void {
       })
     }
     const enabled = await db<OrganizationPluginRow>('organization_plugins').where({ orgId: account.orgId, pluginId: plugin.id }).first()
-    return { plugin: pluginDto(plugin, enabled, user.installationAdmin) }
+    const packages = await packagesOf([plugin])
+    return { plugin: pluginDto(plugin, enabled, user.installationAdmin, packages.get(plugin.id) ?? null) }
+  })
+
+  app.post('/api/plugins/:id/restart', async (request) => {
+    const { account } = requireAdmin(request)
+    const plugin = visible(await getPlugin(db, (request.params as { id: string }).id), account.orgId)
+    if (!plugin.orgId) throw conflict(`${plugin.name} runs on its own server, so Factorix cannot restart it`)
+    await restartPluginPackage(deps, account.orgId, plugin)
+    return { ok: true }
+  })
+
+  /** A package arrives as the zip itself. Reading it runs none of it, and only installing stores it. */
+  app.register(async (scope) => {
+    scope.addContentTypeParser(
+      ['application/zip', 'application/octet-stream'],
+      { parseAs: 'buffer', bodyLimit: PACKAGE_LIMITS.archiveBytes },
+      (_request, body, done) => done(null, body),
+    )
+    const zip = (request: FastifyRequest): Buffer => {
+      if (!Buffer.isBuffer(request.body)) throw badRequest('Send the package as application/zip')
+      return request.body
+    }
+
+    scope.post('/api/plugin-packages/inspect', async (request) => {
+      const { account } = requireAdmin(request)
+      return { package: await inspectPluginPackage(deps, account.orgId, zip(request)) }
+    })
+
+    scope.post('/api/plugin-packages', async (request) => {
+      const { account, user } = requireAdmin(request)
+      const runner = (request.query as { runner?: string }).runner || null
+      if (runner && !UUID.test(runner)) throw badRequest('That runner is not in this organization')
+      const plugin = await installPluginPackage(deps, account, zip(request), runner)
+      const enabled = await db<OrganizationPluginRow>('organization_plugins').where({ orgId: account.orgId, pluginId: plugin.id }).first()
+      const packages = await packagesOf([plugin])
+      return { plugin: pluginDto(plugin, enabled, user.installationAdmin, packages.get(plugin.id) ?? null) }
+    })
   })
 
   /**

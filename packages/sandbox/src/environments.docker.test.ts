@@ -1,4 +1,8 @@
+import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { DockerSandboxProvider, dockerClientFromEnv } from './docker'
 import { environmentDataVolume, environmentSourceVolume, IMAGE_SERVICE_CAPS, serviceContainerName } from './profiles'
@@ -11,6 +15,7 @@ const remoteVolume = `fx-test-envremote-${suffix}`
 const issueKey = `test-env-${suffix}`
 const keyA = `ta${suffix}`
 const keyB = `tb${suffix}`
+const keyC = `tc${suffix}`
 const repoEnv = { FX_REPO_NAME: 'app', FX_REPO_URL: '/remote/app.git', FX_BRANCH: 'factorix/abc-1', FX_BASE_BRANCH: 'main' }
 
 const SERVER = `
@@ -133,7 +138,7 @@ JS
   })
 
   afterAll(async () => {
-    for (const key of [keyA, keyB]) {
+    for (const key of [keyA, keyB, keyC]) {
       await provider.stopEnvironment(key).catch(() => undefined)
       await provider.removeEnvironmentVolumes(key, { source: true }).catch(() => undefined)
     }
@@ -222,6 +227,38 @@ JS
       { Source: environment.sourceVolume, Target: '/workspace' },
     ])
     expect(files.trim().split(/\s+/)).toEqual(['2', '1'])
+  })
+
+  it('replaces what a source holds with an archive, which repository code reads but cannot change', async () => {
+    const archive = (files: Record<string, string>) => {
+      const dir = mkdtempSync(join(tmpdir(), 'fx-source-'))
+      try {
+        for (const [path, text] of Object.entries(files)) {
+          mkdirSync(dirname(join(dir, 'files', path)), { recursive: true })
+          writeFileSync(join(dir, 'files', path), text)
+        }
+        execFileSync('tar', ['--no-xattrs', '-czf', join(dir, 'source.tgz'), '-C', join(dir, 'files'), '.'], {
+          env: { ...process.env, COPYFILE_DISABLE: '1' },
+        })
+        return readFileSync(join(dir, 'source.tgz'))
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
+    const source = await provider.ensureEnvironment(keyC, { internal: true, labels: {} })
+    await provider.writeEnvironmentSource(keyC, archive({ 'old.js': 'old' }))
+    await provider.writeEnvironmentSource(keyC, archive({ 'server.js': 'new', 'public/a.txt': 'a' }))
+    const container = await docker.createContainer({
+      Image: image,
+      User: '1000:1000',
+      Cmd: ['sh', '-c', 'find /plugin -type f | sort; cat /plugin/public/a.txt; echo; touch /plugin/x 2>/dev/null && echo wrote || echo read-only'],
+      HostConfig: { NetworkMode: 'none', Mounts: [{ Type: 'volume', Source: source.sourceVolume, Target: '/plugin', ReadOnly: true }] },
+    })
+    await container.start()
+    await container.wait()
+    const output = demux(await container.logs({ stdout: true, stderr: true }))
+    await container.remove({ force: true })
+    expect(output.trim().split('\n')).toEqual(['/plugin/public/a.txt', '/plugin/server.js', 'a', 'read-only'])
   })
 
   it('stops everything, keeps volumes for the next start, and removes them when asked', async () => {

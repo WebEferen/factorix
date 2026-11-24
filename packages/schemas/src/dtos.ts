@@ -52,6 +52,37 @@ export interface PluginDto {
   enabled: boolean
   settings: Record<string, string>
   secretSettings: string[]
+  /** Set for a package this organization uploaded, which Factorix runs for it. */
+  package: PluginInstanceDto | null
+}
+
+export interface PluginInstanceDto {
+  state: 'starting' | 'ready' | 'failed' | 'removing'
+  error: string | null
+  version: string
+  sha256: string
+  database: boolean
+  egress: string[]
+  /** The runner it runs on, or null for Factorix's own machine. */
+  runner: { id: string; name: string } | null
+  readyAt: string | null
+}
+
+/** What an uploaded package asks for, shown before anything from it runs. */
+export interface PluginPackageDto {
+  name: string
+  version: string
+  description: string | null
+  publisher: string | null
+  permissions: { id: string; description: string }[]
+  egress: string[]
+  database: boolean
+  memoryMb: number
+  files: number
+  size: number
+  sha256: string
+  /** The version this organization runs now, when the upload would replace it. */
+  replaces: string | null
 }
 
 export interface RunnerDto {

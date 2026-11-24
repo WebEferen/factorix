@@ -13,6 +13,7 @@ import { syncBundledPlugins } from './services/bundled-plugins'
 import { abandonActiveRuns, executeRun, newWorkerId, releaseActiveRuns } from './services/executor'
 import { reapSandboxes, recoverRuns, resumeStaleImports, syncAllProjects } from './services/maintenance'
 import { advanceIssue } from './services/pipeline'
+import { runPluginAction, sweepPluginInstances } from './services/plugin-packages'
 import { runPreviewAction, stopAllPumps, sweepPreviews } from './services/preview-runner'
 import { relayDomainEvents } from './services/relay'
 import { RunnerLinks } from './services/runner-link'
@@ -123,7 +124,10 @@ export function startWorkers(
     ),
     new Worker(
       QUEUE_NAMES.environments,
-      async (job) => runPreviewAction({ ...deps, sandbox: deps.sandbox, owner }, job.data.instanceId, job.data.action),
+      async (job) =>
+        job.name.startsWith('plugin.')
+          ? runPluginAction({ ...deps, sandbox: deps.sandbox }, job.data.pluginId, job.data.action)
+          : runPreviewAction({ ...deps, sandbox: deps.sandbox, owner }, job.data.instanceId, job.data.action),
       { ...base, concurrency: 4, lockDuration: 60_000 },
     ),
     new Worker(
@@ -181,10 +185,10 @@ export function startWorkers(
     REAP_INTERVAL_MS,
   )
 
-  const previewTimer = setInterval(
-    () => void sweepPreviews({ ...deps, sandbox: deps.sandbox, owner }).catch((error: Error) => log(`preview sweep failed: ${error.message}`)),
-    deps.timings?.previewSweepMs ?? PREVIEW_SWEEP_INTERVAL_MS,
-  )
+  const previewTimer = setInterval(() => {
+    void sweepPreviews({ ...deps, sandbox: deps.sandbox, owner }).catch((error: Error) => log(`preview sweep failed: ${error.message}`))
+    void sweepPluginInstances({ ...deps, sandbox: deps.sandbox }).catch((error: Error) => log(`plugin sweep failed: ${error.message}`))
+  }, deps.timings?.previewSweepMs ?? PREVIEW_SWEEP_INTERVAL_MS)
 
   const workflowTimer = setInterval(
     () => void sweepWorkflows(deps).catch((error: Error) => log(`workflow sweep failed: ${error.message}`)),

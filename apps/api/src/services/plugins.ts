@@ -94,7 +94,12 @@ export function pluginTrackerFor(deps: Deps, connection: ConnectionRow): Tracker
   )
 }
 
-export function pluginDto(plugin: PluginRow, enabled: OrganizationPluginRow | undefined, installationAdmin: boolean): PluginDto {
+export function pluginDto(
+  plugin: PluginRow,
+  enabled: OrganizationPluginRow | undefined,
+  installationAdmin: boolean,
+  instance: PluginDto['package'] = null,
+): PluginDto {
   const manifest = manifestOf(plugin)
   const secretKeys = new Set(manifest.settings.fields.filter((field) => field.type === 'secret').map((field) => field.key))
   return {
@@ -117,5 +122,6 @@ export function pluginDto(plugin: PluginRow, enabled: OrganizationPluginRow | un
     settings: enabled?.config ?? {},
     // The names of the stored secrets come from the row's own marker, never from decrypting them for a list.
     secretSettings: enabled?.secretCiphertext ? [...secretKeys] : [],
+    package: instance,
   }
 }

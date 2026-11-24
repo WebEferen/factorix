@@ -38,11 +38,13 @@ async function followLink(path: string): Promise<void> {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // A file goes up as itself. Browsers name a zip's type differently, so the API is told plainly what it is.
+  const file = typeof Blob !== 'undefined' && body instanceof Blob
   const response = await fetch(path, {
     method,
     credentials: 'same-origin',
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    headers: body === undefined ? undefined : { 'content-type': file ? 'application/zip' : 'application/json' },
+    body: body === undefined ? undefined : file ? body : JSON.stringify(body),
   })
   const text = await response.text()
   let parsed: unknown
@@ -73,6 +75,8 @@ export const api = {
   post: <T = unknown>(path: string, body: unknown = {}) => request<T>('POST', path, body),
   put: <T = unknown>(path: string, body: unknown) => request<T>('PUT', path, body),
   delete: <T = unknown>(path: string) => request<T>('DELETE', path),
+  /** Sends a zip as the request body. */
+  upload: <T = unknown>(path: string, file: Blob) => request<T>('POST', path, file),
 }
 
 export const fetcher = <T>(path: string) => api.get<T>(path)
