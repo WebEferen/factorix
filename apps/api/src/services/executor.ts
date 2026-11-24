@@ -292,6 +292,10 @@ class RunExecution {
         this.log('info', 'Worker reattached to the running container.')
         return handle
       }
+      if (this.run.cancelRequestedAt) {
+        await this.finalize(null)
+        return null
+      }
       if (this.run.state !== 'preparing') {
         await this.finish({
           state: 'failed',

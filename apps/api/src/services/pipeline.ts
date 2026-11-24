@@ -11,7 +11,7 @@ import {
 import { type AccountRow, type AgentRow, type Db, type IssueRow, json, type PipelineRow, type ProjectRow, type RunRow } from '@factorix/db'
 import type { Knex } from 'knex'
 import { writeAudit } from '../lib/audit'
-import { conflict } from '../lib/errors'
+import { conflict, notFound } from '../lib/errors'
 import { emit } from '../lib/outbox'
 import { agentRole, buildAgentSnapshot } from './agents'
 import { mergeRequestSnapshot, mergeRequestsOf } from './repos'
@@ -206,7 +206,9 @@ async function createGateApproval(trx: Trx, issue: IssueRow, kind: GateKind, tim
 export async function cancelSelectedRun(trx: Trx, selected: RunRow, reason: string, options: CancelOptions): Promise<void> {
   const issue = selected.issueId ? await trx<IssueRow>('issues').where({ id: selected.issueId }).forUpdate().first() : null
   const run = await trx<RunRow>('runs').where({ id: selected.id }).forUpdate().first()
-  if (!run || ['succeeded', 'failed', 'cancelled'].includes(run.state)) return
+  if (!run) throw notFound('Run')
+  if (run.state === 'cancelled') return
+  if (run.state === 'succeeded' || run.state === 'failed') throw conflict('This run has already finished')
   if (run.state === 'finalizing') throw conflict('This run is already finalizing')
   if (issue && issue.lockedByRunId === run.id && run.pipelineStep && issue.cursor?.step === run.pipelineStep) {
     const result = await advanceIssue(trx, issue.id, { type: 'cancel' }, options)
