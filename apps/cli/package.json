@@ -1,6 +1,6 @@
 {
   "name": "@moxxy/factorix",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "fx, the command line and MCP server for Factorix",
   "license": "MIT",
   "repository": {
