@@ -1,5 +1,5 @@
 import type { JsonSchema, PermissionPolicy, Phase } from '@factorix/runtime'
-import { ADDRESS_SCHEMA, IMPLEMENT_SCHEMA, PLAN_SCHEMA, PLUGIN_SCHEMA, REVIEW_SCHEMA, TASK_SCHEMA } from './schemas'
+import { ADDRESS_SCHEMA, IMPLEMENT_SCHEMA, PLAN_SCHEMA, PLUGIN_SCHEMA, RESOLVE_SCHEMA, REVIEW_SCHEMA, TASK_SCHEMA } from './schemas'
 
 export * from './schemas'
 
@@ -205,6 +205,26 @@ ${GIT_RULES}`,
     userPrompt: (context) => {
       const failures = context.ciFailures?.length ? `\n\nFailing CI jobs to fix:\n${context.ciFailures.join('\n')}` : ''
       return `${issueBlock(context)}${instructionsBlock(context)}\n\nOpen review threads:\n${threadsBlock(context)}${failures}${checksBlock(context)}${reposBlock(context, { writes: true })}\n\nAddress them on branch ${context.branch} and commit your work.`
+    },
+  },
+  resolve_conflicts: {
+    id: 'resolve_conflicts',
+    policyMode: 'full',
+    readOnlyRepo: false,
+    writes: true,
+    outputSchema: RESOLVE_SCHEMA,
+    instructions: `Your merge request conflicts with its base branch, which moved on after you finished. Clearing that is your only job here.
+Merge the base branch into your branch, resolve every conflict so that both your change and the work that landed on the base keep working, run the project's checks, and commit the merge. Change nothing the merge does not need.
+
+Git rules for this environment:
+- Use git merge. Never rebase, reset, or amend: the factory pushes without force, so rewritten history cannot land.
+- Never push and never change remotes. You have no git credentials here; the factory pushes after you finish.`,
+    userPrompt: (context) => {
+      const only = context.repos.length === 1 ? context.repos[0] : undefined
+      const merge = only
+        ? `You are on branch ${context.branch}. Run git merge origin/${only.defaultBranch}, resolve what conflicts, and commit the merge.`
+        : `In every folder with a merge request, merge the origin branch it is based on into ${context.branch}, resolve what conflicts, and commit the merge.`
+      return `${issueBlock(context)}${checksBlock(context)}${reposBlock(context, { writes: true })}\n\n${merge} In your summary, name each file that conflicted and say how you resolved it.`
     },
   },
   ad_hoc: {

@@ -244,6 +244,10 @@ async function finalizeWrites(context: FinalizeContext): Promise<FinalizeResult>
     await settleMergeRequests(context, outcomes)
     return { result: outcomes.some((outcome) => outcome.pushed) ? 'completed' : 'no_changes', diff }
   }
+  if (run.phase === 'resolve_conflicts') {
+    await settleMergeRequests(context, outcomes)
+    return { result: outcomes.some((outcome) => outcome.pushed) ? 'completed' : 'no_changes', diff }
+  }
 
   const hasWork = outcomes.some((outcome) => outcome.pushed || outcome.ahead) || (await mergeRequestsOf(db, issue.id)).length > 0
   if (!hasWork) return { result: 'no_changes', diff }
@@ -414,7 +418,7 @@ export async function finalizePhase(context: FinalizeContext): Promise<FinalizeR
     return { result: stoppedEarly ? 'failed' : 'completed', diff: await captureDiff(context) }
   }
 
-  if (run.phase === 'implement' || run.phase === 'address_review') {
+  if (run.phase === 'implement' || run.phase === 'address_review' || run.phase === 'resolve_conflicts') {
     if (stoppedEarly) {
       // Partial work stays reachable on the branch, unless a person asked to throw it away.
       if (!run.discardOnCancel)

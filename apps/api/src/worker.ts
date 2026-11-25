@@ -20,7 +20,7 @@ import { runPreviewAction, stopAllPumps, sweepPreviews } from './services/previe
 import { relayDomainEvents } from './services/relay'
 import { RunnerLinks } from './services/runner-link'
 import { refreshRuntimeModels } from './services/runtime-models'
-import { checkCi, handleScmEvent, mergeIssue, revertIssue, settleCi } from './services/scm-inbound'
+import { checkCi, checkConflicts, handleScmEvent, mergeIssue, revertIssue, settleCi } from './services/scm-inbound'
 import { readSettings } from './services/settings'
 import { handleTrackerEvent, importProject, postTrackerComment, setTrackerState } from './services/tracker-sync'
 import { advanceWorkflowRun, executeWorkflowStep, fireTrigger, handleWorkflowEvent, sweepWorkflows } from './services/workflows'
@@ -106,6 +106,7 @@ export function startWorkers(
         else if (job.name === 'ci-timeout') await settleCi(deps, job.data.issueId)
         else if (job.name === 'merge') await mergeIssue(deps, job.data.issueId)
         else if (job.name === 'revert') await revertIssue(deps, job.data.issueId)
+        else if (job.name === 'conflicts') await checkConflicts(deps, job.data.issueId, job.data.again)
       },
       { ...base, concurrency: 2 },
     ),

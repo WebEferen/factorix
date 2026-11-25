@@ -1,5 +1,6 @@
 import type { FactoryState } from '../state/issue'
 import type {
+  ActionStep,
   AdvanceContext,
   AdvanceResult,
   CommentTemplate,
@@ -19,6 +20,15 @@ const COMMENT_ON: Record<string, CommentTemplate> = {
   blocked: 'revert_blocked',
   'mr.partial': 'merge_partial',
   'mr.reverted': 'merge_reverted',
+}
+
+/** A pipeline saved before a result existed takes it as the broader result it narrows down. */
+const NARROWS: Record<string, string> = { conflicts: 'failed' }
+
+const ACTION_OF: Record<ActionStep['action'], 'scmMerge' | 'scmRevert' | 'scmCheckConflicts'> = {
+  'scm.merge': 'scmMerge',
+  'scm.revert': 'scmRevert',
+  'scm.conflicts': 'scmCheckConflicts',
 }
 
 export class PipelineError extends Error {}
@@ -105,7 +115,7 @@ export function advance(
         actions.push({ type: 'createApproval', kind: step.approval, timeoutMinutes: step.timeoutMinutes })
         return
       case 'action':
-        actions.push({ type: step.action === 'scm.revert' ? 'scmRevert' : 'scmMerge' })
+        actions.push({ type: ACTION_OF[step.action] })
         return
       case 'terminal':
         return
@@ -174,6 +184,8 @@ export function advance(
       if (current.kind !== 'gate') return noop()
       const target = current.on[event.choice ?? event.decision]
       if (!target) return noop()
+      // The loop limit stops agents going round by themselves. A person asking for another round gets one.
+      delete cursor.loops[target]
       leaveTo(target)
       return { cursor, actions, factoryState, handled: true }
     }
@@ -188,9 +200,10 @@ export function advance(
     }
     case 'action.result': {
       if (current.kind !== 'action') return noop()
-      const target = current.on[event.result]
+      const result = current.on[event.result] ? event.result : (NARROWS[event.result] ?? event.result)
+      const target = current.on[result]
       if (!target) return noop()
-      const comment = COMMENT_ON[event.result]
+      const comment = COMMENT_ON[result]
       if (comment) actions.push({ type: 'postComment', template: comment, step: cursor.step })
       leaveTo(target)
       return { cursor, actions, factoryState, handled: true }

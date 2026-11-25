@@ -39,7 +39,7 @@ const MAX_REPORT_CHARS = 1000
 const MAX_SCHEMA_CHARS = 20_000
 const MAX_UNFINISHED_RUNS = 3
 const FINISHED = ['succeeded', 'failed', 'cancelled']
-const REPORTED_PHASES = ['plan', 'implement', 'address_review', 'review', 'task', 'prompt']
+const REPORTED_PHASES = ['plan', 'implement', 'address_review', 'resolve_conflicts', 'review', 'task', 'prompt']
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /**

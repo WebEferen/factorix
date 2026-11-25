@@ -114,6 +114,9 @@ async function applyAction(trx: Trx, issue: IssueRow, project: ProjectRow, actio
     case 'scmRevert':
       await emit(trx, issue.orgId, { type: 'scm.revert', issueId: issue.id })
       return
+    case 'scmCheckConflicts':
+      await emit(trx, issue.orgId, { type: 'scm.conflicts', issueId: issue.id })
+      return
   }
 }
 

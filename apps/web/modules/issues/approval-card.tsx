@@ -1,7 +1,7 @@
 'use client'
 
 import type { ApprovalDto, MergeRequestDto } from '@factorix/schemas'
-import { Check, ExternalLink, GitMerge, RotateCcw, ShieldQuestion, Undo2, X } from 'lucide-react'
+import { Check, ExternalLink, GitMerge, RotateCcw, ShieldQuestion, Undo2, Wrench, X } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { mutate } from 'swr'
@@ -23,21 +23,33 @@ function MergeBody({ mergeRequests }: { mergeRequests: MergeRequestDto[] }) {
     </a>
   )
   const [first] = mergeRequests
+  const conflicting = mergeRequests.some((mr) => mr.conflicts)
   if (mergeRequests.length < 2)
     return (
       <p className="text-sm text-ink-2">
-        Approving merges the request when CI allows it. You can also merge it yourself. {first ? link(first, 'Open the merge request') : null}
+        {conflicting
+          ? 'It conflicts with its base branch, so it cannot merge yet. Resolve conflicts sends an agent to merge the base branch in, then the change goes back through review.'
+          : 'Approving merges the request when CI allows it. You can also merge it yourself.'}{' '}
+        {first ? link(first, 'Open the merge request') : null}
         {first?.error ? <span className="block text-danger-ink">Stopped because {first.error}.</span> : null}
       </p>
     )
   return (
     <div className="text-sm text-ink-2">
-      <p>Approving merges them in this order, once CI is green on all of them. You can also merge them yourself.</p>
+      <p>
+        {conflicting
+          ? 'Some of them conflict with their base branch, so nothing can merge yet. Resolve conflicts sends an agent to merge each base branch in, then the change goes back through review.'
+          : 'Approving merges them in this order, once CI is green on all of them. You can also merge them yourself.'}
+      </p>
       <ol className="mt-2 flex list-decimal flex-col gap-0.5 pl-5">
         {mergeRequests.map((mr) => (
           <li key={mr.url}>
             {link(mr, `${mr.repoPath} !${mr.iid}`)} <span className="text-ink-3">{mr.state}</span>
-            {mr.error ? <div className="text-danger-ink">Stopped because {mr.error}.</div> : null}
+            {mr.error ? (
+              <div className="text-danger-ink">Stopped because {mr.error}.</div>
+            ) : mr.conflicts ? (
+              <div className="text-danger-ink">Conflicts with its base branch.</div>
+            ) : null}
           </li>
         ))}
       </ol>
@@ -107,12 +119,16 @@ function PlanBody({ plan }: { plan: Plan }) {
   )
 }
 
+function conflictsIn(approval: ApprovalDto): boolean {
+  return ((approval.payload.mergeRequests ?? []) as MergeRequestDto[]).some((mr) => mr.conflicts)
+}
+
 export function approvalTitle(approval: ApprovalDto): string {
   switch (approval.kind) {
     case 'plan':
       return 'Plan ready for sign-off'
     case 'merge':
-      return 'Ready to merge'
+      return conflictsIn(approval) ? 'Conflicts with its base branch' : 'Ready to merge'
     case 'partial_merge':
       return 'Only part of this change merged'
     case 'revert_blocked':
@@ -126,9 +142,9 @@ export function approvalTitle(approval: ApprovalDto): string {
 
 export function ApprovalCard({ approval, compact }: { approval: ApprovalDto; compact?: boolean }) {
   const [message, setMessage] = useState('')
-  const [loading, setLoading] = useState<'approved' | 'rejected' | RecoveryChoice | null>(null)
+  const [loading, setLoading] = useState<'approved' | 'rejected' | RecoveryChoice | 'resolve' | null>(null)
   const [confirmRevert, setConfirmRevert] = useState(false)
-  const decide = async (decision: 'approved' | 'rejected', choice?: RecoveryChoice) => {
+  const decide = async (decision: 'approved' | 'rejected', choice?: RecoveryChoice | 'resolve') => {
     setLoading(choice ?? decision)
     try {
       await api.post(`/api/approvals/${approval.id}/decide`, { decision, choice, message: message || undefined })
@@ -137,7 +153,8 @@ export function ApprovalCard({ approval, compact }: { approval: ApprovalDto; com
           typeof key === 'string' &&
           (key.startsWith('/api/approvals') || key.startsWith('/api/inbox') || key.startsWith('/api/issues') || key.startsWith('/api/runs')),
       )
-      if (choice) toast.success(choice === 'revert' ? 'Reverting' : choice === 'retry' ? 'Trying again' : 'Done')
+      if (choice === 'resolve') toast.success('An agent is resolving the conflicts')
+      else if (choice) toast.success(choice === 'revert' ? 'Reverting' : choice === 'retry' ? 'Trying again' : 'Done')
       else toast.success(decision === 'approved' ? 'Approved' : 'Rejected')
     } catch (error) {
       toast.error((error as Error).message)
@@ -151,6 +168,7 @@ export function ApprovalCard({ approval, compact }: { approval: ApprovalDto; com
   const Icon = approval.kind === 'merge' || recovery ? GitMerge : ShieldQuestion
   const openElsewhere = mergeRequests.filter((mr) => mr.state === 'opened')
   const landed = mergeRequests.filter((mr) => mr.state === 'merged')
+  const resolvable = approval.kind === 'merge' && conflictsIn(approval)
   return (
     <Card className="p-4">
       <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
@@ -240,9 +258,22 @@ export function ApprovalCard({ approval, compact }: { approval: ApprovalDto; com
           </Dialog>
         </div>
       ) : (
-        <div className="mt-3 flex gap-2">
+        <div className="mt-3 flex flex-wrap gap-2">
+          {resolvable ? (
+            <Button
+              variant="primary"
+              size="sm"
+              className="h-8 px-3"
+              loading={loading === 'resolve'}
+              disabled={loading !== null}
+              onClick={() => void decide('approved', 'resolve')}
+            >
+              <Wrench />
+              Resolve conflicts
+            </Button>
+          ) : null}
           <Button
-            variant="primary"
+            variant={resolvable ? undefined : 'primary'}
             size="sm"
             className="h-8 px-3"
             loading={loading === 'approved'}

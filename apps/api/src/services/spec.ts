@@ -115,6 +115,16 @@ export function defaultScript(phase: Phase, runId: string, repos: SpecRepo[], ou
         ],
         structuredOutput: { summary: 'Updated the marker file.', threads: [] },
       }
+    case 'resolve_conflicts':
+      return {
+        steps: [
+          { say: 'Merging the base branch, keeping this branch’s side of every conflict.' },
+          ...folders.map((folder, index) => ({
+            exec: `git -C ${folder} merge --no-edit -X ours origin/${repos[index]?.baseBranch ?? 'main'}`,
+          })),
+        ],
+        structuredOutput: { summary: 'Merged the base branch and kept this branch’s side of every conflict.' },
+      }
     case 'task':
       return {
         steps: [{ say: 'Looking into the ticket.' }, { exec: `git -C ${first} log -1 --oneline` }],
@@ -292,7 +302,7 @@ export async function sessionToResume(deps: Pick<AppDeps, 'db'>, run: RunRow): P
     .where({ issueId: run.issueId, agentId: run.agentId, runtime: run.runtime })
     // A session continues only on the plan or key it began on: Codex refuses another provider, and a plan's reasoning belongs to its account.
     .where({ modelPlan: run.modelPlan ?? null, modelLoginId: run.modelLoginId ?? null })
-    .whereIn('phase', ['plan', 'implement', 'address_review'])
+    .whereIn('phase', ['plan', 'implement', 'address_review', 'resolve_conflicts'])
     .whereNotNull('sessionRef')
     .whereNot({ id: run.id })
     .orderBy('created_at', 'desc')

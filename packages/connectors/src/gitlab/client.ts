@@ -59,6 +59,15 @@ function mergeBlockerOf(raw: Loose): string | null {
   return raw.draft || raw.work_in_progress ? (MERGE_BLOCKERS.draft_status as string) : null
 }
 
+/* has_conflicts reads false until a check has finished, and a read is what starts one after a push or a change to the target. */
+const UNCHECKED = new Set(['unchecked', 'checking', 'preparing', 'cannot_be_merged_recheck'])
+
+function hasConflictsOf(raw: Loose): boolean | null {
+  if (raw.state !== 'opened') return false
+  if (raw.has_conflicts) return true
+  return UNCHECKED.has(raw.detailed_merge_status) || UNCHECKED.has(raw.merge_status) ? null : false
+}
+
 function mapMr(raw: Loose): MergeRequest {
   return {
     id: String(raw.id),
@@ -71,7 +80,7 @@ function mapMr(raw: Loose): MergeRequest {
     sourceBranch: raw.source_branch,
     targetBranch: raw.target_branch,
     sha: raw.sha ?? null,
-    hasConflicts: Boolean(raw.has_conflicts),
+    hasConflicts: hasConflictsOf(raw),
     mergeBlocker: mergeBlockerOf(raw),
     diffRefs: mapDiffRefs(raw.diff_refs),
   }

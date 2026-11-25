@@ -20,6 +20,7 @@ function drive(autonomy: Autonomy, events: PipelineEvent[]) {
 }
 
 const finished = (result: string, retryable = false): PipelineEvent => ({ type: 'run.finished', result, retryable })
+const checked = (result: 'clean' | 'conflicts'): PipelineEvent => ({ type: 'action.result', result })
 
 describe('agents outside the pipeline', () => {
   const context = { autonomy: 'human_merge' as const, now, assignedRole: 'other' }
@@ -87,9 +88,22 @@ describe('builtin pipeline', () => {
       finished('completed'),
       { type: 'ci.settled' },
       finished('verdict:approve'),
+      checked('clean'),
       { type: 'external', name: 'mr.merged' },
     ])
-    expect(trail).toEqual(['plan', 'approve_plan', 'implement', 'review', 'review', 'address', 'review', 'review', 'await_merge', 'done'])
+    expect(trail).toEqual([
+      'plan',
+      'approve_plan',
+      'implement',
+      'review',
+      'review',
+      'address',
+      'review',
+      'review',
+      'check_conflicts',
+      'await_merge',
+      'done',
+    ])
     expect(last.factoryState).toBe('done')
   })
 
@@ -104,7 +118,7 @@ describe('builtin pipeline', () => {
   })
 
   it('auto-merges under full_auto without creating a merge gate', () => {
-    const { trail, last } = drive('full_auto', [finished('completed'), { type: 'ci.settled' }, finished('verdict:approve')])
+    const { trail, last } = drive('full_auto', [finished('completed'), { type: 'ci.settled' }, finished('verdict:approve'), checked('clean')])
     expect(trail.at(-1)).toBe('auto_merge')
     expect(last.actions).toContainEqual({ type: 'scmMerge' })
     expect(last.actions.some((a) => a.type === 'createApproval')).toBe(false)
@@ -115,6 +129,7 @@ describe('builtin pipeline', () => {
       finished('completed'),
       { type: 'ci.settled' },
       finished('verdict:approve'),
+      checked('clean'),
       { type: 'action.result', result: 'failed' },
     ])
     expect(cursor?.step).toBe('merge_blocked')
@@ -127,6 +142,7 @@ describe('builtin pipeline', () => {
       finished('completed'),
       { type: 'ci.settled' },
       finished('verdict:approve'),
+      checked('clean'),
       { type: 'action.result', result: 'partial' },
     ]
     const gate = drive('full_auto', toGate)
@@ -149,6 +165,7 @@ describe('builtin pipeline', () => {
       finished('completed'),
       { type: 'ci.settled' },
       finished('verdict:approve'),
+      checked('clean'),
       { type: 'action.result', result: 'partial' },
       { type: 'approval.decided', decision: 'approved' },
     ])
@@ -172,6 +189,7 @@ describe('builtin pipeline', () => {
       finished('completed'),
       { type: 'ci.settled' },
       finished('verdict:approve'),
+      checked('clean'),
       { type: 'action.result', result: 'partial' },
       { type: 'approval.decided', decision: 'approved', choice: 'revert' },
     ]
@@ -193,8 +211,9 @@ describe('builtin pipeline', () => {
   it('stops the review ping-pong after maxLoops and hands over to a human', () => {
     const round: PipelineEvent[] = [{ type: 'ci.settled' }, finished('verdict:request_changes'), finished('completed')]
     const { cursor, last } = drive('human_merge', [finished('completed'), ...round, ...round, ...round])
-    expect(cursor?.step).toBe('await_merge')
+    expect(cursor?.step).toBe('check_conflicts')
     expect(last.actions).toContainEqual({ type: 'postComment', template: 'loops_exceeded', step: 'review' })
+    expect(advance(BUILTIN_PIPELINE, cursor, { autonomy: 'human_merge', now }, checked('clean')).cursor?.step).toBe('await_merge')
   })
 
   it('retries a retryable failure before routing to fail', () => {
@@ -239,6 +258,7 @@ describe('builtin pipeline', () => {
       finished('completed'),
       { type: 'ci.settled' },
       finished('verdict:approve'),
+      checked('clean'),
       { type: 'external', name: 'mr.note.human' },
     ])
     expect(cursor?.step).toBe('address')
@@ -285,6 +305,113 @@ describe('builtin pipeline', () => {
     const snapshot = structuredClone(cursor)
     advance(BUILTIN_PIPELINE, cursor, { autonomy: 'human_merge', now }, finished('failed', true))
     expect(cursor).toEqual(snapshot)
+  })
+})
+
+describe('conflicts with the base branch', () => {
+  const approved: PipelineEvent[] = [finished('completed'), { type: 'ci.settled' }, finished('verdict:approve')]
+  const resolveRun = { type: 'enqueueRun', role: 'engineer', phase: 'resolve_conflicts', step: 'resolve_conflicts', attempt: 1 }
+  const choose = (choice: string): PipelineEvent => ({ type: 'approval.decided', decision: 'approved', choice: choice as never })
+
+  it('checks before every hand-over for merging', () => {
+    const round: PipelineEvent[] = [{ type: 'ci.settled' }, finished('verdict:request_changes'), finished('completed')]
+    const handOvers: PipelineEvent[][] = [
+      approved,
+      [finished('completed'), { type: 'ci.settled' }, finished('failed')],
+      [finished('completed'), { type: 'ci.settled' }, finished('verdict:request_changes'), finished('no_changes')],
+      [finished('completed'), ...round, ...round, ...round],
+    ]
+    for (const events of handOvers) {
+      const { cursor, last } = drive('human_merge', events)
+      expect(cursor?.step).toBe('check_conflicts')
+      expect(last.factoryState).toBe('active')
+      expect(last.actions).toContainEqual({ type: 'scmCheckConflicts' })
+      expect(last.actions.some((action) => action.type === 'createApproval')).toBe(false)
+    }
+  })
+
+  it('sends conflicts to the engineer and the result back through review before the merge gate', () => {
+    const conflicted = drive('human_merge', [...approved, checked('conflicts')])
+    expect(conflicted.cursor?.step).toBe('resolve_conflicts')
+    expect(conflicted.last.factoryState).toBe('active')
+    expect(conflicted.last.actions).toContainEqual(resolveRun)
+    expect(conflicted.last.actions).toContainEqual({ type: 'setTrackerState', key: 'in_progress' })
+
+    const { trail, last } = drive('human_merge', [
+      ...approved,
+      checked('conflicts'),
+      finished('completed'),
+      { type: 'ci.settled' },
+      finished('verdict:approve'),
+      checked('clean'),
+    ])
+    expect(trail.slice(-6)).toEqual(['check_conflicts', 'resolve_conflicts', 'review', 'review', 'check_conflicts', 'await_merge'])
+    expect(last.actions).toContainEqual({ type: 'createApproval', kind: 'merge', timeoutMinutes: undefined })
+  })
+
+  it('looks again when the engineer had nothing to change, and hands a person the gate after three rounds', () => {
+    const rounds = [
+      checked('conflicts'),
+      finished('no_changes'),
+      checked('conflicts'),
+      finished('no_changes'),
+      checked('conflicts'),
+      finished('no_changes'),
+    ]
+    const third = drive('human_merge', [...approved, ...rounds])
+    expect(third.cursor?.step).toBe('check_conflicts')
+    expect(third.last.actions).toContainEqual({ type: 'scmCheckConflicts' })
+
+    const { cursor, last } = drive('human_merge', [...approved, ...rounds, checked('conflicts')])
+    expect(cursor?.step).toBe('merge_blocked')
+    expect(last.factoryState).toBe('awaiting_merge')
+    expect(last.actions).toContainEqual({ type: 'postComment', template: 'loops_exceeded', step: 'resolve_conflicts' })
+    expect(last.actions.some((action) => action.type === 'enqueueRun')).toBe(false)
+  })
+
+  it('leaves a failed resolve run at the merge gate instead of failing the issue', () => {
+    const { cursor, last } = drive('human_merge', [...approved, checked('conflicts'), finished('failed')])
+    expect(cursor?.step).toBe('merge_blocked')
+    expect(last.factoryState).toBe('awaiting_merge')
+    expect(last.actions).toContainEqual({ type: 'postComment', template: 'run_failed', step: 'resolve_conflicts' })
+  })
+
+  it('sends a merge that runs into conflicts to the engineer, and keeps other refusals at the gate', () => {
+    const merging = [...approved, checked('clean')]
+    const conflicted = drive('full_auto', [...merging, { type: 'action.result', result: 'conflicts' }])
+    expect(conflicted.cursor?.step).toBe('resolve_conflicts')
+    expect(conflicted.last.actions).toContainEqual(resolveRun)
+    expect(conflicted.last.actions.some((action) => action.type === 'postComment')).toBe(false)
+    expect(drive('full_auto', [...merging, { type: 'action.result', result: 'failed' }]).cursor?.step).toBe('merge_blocked')
+  })
+
+  it('takes conflicts as a failed merge in a pipeline saved before they had a route', () => {
+    const saved = structuredClone(BUILTIN_PIPELINE)
+    delete (saved.steps.auto_merge as { on: Record<string, string> }).on.conflicts
+    const cursor: PipelineCursor = { step: 'auto_merge', enteredAt: now, loops: {}, attempts: {}, waitingFor: null }
+    const { cursor: after, actions } = advance(saved, cursor, { autonomy: 'full_auto', now }, { type: 'action.result', result: 'conflicts' })
+    expect(after?.step).toBe('merge_blocked')
+    expect(actions).toContainEqual({ type: 'postComment', template: 'merge_blocked', step: 'auto_merge' })
+  })
+
+  it('lets a person send the engineer from either merge gate, with a fresh round after the agent ran out', () => {
+    const atGate = drive('human_merge', [...approved, checked('clean'), choose('resolve')])
+    expect(atGate.cursor?.step).toBe('resolve_conflicts')
+    expect(atGate.last.actions).toContainEqual({ type: 'closePendingApprovals' })
+    expect(atGate.last.actions).toContainEqual(resolveRun)
+
+    const rounds = [
+      checked('conflicts'),
+      finished('no_changes'),
+      checked('conflicts'),
+      finished('no_changes'),
+      checked('conflicts'),
+      finished('no_changes'),
+    ]
+    const blocked = drive('human_merge', [...approved, ...rounds, checked('conflicts'), choose('resolve')])
+    expect(blocked.cursor?.step).toBe('resolve_conflicts')
+    expect(blocked.cursor?.loops.resolve_conflicts).toBe(1)
+    expect(blocked.last.actions).toContainEqual(resolveRun)
   })
 })
 

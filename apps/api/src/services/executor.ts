@@ -31,6 +31,7 @@ import { writeAudit } from '../lib/audit'
 import { orgChannel, proxyTokenKey, runCommandChannel, runProxyChannel } from '../lib/channels'
 import { randomToken } from '../lib/crypto'
 import { emit } from '../lib/outbox'
+import { type BaseConflict, baseConflictNote, readBaseConflict } from './conflicts'
 import { resolveModelProvider, scmConnectionFor, scmFor } from './connections'
 import { restrictedHosts } from './egress'
 import { PREVIEW_DOMAIN } from './environment-runtime'
@@ -320,11 +321,17 @@ class RunExecution {
     return this.prepareAndStart()
   }
 
-  private async mirrorAndCheckout(repos: WorkRepo[] = this.repos): Promise<{ conflicts: string[]; setupFailures: string[]; head?: string }> {
+  private async mirrorAndCheckout(
+    repos: WorkRepo[] = this.repos,
+  ): Promise<{ conflicts: string[]; baseConflicts: BaseConflict[]; setupFailures: string[]; head?: string }> {
     const sandbox = this.deps.sandbox
     const workspace = this.workspace as Workspace
     const containerEnv = await this.containerEnv()
-    const result: { conflicts: string[]; setupFailures: string[]; head?: string } = { conflicts: [], setupFailures: [] }
+    const result: { conflicts: string[]; baseConflicts: BaseConflict[]; setupFailures: string[]; head?: string } = {
+      conflicts: [],
+      baseConflicts: [],
+      setupFailures: [],
+    }
     for (const repo of repos) {
       const fetched = await sandbox.runStep(workspace, { op: 'mirror-fetch', env: repo.env, gitToken: this.gitToken, timeoutSeconds: 900 })
       if (fetched.exitCode !== 0) throw new StepFailed('mirror-fetch', fetched)
@@ -339,6 +346,8 @@ class RunExecution {
       if (checkout.stderr.trim()) this.log('debug', checkout.stderr.trim().slice(-4000), 'checkout')
       if (checkout.exitCode !== 0) throw new StepFailed('checkout', checkout)
       if (checkout.values.CONFLICT === '1') result.conflicts.push(repo.name)
+      const baseConflict = readBaseConflict(checkout.values, repo)
+      if (baseConflict) result.baseConflicts.push(baseConflict)
       if (checkout.values.SETUP_FAILED) result.setupFailures.push(`${repo.name} (exit code ${checkout.values.SETUP_FAILED})`)
       result.head ??= checkout.values.HEAD
     }
@@ -512,6 +521,8 @@ class RunExecution {
       notes.push(
         `The branch ${this.branch} in ${checkout.conflicts.join(', ')} could not be rebased onto its remote copy, so your local commits are not on top of the latest remote work. Reconcile them before you finish.`,
       )
+    if (checkout.baseConflicts.length > 0 && PHASES[this.run.phase as Phase].writes)
+      notes.push(baseConflictNote(this.branch, checkout.baseConflicts, several))
     if (checkout.setupFailures.length > 0)
       notes.push(`The setup command failed in ${checkout.setupFailures.join(', ')}. Some dependencies may be missing.`)
     const previous =

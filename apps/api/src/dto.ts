@@ -177,6 +177,7 @@ export function projectDto(row: ProjectRow, repos: ProjectRepoRow[], extra: Part
 export const MERGE_REQUESTS_SQL = `COALESCE((
   SELECT json_agg(json_strip_nulls(json_build_object(
     'repoPath', mr.repo_path, 'iid', mr.mr_iid, 'url', mr.mr_url, 'state', mr.mr_state, 'error', mr.merge_error,
+    'conflicts', CASE WHEN mr.has_conflicts THEN true END,
     'revert', CASE WHEN mr.revert_state IS NULL THEN NULL ELSE json_build_object('state', mr.revert_state, 'url', mr.revert_mr_url, 'error', mr.revert_error) END
   )) ORDER BY mr.merge_position NULLS LAST, mr_repo.position NULLS LAST, mr.created_at)
   FROM issue_merge_requests mr LEFT JOIN project_repos mr_repo ON mr_repo.id = mr.repo_id

@@ -25,6 +25,13 @@ value() {
   printf 'FX_%s=%s\n' "$1" "$2"
 }
 
+# A merge left with unresolved paths would otherwise be committed below, conflict markers and all.
+abort_unfinished_merge() {
+  if git rev-parse -q --verify MERGE_HEAD >/dev/null && [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+    git merge --abort >/dev/null 2>&1 || true
+  fi
+}
+
 case "$op" in
   mirror-fetch)
     : "${FX_REPO_URL:?}"
@@ -45,6 +52,7 @@ case "$op" in
     fi
     cd "$repo"
     git rebase --abort >/dev/null 2>&1 || true
+    abort_unfinished_merge
     git fetch -q --prune "$mirror" '+refs/heads/*:refs/remotes/origin/*'
     git config user.name "${FX_GIT_NAME:-Factorix Bot}"
     git config user.email "${FX_GIT_EMAIL:-factorix-bot@noreply.factorix.dev}"
@@ -62,12 +70,28 @@ case "$op" in
     fi
     if git show-ref --verify --quiet "refs/heads/$FX_BRANCH"; then
       git checkout -q "$FX_BRANCH"
-      if [ "$start" = "origin/$FX_BRANCH" ] && ! git rebase -q "$start" >/dev/null 2>&1; then
+      # Merges of the base branch into this one stay merges, rather than its commits being copied on top.
+      if [ "$start" = "origin/$FX_BRANCH" ] && ! git rebase -q --rebase-merges "$start" >/dev/null 2>&1; then
         git rebase --abort >/dev/null 2>&1 || true
         value CONFLICT 1
       fi
     else
       git checkout -q --no-track -b "$FX_BRANCH" "$start"
+    fi
+
+    # Whether the base branch merges cleanly, from trees alone, so the work tree and index stay as they are.
+    # File names come from the repository, so they leave only as JSON, which cannot break a line and forge a value.
+    base="origin/$FX_BASE_BRANCH"
+    if git rev-parse -q --verify "$base^{commit}" >/dev/null && ! git merge-base --is-ancestor "$base" HEAD; then
+      listing=$(mktemp)
+      merged=0
+      git merge-tree --write-tree --name-only --no-messages -z HEAD "$base" >"$listing" || merged=$?
+      if [ "$merged" -eq 1 ]; then
+        paths=$(jq -Rsc 'split("\u0000") | .[1:] | map(select(length > 0))' <"$listing")
+        value BASE_CONFLICTS "$(jq -r length <<<"$paths")"
+        value BASE_CONFLICT_PATHS "$(jq -c '.[:50]' <<<"$paths")"
+      fi
+      rm -f "$listing"
     fi
 
     if [ -n "${FX_SETUP:-}" ]; then
@@ -86,6 +110,7 @@ case "$op" in
     : "${FX_BRANCH:?}"
     cd "$repo"
     git rebase --abort >/dev/null 2>&1 || true
+    abort_unfinished_merge
     if [ -n "$(git status --porcelain)" ]; then
       git add -A
       git -c core.hooksPath=/opt/factorix/hooks commit -q --no-verify -m "wip: unfinished changes from run ${FX_RUN:-unknown}"

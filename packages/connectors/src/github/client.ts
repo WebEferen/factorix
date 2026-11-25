@@ -50,6 +50,13 @@ function mergeBlockerOf(raw: Loose): string | null {
   return MERGE_BLOCKERS[raw.mergeable_state as string] ?? (raw.mergeable === false ? (MERGE_BLOCKERS.dirty as string) : null)
 }
 
+/* GitHub works this out in the background after a push or a change to the base, and lists never carry it, so both read null. */
+function hasConflictsOf(raw: Loose): boolean | null {
+  if (raw.state !== 'open') return false
+  if (raw.mergeable === false || raw.mergeable_state === 'dirty') return true
+  return raw.mergeable == null ? null : false
+}
+
 function mapPull(raw: Loose): MergeRequest {
   const merged = Boolean(raw.merged || raw.merged_at)
   return {
@@ -63,7 +70,7 @@ function mapPull(raw: Loose): MergeRequest {
     sourceBranch: raw.head?.ref,
     targetBranch: raw.base?.ref,
     sha: raw.head?.sha ?? null,
-    hasConflicts: raw.mergeable === false || raw.mergeable_state === 'dirty',
+    hasConflicts: hasConflictsOf(raw),
     mergeBlocker: mergeBlockerOf(raw),
     diffRefs: raw.base?.sha && raw.head?.sha ? { baseSha: raw.base.sha, headSha: raw.head.sha, startSha: raw.base.sha } : null,
   }

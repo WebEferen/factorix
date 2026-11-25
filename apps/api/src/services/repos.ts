@@ -25,6 +25,7 @@ export function mergeRequestSnapshot(mr: IssueMergeRequestRow): MergeRequestDto 
     url: mr.mrUrl,
     state: mr.mrState,
     ...(mr.mergeError ? { error: mr.mergeError } : {}),
+    ...(mr.hasConflicts ? { conflicts: true as const } : {}),
     ...(mr.revertState
       ? {
           revert: { state: mr.revertState, ...(mr.revertMrUrl ? { url: mr.revertMrUrl } : {}), ...(mr.revertError ? { error: mr.revertError } : {}) },

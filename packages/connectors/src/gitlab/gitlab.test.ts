@@ -234,6 +234,19 @@ describe('GitlabConnector against a stub REST server', () => {
     expect(await blocker({ state: 'merged', detailed_merge_status: 'not_open' })).toBeNull()
   })
 
+  it('reports conflicts as unknown until GitLab has checked', async () => {
+    const conflicts = async (fields: Record<string, unknown>) => {
+      route({ 'GET /api/v4/projects/42/merge_requests/7': { ...rawMr, ...fields } })
+      return (await gitlab.getMergeRequest('42', 7)).hasConflicts
+    }
+    expect(await conflicts({ merge_status: 'can_be_merged', detailed_merge_status: 'mergeable' })).toBe(false)
+    expect(await conflicts({ has_conflicts: true, detailed_merge_status: 'conflict' })).toBe(true)
+    expect(await conflicts({ detailed_merge_status: 'checking' })).toBeNull()
+    expect(await conflicts({ merge_status: 'unchecked' })).toBeNull()
+    expect(await conflicts({ merge_status: 'cannot_be_merged_recheck', detailed_merge_status: 'ci_must_pass' })).toBeNull()
+    expect(await conflicts({ state: 'merged', has_conflicts: true })).toBe(false)
+  })
+
   it('closes a merge request', async () => {
     route({ 'PUT /api/v4/projects/42/merge_requests/7': rawMr })
     await gitlab.closeMergeRequest('42', 7)

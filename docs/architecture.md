@@ -62,6 +62,8 @@ The repositories on a project are a limit on what agents may change, and a ticke
 
 The built-in pipeline is plan (under `plan_first`), approve, implement, review, address, then merge by a person or, under `full_auto`, by the factory.
 
+Nothing is handed over for merging while a merge request conflicts with its base branch. Before the merge gate, `check_conflicts` asks the code host about every open merge request, and on conflicts a `resolve_conflicts` run merges the base branch in, after which the change goes back through review. A merge that runs into conflicts goes there too, and a person can send an issue there from a merge gate with Resolve conflicts. A code host that is still working conflicts out gets a few more looks, then the issue moves on, since merging reads them again. Every run that pushes to the branch is told at checkout which files conflict with its base, found with `git merge-tree`, and merges rather than rebases, because the factory never force pushes. A pipeline saved before this takes a merge stopped by conflicts as a failed one.
+
 ## Workflows
 
 Admins build workflows on a canvas from a catalog of blocks in `packages/schemas`. Edits save to a draft. Publishing validates the draft and copies it, and each run stores the definition it started with, so editing never changes what is already running. Anyone can run a published workflow on tickets by hand. Starting by itself from a ticket event also needs the workflow to be on.

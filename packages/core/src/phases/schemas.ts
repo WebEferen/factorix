@@ -38,6 +38,8 @@ export const ADDRESS_SCHEMA = object({
   },
 })
 
+export const RESOLVE_SCHEMA = object({ summary: string })
+
 export interface PlanOutput {
   summary: string
   steps: string[]

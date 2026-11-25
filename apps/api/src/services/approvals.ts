@@ -1,5 +1,7 @@
-import { type ApprovalRow, json, type RunRow } from '@factorix/db'
+import type { PipelineDefinition } from '@factorix/core'
+import { type ApprovalRow, type IssueRow, json, type RunRow } from '@factorix/db'
 import type { DecideApprovalInput } from '@factorix/schemas'
+import type { Knex } from 'knex'
 import type { AppDeps } from '../deps'
 import { writeAudit } from '../lib/audit'
 import { badRequest, conflict, notFound } from '../lib/errors'
@@ -26,9 +28,13 @@ export async function decideApproval(
     if (!approval) throw notFound('Approval')
     if (approval.status !== 'pending') throw conflict(`This approval was already ${approval.status}`)
     const choices = CHOICES[approval.kind]
-    if (choices ? input.decision !== 'approved' || !input.choice || !choices.includes(input.choice) : input.choice !== undefined) {
+    // A merge gate is a yes or a no, or sending an agent to clear conflicts before anything merges.
+    const resolving = approval.kind === 'merge' && input.decision === 'approved' && input.choice === 'resolve'
+    if (choices ? input.decision !== 'approved' || !input.choice || !choices.includes(input.choice) : input.choice !== undefined && !resolving) {
       throw badRequest(choices ? `Choose one of: ${choices.join(', ')}` : 'This approval takes a yes or a no')
     }
+    if (resolving && !(await gateTakes(trx, approval.issueId, 'resolve')))
+      throw conflict('This project’s pipeline has no step that resolves conflicts, so merge it or resolve them yourself')
     await trx('approvals')
       .where({ id: approvalId })
       .update({
@@ -73,6 +79,18 @@ export async function decideApproval(
     return approval.issueId
   })
   if (gateIssueId) await advanceIssue(db, gateIssueId, { type: 'approval.decided', decision: input.decision, choice: input.choice })
+}
+
+/** A pipeline saved before a way forward existed lacks it, and a decision it cannot take would leave the gate with nothing pending. */
+async function gateTakes(trx: Knex.Transaction, issueId: string | null, choice: string): Promise<boolean> {
+  if (!issueId) return false
+  const row = (await trx('issues')
+    .join('projects', 'issues.project_id', 'projects.id')
+    .join('pipelines', 'projects.pipeline_id', 'pipelines.id')
+    .where({ 'issues.id': issueId })
+    .first('issues.cursor', 'pipelines.definition')) as { cursor: IssueRow['cursor']; definition: PipelineDefinition } | undefined
+  const step = row?.cursor ? row.definition.steps[row.cursor.step] : undefined
+  return Boolean(step && step.kind === 'gate' && step.on[choice])
 }
 
 export async function expireApprovals(deps: Pick<AppDeps, 'db'>): Promise<number> {

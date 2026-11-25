@@ -111,6 +111,18 @@ describe('GithubConnector against a stub server', () => {
     expect((await read({ state: 'closed', mergeable_state: 'dirty' })).mergeBlocker).toBeNull()
   })
 
+  it('reports conflicts as unknown until GitHub has worked them out', async () => {
+    const conflicts = async (fields: Record<string, unknown>) => {
+      route({ [`GET ${REPO}/pulls/7`]: { ...rawPull, ...fields } })
+      return (await github.getMergeRequest('42', 7)).hasConflicts
+    }
+    expect(await conflicts({})).toBe(false)
+    expect(await conflicts({ mergeable: null, mergeable_state: 'unknown' })).toBeNull()
+    expect(await conflicts({ mergeable: false, mergeable_state: 'dirty' })).toBe(true)
+    expect(await conflicts({ mergeable: true, mergeable_state: 'blocked' })).toBe(false)
+    expect(await conflicts({ state: 'closed', mergeable: false, mergeable_state: 'dirty' })).toBe(false)
+  })
+
   it('comments on a line of the diff and replies in the thread', async () => {
     route({
       [`POST ${REPO}/pulls/7/comments`]: { id: 55 },

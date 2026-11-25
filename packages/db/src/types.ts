@@ -679,6 +679,8 @@ export interface IssueMergeRequestRow {
   createdAt: Date
   updatedAt: Date
   mergeError: string | null
+  /** As the server last said it, and kept while it is still working it out. */
+  hasConflicts: boolean
   revertMrIid: number | null
   revertMrUrl: string | null
   revertState: 'open' | 'merged' | 'failed' | null

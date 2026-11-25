@@ -37,7 +37,8 @@ export interface GateStep extends BaseStep {
 
 export interface ActionStep extends BaseStep {
   kind: 'action'
-  action: 'scm.merge' | 'scm.revert'
+  /** `scm.conflicts` ends in `clean` or `conflicts`, for every open merge request of the issue against its base branch. */
+  action: 'scm.merge' | 'scm.revert' | 'scm.conflicts'
   on: Record<string, string>
 }
 
@@ -73,7 +74,7 @@ export type PipelineEvent =
   | { type: 'approval.decided'; decision: 'approved' | 'rejected' | 'expired'; choice?: string }
   | { type: 'ci.settled' }
   | { type: 'external'; name: ExternalEventName }
-  | { type: 'action.result'; result: 'merged' | 'failed' | 'partial' | 'blocked' }
+  | { type: 'action.result'; result: 'merged' | 'failed' | 'partial' | 'blocked' | 'conflicts' | 'clean' }
   | { type: 'cancel' }
 
 export type PipelineAction =
@@ -86,6 +87,7 @@ export type PipelineAction =
   | { type: 'postComment'; template: 'loops_exceeded' | 'run_failed' | CommentTemplate; step: string }
   | { type: 'scmMerge' }
   | { type: 'scmRevert' }
+  | { type: 'scmCheckConflicts' }
 
 export interface AdvanceContext {
   autonomy: Autonomy

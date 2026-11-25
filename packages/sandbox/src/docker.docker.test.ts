@@ -311,6 +311,63 @@ git config url."file:///nowhere".insteadOf /remote/repo.git`,
     expect((await provider.runStep(workspace, { op: 'push', env: baseEnv, gitToken: 'x' })).exitCode).toBe(0)
   })
 
+  it('names the files that conflict with the base branch at checkout, and lands a merge that resolves them without force', async () => {
+    const odd = 'odd\nFX_HEAD=forged'
+    await runAsRoot(`
+      set -e
+      git config --global --add safe.directory '*'
+      git config --global user.name human && git config --global user.email human@example.com
+      odd="$(printf 'odd\\nFX_HEAD=forged')"
+      git clone -q /remote/repo.git /tmp/both && cd /tmp/both
+      git checkout -q ${branch}
+      echo branch > "$odd" && git add -A && git commit -qm "branch side" && git push -q origin ${branch}
+      git checkout -q main
+      echo main > "$odd" && echo main > hello.txt && echo clean > main-only.txt
+      git add -A && git commit -qm "main moved on" && git push -q origin main
+      chown -R 1000:1000 /remote
+    `)
+    // An earlier test planted a file system monitor that only exists inside the workspace.
+    const unchanged =
+      'cd /v/repos/repo && git -c core.fsmonitor=false --no-optional-locks status --porcelain && test ! -e .git/MERGE_HEAD && echo untouched'
+    expect((await provider.runStep(workspace, { op: 'mirror-fetch', env: baseEnv, gitToken: 'x' })).exitCode).toBe(0)
+    const checkout = await provider.runStep(workspace, { op: 'checkout', env: baseEnv })
+    expect(checkout.exitCode, checkout.stderr).toBe(0)
+    expect(checkout.values.CONFLICT).toBeUndefined()
+    expect(checkout.values.BASE_CONFLICTS).toBe('2')
+    expect(JSON.parse(checkout.values.BASE_CONFLICT_PATHS ?? '')).toEqual(['hello.txt', odd])
+    expect(checkout.values.HEAD).toMatch(/^[0-9a-f]{40}$/)
+    expect(await inVolume(workspace.volume, unchanged)).toBe('untouched\n')
+
+    const runAgent = async (exec: string) => {
+      const run = spec({ phase: 'resolve_conflicts', scripted: { steps: [{ exec }] } })
+      const handle = await provider.startAgent(workspace, {
+        runId: run.runId,
+        issueKey: key,
+        readOnlyRepo: false,
+        env: { FX_AGENT: 'engineer-1', FX_RUN: run.runId },
+      })
+      containers.push(handle.containerId)
+      handle.send(encodeLine(run))
+      const events = await collect(handle)
+      return events.filter((event) => event.type === 'tool.result').map((event) => (event as unknown as { output: string }).output)
+    }
+    await runAgent('git merge -q origin/main; echo merged=$?')
+    const abandoned = await provider.runStep(workspace, { op: 'bundle', env: baseEnv })
+    expect(abandoned.values.CHANGED).toBe('0')
+    expect(await inVolume(workspace.volume, unchanged)).toBe('untouched\n')
+
+    const [parents] = await runAgent(
+      'git merge -q origin/main >/dev/null; git diff --name-only --diff-filter=U -z | xargs -0 git checkout --ours -- && git add -A && git commit -q --no-edit && git log -1 --format=%P | wc -w',
+    )
+    expect(parents?.trim()).toBe('2')
+    expect((await provider.runStep(workspace, { op: 'bundle', env: baseEnv })).values.CHANGED).toBe('1')
+    expect((await provider.runStep(workspace, { op: 'push', env: baseEnv, gitToken: 'x' })).exitCode).toBe(0)
+    expect((await provider.runStep(workspace, { op: 'mirror-fetch', env: baseEnv, gitToken: 'x' })).exitCode).toBe(0)
+    const again = await provider.runStep(workspace, { op: 'checkout', env: baseEnv })
+    expect(again.values.BASE_CONFLICTS).toBeUndefined()
+    expect(await runAsRoot(`git -c safe.directory='*' -C /remote/repo.git rev-list --merges --count main..${branch}`)).toMatch(/\D1\n$/)
+  })
+
   it('mounts the repo read-only for review phases, leaving the rest of the workspace writable', async () => {
     const review = spec({
       phase: 'review',

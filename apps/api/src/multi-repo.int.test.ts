@@ -3,9 +3,9 @@ import { fileURLToPath } from 'node:url'
 import type { MergeRequest } from '@factorix/connectors'
 import { BUILTIN_PIPELINE, type PipelineDefinition } from '@factorix/core'
 import { json } from '@factorix/db'
-import { afterAll, beforeAll, describe, expect, inject, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest'
 import { projectRepos } from './services/repos'
-import { handleScmEvent, mergeIssue, pollOpenMergeRequests, revertIssue } from './services/scm-inbound'
+import { CONFLICT_LOOKS, checkConflicts, handleScmEvent, mergeIssue, pollOpenMergeRequests, revertIssue } from './services/scm-inbound'
 import { postTrackerComment } from './services/tracker-sync'
 import { TEAM_ID } from './testing/fakes'
 import { ApiClient, createHarness, type Harness } from './testing/harness'
@@ -486,10 +486,185 @@ describe('projects with several repositories', () => {
       await revertIssue(harness.deps, issueId)
       expect(await revertStates(issueId)).toEqual([null, null])
     })
+
+    describe('conflicts with the base branch', () => {
+      const conflicting = (iid: number, hasConflicts: boolean | null = true) =>
+        harness.world.mrs.set(iid, { ...(harness.world.mrs.get(iid) as MergeRequest), hasConflicts })
+      const resolveRun = (issueId: string) => db()('runs').where({ issueId, phase: 'resolve_conflicts' }).first()
+      const pendingGate = (issueId: string) => db()('approvals').where({ issueId, kind: 'merge', status: 'pending' }).first()
+
+      it('sends a merge that conflicts to an engineer before looking at CI, and merges nothing', async () => {
+        const issueId = await issueAt('Conflicts at merge', 'auto_merge')
+        const first = await openMr(issueId, '42')
+        const second = await openMr(issueId, '43')
+        conflicting(second)
+        harness.world.ciByIid.set(second, { status: 'failed', failedJobs: [] })
+        harness.world.merges = []
+        await mergeIssue(harness.deps, issueId)
+
+        expect(harness.world.merges).toEqual([])
+        const row = await issueRow(issueId)
+        expect(row.cursor.step).toBe('resolve_conflicts')
+        expect(row.factoryState).toBe('active')
+        expect(await resolveRun(issueId)).toBeTruthy()
+        expect(await pendingGate(issueId)).toBeUndefined()
+        const { mergeRequests } = (await admin.ok('GET', `/api/issues/${issueId}`)).issue
+        expect(mergeRequests.map((mr: { iid: number; conflicts?: true; error?: string }) => [mr.iid, mr.conflicts, mr.error])).toEqual([
+          [first, undefined, undefined],
+          [second, true, 'it has merge conflicts'],
+        ])
+      })
+
+      it('tells conflicts apart from other refusals when the server finds them only on merging', async () => {
+        const issueId = await issueAt('Found on merging', 'auto_merge')
+        const iid = await openMr(issueId, '42')
+        conflicting(iid, null)
+        harness.world.refuseMerge.add(iid)
+        const scm = harness.world.scm.bind(harness.world)
+        const spy = vi.spyOn(harness.world, 'scm').mockImplementation((token) => {
+          const real = scm(token)
+          return {
+            ...real,
+            merge: async (repoId, mrIid, options) => {
+              const result = await real.merge(repoId, mrIid, options)
+              if (!result.merged) conflicting(mrIid)
+              return result
+            },
+          }
+        })
+        try {
+          await mergeIssue(harness.deps, issueId)
+        } finally {
+          spy.mockRestore()
+          harness.world.refuseMerge.delete(iid)
+        }
+        expect((await issueRow(issueId)).cursor.step).toBe('resolve_conflicts')
+        expect((await db()('issue_merge_requests').where({ issueId }).first()).hasConflicts).toBe(true)
+      })
+
+      it('looks again while the server works conflicts out, and ignores a look from an earlier visit', async () => {
+        const issueId = await issueAt('Still checking', 'check_conflicts')
+        await openMr(issueId, '42')
+        const second = await openMr(issueId, '43')
+        conflicting(second, null)
+        await checkConflicts(harness.deps, issueId)
+        const { enteredAt } = (await issueRow(issueId)).cursor
+        expect((await issueRow(issueId)).cursor.step).toBe('check_conflicts')
+        const job = await harness.deps.queues.scmAction.getJob(`conflicts-${issueId}-${Date.parse(enteredAt)}-2`)
+        expect(job?.data).toEqual({ issueId, again: { look: 2, enteredAt } })
+
+        conflicting(second)
+        await checkConflicts(harness.deps, issueId, { look: 2, enteredAt: new Date(0).toISOString() })
+        expect((await issueRow(issueId)).cursor.step).toBe('check_conflicts')
+
+        await checkConflicts(harness.deps, issueId, { look: 2, enteredAt })
+        expect((await issueRow(issueId)).cursor.step).toBe('resolve_conflicts')
+        expect((await db()('issue_merge_requests').where({ issueId, mrIid: second }).first()).hasConflicts).toBe(true)
+        expect(await resolveRun(issueId)).toBeTruthy()
+      })
+
+      it('hands over for merging what does not conflict, and moves on after the last look at a server that never says', async () => {
+        const clean = await issueAt('Clean', 'check_conflicts')
+        await openMr(clean, '42')
+        await checkConflicts(harness.deps, clean)
+        expect((await issueRow(clean)).cursor.step).toBe('await_merge')
+        expect(await pendingGate(clean)).toBeTruthy()
+
+        const unknown = await issueAt('Never says', 'check_conflicts')
+        conflicting(await openMr(unknown, '42'), null)
+        const { enteredAt } = (await issueRow(unknown)).cursor
+        await checkConflicts(harness.deps, unknown, { look: CONFLICT_LOOKS, enteredAt })
+        const row = await issueRow(unknown)
+        expect(row.cursor.step).toBe('await_merge')
+        expect(row.factoryState).toBe('awaiting_merge')
+      })
+
+      it('shows conflicts that appear at the merge gate, and resolves them from the Inbox in one click', async () => {
+        const issueId = await issueAt('Conflicts later', 'check_conflicts')
+        const iid = await openMr(issueId, '43')
+        await checkConflicts(harness.deps, issueId)
+        const gate = await pendingGate(issueId)
+        expect(gate.payload.mergeRequests[0].conflicts).toBeUndefined()
+
+        conflicting(iid)
+        // The poll walks the whole project, and earlier tests left issues linked to merge requests the fake never opened.
+        await db()('issues').where({ projectId }).whereNot({ id: issueId }).update({ factoryState: 'done' })
+        await pollOpenMergeRequests(harness.deps, await db()('projects').where({ id: projectId }).first())
+        const { approvals } = await admin.ok('GET', '/api/inbox')
+        const shown = approvals.find((approval: { id: string }) => approval.id === gate.id)
+        expect(shown.payload.mergeRequests).toEqual([expect.objectContaining({ iid, conflicts: true })])
+
+        await choose(gate.id, 'resolve')
+        const row = await issueRow(issueId)
+        expect(row.cursor.step).toBe('resolve_conflicts')
+        expect(row.factoryState).toBe('active')
+        expect((await db()('approvals').where({ id: gate.id }).first()).status).toBe('approved')
+        expect(await resolveRun(issueId)).toBeTruthy()
+      })
+
+      it('resolves from a blocked merge, and refuses where the pipeline has no way to or the approval is not a merge', async () => {
+        const issueId = await issueAt('Blocked', 'auto_merge')
+        const iid = await openMr(issueId, '42')
+        harness.world.ciByIid.set(iid, { status: 'failed', failedJobs: [] })
+        await mergeIssue(harness.deps, issueId)
+        expect((await issueRow(issueId)).cursor.step).toBe('merge_blocked')
+        const gate = await pendingGate(issueId)
+        const decide = (body: unknown, id = gate.id) => admin.request('POST', `/api/approvals/${id}/decide`, body)
+
+        expect((await decide({ decision: 'rejected', choice: 'resolve' })).status).toBe(400)
+        const pipeline = await db()('pipelines').where({ isBuiltin: true }).first()
+        const saved = structuredClone(pipeline.definition) as PipelineDefinition
+        delete (saved.steps.merge_blocked as { on: Record<string, string> }).on.resolve
+        await db()('pipelines')
+          .where({ id: pipeline.id })
+          .update({ definition: json(saved) })
+        try {
+          expect((await decide({ decision: 'approved', choice: 'resolve' })).status).toBe(409)
+        } finally {
+          await db()('pipelines')
+            .where({ id: pipeline.id })
+            .update({ definition: json(pipeline.definition) })
+        }
+        expect((await db()('approvals').where({ id: gate.id }).first()).status).toBe('pending')
+        expect((await issueRow(issueId)).cursor.step).toBe('merge_blocked')
+
+        const { approval } = await partlyMerged('Not a merge gate')
+        expect((await decide({ decision: 'approved', choice: 'resolve' }, approval.id)).status).toBe(400)
+
+        await choose(gate.id, 'resolve')
+        expect((await issueRow(issueId)).cursor.step).toBe('resolve_conflicts')
+        expect(await resolveRun(issueId)).toBeTruthy()
+      })
+    })
   })
 
+  type SavedSteps = Record<string, { on?: Record<string, string>; onDone?: Record<string, string>; onLoopsExceeded?: string }>
+  /** The built-in steps as they were saved before conflicts with the base branch had a route. */
+  function beforeConflictRoutes(): SavedSteps {
+    const steps = structuredClone(BUILTIN_PIPELINE.steps) as SavedSteps
+    delete steps.check_conflicts
+    delete steps.resolve_conflicts
+    Object.assign(steps.review ?? {}, { onLoopsExceeded: 'await_merge' })
+    Object.assign(steps.review?.onDone ?? {}, { 'verdict:approve': 'await_merge', failed: 'await_merge' })
+    Object.assign(steps.address?.onDone ?? {}, { no_changes: 'await_merge' })
+    for (const name of ['await_merge', 'merge_blocked']) delete steps[name]?.on?.resolve
+    delete steps.auto_merge?.on?.conflicts
+    return steps
+  }
+  async function migrateSaved(steps: SavedSteps, migrations: string[]): Promise<PipelineDefinition> {
+    const row = await db()('pipelines').where({ isBuiltin: true }).first()
+    await db()('pipelines')
+      .where({ id: row.id })
+      .update({ definition: json({ ...BUILTIN_PIPELINE, steps }) })
+    for (const migration of migrations) {
+      const sql = readFileSync(fileURLToPath(new URL(`../../../packages/db/migrations/${migration}`, import.meta.url)), 'utf8')
+      await db().raw(sql.slice(sql.indexOf('UPDATE pipelines')))
+    }
+    return (await db()('pipelines').where({ id: row.id }).first()).definition as PipelineDefinition
+  }
+
   it('brings a saved pipeline up to the current built-in definition', async () => {
-    const steps = structuredClone(BUILTIN_PIPELINE.steps) as Record<string, { on?: Record<string, string> }>
+    const steps = beforeConflictRoutes()
     for (const name of ['merge_partial', 'revert', 'revert_blocked']) delete steps[name]
     for (const step of Object.values(steps)) {
       if (step.on) {
@@ -497,14 +672,11 @@ describe('projects with several repositories', () => {
         delete step.on.partial
       }
     }
-    const row = await db()('pipelines').where({ isBuiltin: true }).first()
-    await db()('pipelines')
-      .where({ id: row.id })
-      .update({ definition: json({ ...BUILTIN_PIPELINE, steps }) })
-    const sql = readFileSync(fileURLToPath(new URL('../../../packages/db/migrations/0015_merge_recovery.sql', import.meta.url)), 'utf8')
-    await db().raw(sql.slice(sql.indexOf('UPDATE pipelines')))
-    const migrated = (await db()('pipelines').where({ id: row.id }).first()).definition as PipelineDefinition
-    expect(migrated).toEqual(BUILTIN_PIPELINE)
+    expect(await migrateSaved(steps, ['0015_merge_recovery.sql', '0044_merge_conflicts.sql'])).toEqual(BUILTIN_PIPELINE)
+  })
+
+  it('gives a saved pipeline a route for conflicts with the base branch', async () => {
+    expect(await migrateSaved(beforeConflictRoutes(), ['0044_merge_conflicts.sql'])).toEqual(BUILTIN_PIPELINE)
   })
 
   it('shows merge requests in repository order on lists and details', async () => {

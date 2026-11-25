@@ -10,6 +10,7 @@ export type DomainEvent =
   | { type: 'scm.ci_check'; issueId: string }
   | { type: 'scm.merge'; issueId: string; autonomy?: Autonomy; decidedBy?: string | null }
   | { type: 'scm.revert'; issueId: string }
+  | { type: 'scm.conflicts'; issueId: string }
   | { type: 'run.ping'; runId: string }
   | { type: 'project.sync'; projectId: string }
   /** `by` is the person whose action in Factorix caused the event. */

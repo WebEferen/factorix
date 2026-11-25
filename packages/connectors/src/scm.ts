@@ -28,7 +28,8 @@ export interface MergeRequest {
   sourceBranch: string
   targetBranch: string
   sha: string | null
-  hasConflicts: boolean
+  /** Null while the server is still working it out, which it does in the background after a push or a change to the target branch. */
+  hasConflicts: boolean | null
   /** Why the server would refuse this merge right now, in words. Null when it would accept, or is still working it out. */
   mergeBlocker: string | null
   diffRefs: DiffRefs | null

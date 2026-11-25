@@ -15,6 +15,11 @@ type Deps = Pick<AppDeps, 'db' | 'env' | 'secrets' | 'connectors' | 'queues' | '
 
 export const NOTE_DEBOUNCE_MS = 3 * 60_000
 
+const MERGE_CONFLICTS = 'it has merge conflicts'
+/** Looks at a server that is still working out conflicts, after which the issue moves on and merging reads them again. */
+export const CONFLICT_LOOKS = 4
+const CONFLICT_LOOK_DELAY_MS = 15_000
+
 /** iid is only unique inside one repository, so the lookup needs both. */
 async function mergeRequestByIid(
   deps: Pick<AppDeps, 'db'>,
@@ -153,6 +158,39 @@ export async function checkCi(deps: Deps, issueId: string): Promise<void> {
   await deps.queues.scmAction.add('ci-timeout', { issueId }, { delay: waitMs, jobId: `ci-timeout-${issueId}-${Math.floor(Date.now() / waitMs)}` })
 }
 
+/**
+ * The issue's conflict check: `conflicts` when any open merge request conflicts with its base branch, else `clean`. A server
+ * still working it out gets a few more looks, and after those the issue moves on, since merging reads the conflicts again.
+ */
+export async function checkConflicts(deps: Deps, issueId: string, again?: { look: number; enteredAt: string }): Promise<void> {
+  const { db } = deps
+  const issue = await db<IssueRow>('issues').where({ id: issueId }).first()
+  if (!issue?.cursor || (again && issue.cursor.enteredAt !== again.enteredAt)) return
+  const project = await db<ProjectRow>('projects').where({ id: issue.projectId }).first()
+  const open = (await mergeRequestsOf(db, issueId)).filter(isOpenMergeRequest)
+  if (!project || open.length === 0) return void (await advanceIssue(db, issueId, { type: 'action.result', result: 'clean' }))
+  const scm = scmFor(deps, await getConnection(db, issue.orgId, project.scmConnectionId))
+  let conflicts = false
+  let unsettled = false
+  for (const mr of open) {
+    const { hasConflicts } = await scm.getMergeRequest(mr.repo.scmRepoId, mr.mrIid)
+    if (hasConflicts === null) unsettled = true
+    else if (hasConflicts !== mr.hasConflicts) await db('issue_merge_requests').where({ id: mr.id }).update({ hasConflicts, updatedAt: db.fn.now() })
+    if (hasConflicts) conflicts = true
+  }
+  const look = again?.look ?? 1
+  if (!conflicts && unsettled && look < CONFLICT_LOOKS) {
+    const { enteredAt } = issue.cursor
+    await deps.queues.scmAction.add(
+      'conflicts',
+      { issueId, again: { look: look + 1, enteredAt } },
+      { delay: CONFLICT_LOOK_DELAY_MS, jobId: `conflicts-${issueId}-${Date.parse(enteredAt)}-${look + 1}` },
+    )
+    return
+  }
+  await advanceIssue(db, issueId, { type: 'action.result', result: conflicts ? 'conflicts' : 'clean' })
+}
+
 export async function mergeIssue(deps: Deps, issueId: string): Promise<void> {
   const { db } = deps
   const issue = await db<IssueRow>('issues').where({ id: issueId }).first()
@@ -174,9 +212,9 @@ export async function mergeIssue(deps: Deps, issueId: string): Promise<void> {
     const fresh = await scm.getMergeRequest(mr.repo.scmRepoId, mr.mrIid)
     current.set(mr.id, fresh)
     mr.mrState = fresh.state
-    await save(mr, { mrState: fresh.state, mergeError: null })
+    await save(mr, { mrState: fresh.state, mergeError: null, ...(fresh.hasConflicts === null ? {} : { hasConflicts: fresh.hasConflicts }) })
   }
-  const stopped = async (mr: LinkedMergeRequest, reason: string, metadata: Record<string, unknown>) => {
+  const stopped = async (mr: LinkedMergeRequest, reason: string, metadata: Record<string, unknown>, result: 'failed' | 'conflicts' = 'failed') => {
     await save(mr, { mergeError: reason })
     await writeAudit(db, {
       orgId: issue.orgId,
@@ -186,10 +224,20 @@ export async function mergeIssue(deps: Deps, issueId: string): Promise<void> {
       targetId: issue.id,
       metadata: { ...metadata, mr: mr.mrIid, repo: mr.repoPath },
     })
-    await advanceIssue(db, issueId, { type: 'action.result', result: mergeRequests.some((row) => row.mrState === 'merged') ? 'partial' : 'failed' })
+    await advanceIssue(db, issueId, { type: 'action.result', result: mergeRequests.some((row) => row.mrState === 'merged') ? 'partial' : result })
+  }
+  /** Whether a refused merge conflicts, which a server still working it out at the first look did not say yet. */
+  const conflictsNow = async (mr: LinkedMergeRequest): Promise<boolean> => {
+    // The refusal stands either way, so a failed look only means it is not told apart.
+    const fresh = await scm.getMergeRequest(mr.repo.scmRepoId, mr.mrIid).catch(() => null)
+    if (fresh?.hasConflicts) await save(mr, { hasConflicts: true })
+    return fresh?.hasConflicts === true
   }
 
   const open = mergeRequests.filter(isOpenMergeRequest)
+  // Resolving makes new commits, and CI may never run on a merge request that conflicts, so conflicts are looked at first.
+  const conflicting = open.find((mr) => current.get(mr.id)?.hasConflicts)
+  if (conflicting) return stopped(conflicting, MERGE_CONFLICTS, { conflicts: true }, 'conflicts')
   // Merges in different repositories cannot land together. Checking everything first means nothing lands unless all of it could.
   for (const mr of open) {
     const ci = await scm.getCiStatus(mr.repo.scmRepoId, mr.mrIid)
@@ -200,7 +248,10 @@ export async function mergeIssue(deps: Deps, issueId: string): Promise<void> {
   }
   for (const mr of open) {
     const merged = await scm.merge(mr.repo.scmRepoId, mr.mrIid, { sha: current.get(mr.id)?.sha, squash: true })
-    if (!merged.merged) return stopped(mr, merged.reason ?? 'the server refused it', { reason: merged.reason })
+    if (!merged.merged) {
+      if (await conflictsNow(mr)) return stopped(mr, MERGE_CONFLICTS, { conflicts: true, reason: merged.reason }, 'conflicts')
+      return stopped(mr, merged.reason ?? 'the server refused it', { reason: merged.reason })
+    }
     mr.mrState = 'merged'
     await save(mr, { mrState: 'merged' })
     await writeAudit(db, {
@@ -305,6 +356,15 @@ export async function revertIssue(deps: Deps, issueId: string, options: { retryF
   await advanceIssue(db, issueId, unfinished ? { type: 'action.result', result: 'blocked' } : { type: 'external', name: 'mr.reverted' })
 }
 
+/** A merge gate shows the chain as it stands, so conflicts that appear while it waits come with their fix. */
+async function refreshMergeGate(db: Db, issue: IssueRow): Promise<void> {
+  const mergeRequests = (await mergeRequestsOf(db, issue.id)).map(mergeRequestSnapshot)
+  const updated = await db('approvals')
+    .where({ issueId: issue.id, kind: 'merge', status: 'pending' })
+    .update({ payload: json({ mergeRequests }) })
+  if (updated > 0) await emit(db, issue.orgId, { type: 'notify', kind: 'issue', id: issue.id, projectId: issue.projectId })
+}
+
 /** Makes the system usable with no public webhook URL at all, and repairs anything a dropped webhook missed. */
 export async function pollOpenMergeRequests(deps: Deps, project: ProjectRow): Promise<void> {
   const { db } = deps
@@ -321,12 +381,17 @@ export async function pollOpenMergeRequests(deps: Deps, project: ProjectRow): Pr
       continue
     }
     let newHumanNotes = 0
+    let conflictsChanged = false
     const open: LinkedMergeRequest[] = []
     for (const mr of await mergeRequestsOf(db, issue.id)) {
       if (!isOpenMergeRequest(mr)) continue
       const current = await scm.getMergeRequest(mr.repo.scmRepoId, mr.mrIid)
       if (current.state !== mr.mrState)
         await db('issue_merge_requests').where({ id: mr.id }).update({ mrState: current.state, updatedAt: db.fn.now() })
+      if (current.hasConflicts !== null && current.hasConflicts !== mr.hasConflicts) {
+        await db('issue_merge_requests').where({ id: mr.id }).update({ hasConflicts: current.hasConflicts, updatedAt: db.fn.now() })
+        conflictsChanged = true
+      }
       if (!isOpenMergeRequest({ mrState: current.state })) continue
       open.push(mr)
       newHumanNotes += (await syncDiscussions(db, scm, issue, mr)).newHumanNotes
@@ -335,6 +400,7 @@ export async function pollOpenMergeRequests(deps: Deps, project: ProjectRow): Pr
       await advanceWhenAllFinished(db, issue.id)
       continue
     }
+    if (conflictsChanged) await refreshMergeGate(db, issue)
     if (newHumanNotes > 0) await scheduleHumanNoteEvent(deps.queues.pipelineAdvance, issue.id, await noteDebounceOf(deps))
     if (issue.cursor?.waitingFor === 'ci') {
       const statuses = await Promise.all(open.map((mr) => scm.getCiStatus(mr.repo.scmRepoId, mr.mrIid)))

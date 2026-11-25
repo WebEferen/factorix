@@ -38,11 +38,11 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       phase: 'review',
       waitFor: ['ci'],
       maxLoops: 3,
-      onLoopsExceeded: 'await_merge',
+      onLoopsExceeded: 'check_conflicts',
       maxAttempts: 2,
       tracker: { onEnter: 'in_review' },
       on: { 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
-      onDone: { 'verdict:approve': 'await_merge', 'verdict:request_changes': 'address', failed: 'await_merge' },
+      onDone: { 'verdict:approve': 'check_conflicts', 'verdict:request_changes': 'address', failed: 'check_conflicts' },
     },
     address: {
       kind: 'run',
@@ -51,7 +51,25 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       maxAttempts: 2,
       tracker: { onEnter: 'in_progress' },
       on: { 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
-      onDone: { completed: 'review', no_changes: 'await_merge', failed: 'fail' },
+      onDone: { completed: 'review', no_changes: 'check_conflicts', failed: 'fail' },
+    },
+    // Nothing is handed over for merging while it conflicts with its base branch.
+    check_conflicts: {
+      kind: 'action',
+      action: 'scm.conflicts',
+      on: { clean: 'await_merge', conflicts: 'resolve_conflicts', 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
+    },
+    // Resolving changes code, so the change goes back through review.
+    resolve_conflicts: {
+      kind: 'run',
+      role: 'engineer',
+      phase: 'resolve_conflicts',
+      maxLoops: 3,
+      onLoopsExceeded: 'merge_blocked',
+      maxAttempts: 2,
+      tracker: { onEnter: 'in_progress' },
+      on: { 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
+      onDone: { completed: 'review', no_changes: 'check_conflicts', failed: 'merge_blocked' },
     },
     await_merge: {
       kind: 'gate',
@@ -59,7 +77,14 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       if: { autonomy: ['plan_first', 'human_merge'] },
       else: 'auto_merge',
       tracker: { onEnter: 'in_review' },
-      on: { approved: 'auto_merge', 'mr.note.human': 'address', 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
+      on: {
+        approved: 'auto_merge',
+        resolve: 'resolve_conflicts',
+        'mr.note.human': 'address',
+        'mr.merged': 'done',
+        'mr.closed': 'cancel',
+        'mr.partial': 'merge_partial',
+      },
     },
     auto_merge: {
       kind: 'action',
@@ -67,6 +92,7 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       on: {
         merged: 'done',
         failed: 'merge_blocked',
+        conflicts: 'resolve_conflicts',
         partial: 'merge_partial',
         'mr.merged': 'done',
         'mr.closed': 'cancel',
@@ -77,7 +103,14 @@ export const BUILTIN_PIPELINE: PipelineDefinition = {
       kind: 'gate',
       approval: 'merge',
       tracker: { onEnter: 'in_review' },
-      on: { approved: 'auto_merge', 'mr.note.human': 'address', 'mr.merged': 'done', 'mr.closed': 'cancel', 'mr.partial': 'merge_partial' },
+      on: {
+        approved: 'auto_merge',
+        resolve: 'resolve_conflicts',
+        'mr.note.human': 'address',
+        'mr.merged': 'done',
+        'mr.closed': 'cancel',
+        'mr.partial': 'merge_partial',
+      },
     },
     // Merges in different repositories cannot land together, so when only some did, a person decides what happens to them.
     merge_partial: {

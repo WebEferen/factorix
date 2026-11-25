@@ -303,6 +303,8 @@ export interface MergeRequestDto {
   state: string
   /** Why the factory could not merge it on the last attempt. */
   error?: string
+  /** It conflicts with its base branch, as the server last said. */
+  conflicts?: true
   revert?: { state: 'open' | 'merged' | 'failed'; url?: string; error?: string }
 }
 

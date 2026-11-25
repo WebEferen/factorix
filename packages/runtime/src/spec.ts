@@ -1,7 +1,7 @@
 import type { ModelPlanId } from './providers/plans'
 
 export type RuntimeId = 'claude' | 'codex' | 'scripted'
-export type Phase = 'plan' | 'implement' | 'review' | 'address_review' | 'ad_hoc' | 'task' | 'prompt' | 'plugin'
+export type Phase = 'plan' | 'implement' | 'review' | 'address_review' | 'resolve_conflicts' | 'ad_hoc' | 'task' | 'prompt' | 'plugin'
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type JsonSchema = Record<string, unknown>
 
