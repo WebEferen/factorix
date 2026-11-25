@@ -1,4 +1,4 @@
-import type { RunRow } from '@factorix/db'
+import { json, type RunRow } from '@factorix/db'
 import { AsyncQueue, EMPTY_USAGE, encodeLine, type RunEventBody } from '@factorix/runtime'
 import type { AgentHandle, SandboxProvider, StepRequest } from '@factorix/sandbox'
 import { expect, inject, it, vi } from 'vitest'
@@ -20,6 +20,18 @@ async function createRun(harness: Harness) {
     gitUrl: 'https://example.com/repo',
   })
   return { admin, run }
+}
+
+/** Stores the agent's done event the way ingest does before finalizing starts, and returns the line a replay of its container would repeat. */
+async function storeDone(harness: Harness, runId: string, update: Partial<RunRow>): Promise<string> {
+  const { db } = harness.deps
+  const done: RunEventBody = { type: 'done', outcome: 'completed', finalText: 'Answered.', sessionRef: 'saved-session', usage: EMPTY_USAGE }
+  const seq = ((await db<RunRow>('runs').where({ id: runId }).first())?.lastSeq ?? 0) + 1
+  await db('run_events').insert({ runId, seq, type: 'done', payload: json(done) })
+  await db('runs')
+    .where({ id: runId })
+    .update({ ...update, lastSeq: seq, lastRunnerSeq: 1 })
+  return encodeLine({ ...done, runId, seq: 1, ts: new Date().toISOString() })
 }
 
 it('finishes cancelling a run whose approval wait expires during cancellation', async () => {
@@ -236,6 +248,90 @@ it('retries force-stop after a temporary sandbox error', async () => {
     expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({ state: 'cancelled', outcome: 'cancelled', error: null })
   } finally {
     lines.close()
+    await execution?.catch(() => undefined)
+    subscriber.disconnect()
+    await harness.destroy()
+  }
+})
+
+it.each(['gone', 'exited'] as const)(
+  'finishes from the saved answer when its worker stopped before finalizing and the container is %s',
+  async (container) => {
+    const harness = await createHarness({ databaseUrl: inject('databaseUrl'), redisUrl: inject('redisUrl') })
+    const { db, redis } = harness.deps
+    const subscriber = redis.duplicate()
+    try {
+      const { run } = await createRun(harness)
+      const replay = await storeDone(harness, run.id, { state: 'running', containerId: 'agent-container', sessionRef: 'first-session' })
+      const handle: AgentHandle = {
+        containerId: 'agent-container',
+        lines: (async function* () {
+          yield replay
+        })(),
+        send: () => undefined,
+        onStderr: () => undefined,
+        wait: async () => ({ exitCode: 0 }),
+        detach: () => undefined,
+      }
+      const sandbox = {
+        ensureWorkspace: async (key: string) => ({ key, volume: 'test-volume', mirrorVolume: 'test-mirror' }),
+        reattach: async () => (container === 'gone' ? null : handle),
+        stop: async () => undefined,
+        remove: async () => undefined,
+        runStep: async () => ({ exitCode: 0, stdout: '', stderr: '', values: {} }),
+      }
+      await executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'test-worker', subscriber }, run.id)
+      expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({
+        state: 'succeeded',
+        outcome: 'completed',
+        summary: 'Answered.',
+        sessionRef: 'saved-session',
+        error: null,
+      })
+    } finally {
+      subscriber.disconnect()
+      await harness.destroy()
+    }
+  },
+)
+
+it.each([
+  { when: 'before', other: { state: 'succeeded', leaseOwner: null, leaseExpiresAt: null } },
+  { when: 'while', other: { state: 'finalizing', leaseOwner: 'replacement-worker', leaseExpiresAt: new Date(Date.now() + 60_000) } },
+] as const)('leaves the run to the worker that took it over $when this one was finalizing', async ({ when, other }) => {
+  const harness = await createHarness({ databaseUrl: inject('databaseUrl'), redisUrl: inject('redisUrl') })
+  const { db, redis } = harness.deps
+  const subscriber = redis.duplicate()
+  let execution: Promise<void> | undefined
+  let resume = () => {}
+  const resumed = new Promise<void>((resolve) => {
+    resume = resolve
+  })
+  try {
+    const { run } = await createRun(harness)
+    await storeDone(harness, run.id, { state: 'finalizing' })
+    const paused = vi.fn(() => resumed)
+    const sandbox = {
+      ensureWorkspace: async (key: string) => {
+        if (when === 'before') await paused()
+        return { key, volume: 'test-volume', mirrorVolume: 'test-mirror' }
+      },
+      runStep: async (_workspace: unknown, { op }: StepRequest) => {
+        if (when === 'while' && op === 'bundle') await paused()
+        return { exitCode: 0, stdout: '', stderr: '', values: {} }
+      },
+      stop: async () => undefined,
+      remove: async () => undefined,
+    }
+    execution = executeRun({ ...harness.deps, sandbox: sandbox as unknown as SandboxProvider, owner: 'paused-worker', subscriber }, run.id)
+    await vi.waitFor(() => expect(paused).toHaveBeenCalled(), { timeout: 5000 })
+    await db('runs').where({ id: run.id }).update(other)
+    resume()
+    await execution
+    expect(await db<RunRow>('runs').where({ id: run.id }).first()).toMatchObject({ state: other.state, leaseOwner: other.leaseOwner })
+    expect(await db('audit_log').where({ targetId: run.id, action: 'run.finished' })).toHaveLength(0)
+  } finally {
+    resume()
     await execution?.catch(() => undefined)
     subscriber.disconnect()
     await harness.destroy()

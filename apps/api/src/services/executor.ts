@@ -169,8 +169,9 @@ class RunExecution {
         await this.giveUp()
         return
       }
-      if (this.run.state === 'finalizing') {
-        await this.restoreOutcome()
+      // The done event is stored before finalizing starts, and a reattach replays only what came after it.
+      if (this.run.containerId || this.run.state === 'finalizing') await this.restoreOutcome()
+      if (this.run.state === 'finalizing' || this.doneEvent) {
         await this.finalize(null)
         return
       }
@@ -666,13 +667,18 @@ class RunExecution {
     this.forceStop.unref?.()
   }
 
-  private async setState(state: RunRow['state'], extra: Record<string, unknown> = {}): Promise<void> {
-    this.run.state = state
-    await this.deps
+  private async setState(state: RunRow['state'], extra: Record<string, unknown> = {}): Promise<boolean> {
+    const updated = await this.deps
       .db('runs')
-      .where({ id: this.run.id })
+      .where({ id: this.run.id, leaseOwner: this.deps.owner })
       .update({ state, updatedAt: this.deps.db.fn.now(), ...extra })
+    if (!updated) {
+      this.lostLease = true
+      return false
+    }
+    this.run.state = state
     await this.deps.redis.publish(orgChannel(this.run.orgId), JSON.stringify({ kind: 'run', id: this.run.id, projectId: this.run.projectId }))
+    return true
   }
 
   private async ingest(handle: AgentHandle): Promise<void> {
@@ -690,7 +696,7 @@ class RunExecution {
       const { seq: _seq, ts: _ts, runId: _runId, ...body } = event
       this.events.append(body as never)
       await this.onEvent(event)
-      if (event.type === 'done') break
+      if (event.type === 'done' || this.lostLease) break
     }
     await this.events.flush()
   }
@@ -869,19 +875,21 @@ class RunExecution {
     await this.finish({ state: 'failed', outcome: 'failed', result: 'failed', error: { code: 'runtime_crash', message }, retryable: true })
   }
 
-  /** A run found in finalizing lost its worker after the agent finished. What it ended with is in its events, stored before finalizing. */
+  /** A run whose agent finished lost its worker before finalizing ended. What it ended with is in its events, stored before finalizing. */
   private async restoreOutcome(): Promise<void> {
     const last = (type: 'done' | 'error') => this.deps.db('run_events').where({ runId: this.run.id, type }).orderBy('seq', 'desc').first()
     const [done, error] = await Promise.all([last('done'), last('error')])
+    if (!done && this.run.state !== 'finalizing') return
     if (error) this.lastError = { code: error.payload.code, message: planErrorMessage(this.run.modelPlan, error.payload.message) }
     if (!done) return
     this.doneEvent = { ...done.payload, seq: done.seq, ts: new Date(done.ts).toISOString(), runId: this.run.id }
     this.usage = done.payload.usage
+    if (done.payload.sessionRef) this.run.sessionRef = done.payload.sessionRef
   }
 
   private async finalize(handle: AgentHandle | null, missingContainer = false): Promise<void> {
     // Enter finalizing before reading the request so a run cancellation accepted during reattach is visible here.
-    await this.setState('finalizing', { sessionRef: this.run.sessionRef })
+    if (!(await this.setState('finalizing', { sessionRef: this.run.sessionRef }))) return
     const cancellation = await this.deps.db<RunRow>('runs').where({ id: this.run.id }).first('cancelRequestedAt', 'discardOnCancel')
     if (missingContainer && !cancellation?.cancelRequestedAt) {
       await this.finish({
@@ -988,7 +996,7 @@ class RunExecution {
     await this.finish({ state: 'failed', outcome: 'failed', result: 'failed', error: { code, message }, retryable: code === 'runtime_crash' }).catch(
       () => undefined,
     )
-    if (this.run.containerId) await this.deps.sandbox.stop(this.run.containerId, 5).catch(() => undefined)
+    if (this.run.containerId && !this.lostLease) await this.deps.sandbox.stop(this.run.containerId, 5).catch(() => undefined)
   }
 
   private async finish(proposed: {
@@ -1014,10 +1022,12 @@ class RunExecution {
           turns: this.usage.turns ?? 0,
           byModel: this.usage.byModel,
         }))
-    this.run.state = await db.transaction(async (trx) => {
+    const finished = await db.transaction(async (trx) => {
       const issue = this.run.issueId ? await trx<IssueRow>('issues').where({ id: this.run.issueId }).forUpdate().first() : undefined
       // Use the same lock order as cancellation so an accepted request wins over a pending terminal update.
-      const run = await trx<RunRow>('runs').where({ id: this.run.id }).forUpdate().first('cancelRequestedAt')
+      const run = await trx<RunRow>('runs').where({ id: this.run.id }).forUpdate().first('cancelRequestedAt', 'leaseOwner')
+      // A worker that took the run over owns its ending.
+      if (run?.leaseOwner !== this.deps.owner) return null
       const input: typeof proposed =
         run?.cancelRequestedAt && proposed.state !== 'cancelled'
           ? { ...proposed, state: 'cancelled', outcome: 'cancelled', result: 'failed', error: null, retryable: false }
@@ -1069,6 +1079,11 @@ class RunExecution {
       if (input.state === 'failed' && input.retryable) await retryAskedRun(trx, this.run, this.project)
       return input.state
     })
+    if (!finished) {
+      this.lostLease = true
+      return
+    }
+    this.run.state = finished
     const asked = this.run.trigger as { workflowRunId?: string; nodeId?: string }
     // The workflow sweep settles the step if this is lost.
     if (asked.workflowRunId && asked.nodeId)

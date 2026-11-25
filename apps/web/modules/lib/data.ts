@@ -31,6 +31,7 @@ import type {
   WorkflowRunDto,
 } from '@factorix/schemas'
 import useSWR, { type SWRConfiguration } from 'swr'
+import { ACTIVE_RUN_STATES } from '../runs/run-state'
 import { fetcher } from './api'
 
 function useApi<T>(path: string | null, config?: SWRConfiguration<T>) {
@@ -133,7 +134,10 @@ export function useRuns(query: Record<string, string | undefined> = {}) {
 }
 
 export function useRun(id: string) {
-  return useApi<{ run: RunDto }>(`/api/runs/${id}`)
+  return useApi<{ run: RunDto }>(`/api/runs/${id}`, {
+    // The agent's done event can arrive before finalization, and live notifications are not replayed.
+    refreshInterval: (data) => (data && ACTIVE_RUN_STATES.includes(data.run.state) ? 3000 : 0),
+  })
 }
 
 export function useInbox() {
